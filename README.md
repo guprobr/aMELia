@@ -1,4 +1,4 @@
-# Amelia Qt6 v5.1.2
+# aMELia Qt6 v5.1.2
 
 Amelia is a local-first Qt6/C++ desktop assistant for WRCP, Linux, Kubernetes, debugging and operational documentation. It keeps prompts local, talks to a local Ollama server, stores state on disk, and can optionally perform sanitized external search.
 
