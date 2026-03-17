@@ -11,6 +11,10 @@
 #include <QStringList>
 #include <QTextStream>
 
+#ifndef AMELIA_VERSION_STRING
+#define AMELIA_VERSION_STRING "6.5"
+#endif
+
 namespace {
 QString preferredUserConfigPath()
 {
@@ -177,6 +181,7 @@ int main(int argc, char *argv[])
     QApplication app(argc, argv);
     QApplication::setWindowIcon(QIcon(QStringLiteral(":/branding/amelia_logo.svg")));
     QApplication::setApplicationName(QStringLiteral("amelia_qt6"));
+    QApplication::setApplicationVersion(QStringLiteral(AMELIA_VERSION_STRING));
     QApplication::setOrganizationName(QStringLiteral("guprobr"));
 
     QStringList bootstrapMessages;

@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.21)
-project(amelia_qt6 LANGUAGES CXX)
+project(amelia_qt6 VERSION 6.5 LANGUAGES CXX)
 
 include(GNUInstallDirs)
 
@@ -53,6 +53,11 @@ target_link_libraries(amelia_qt6
         Qt6::Core
         Qt6::Widgets
         Qt6::Network
+)
+
+target_compile_definitions(amelia_qt6
+    PRIVATE
+        AMELIA_VERSION_STRING="${PROJECT_VERSION}"
 )
 
 install(TARGETS amelia_qt6

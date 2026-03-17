@@ -4,11 +4,13 @@
 #include <QAction>
 #include <QApplication>
 #include <QCheckBox>
+#include <QClipboard>
 #include <QColor>
 #include <QComboBox>
 #include <QFileDialog>
 #include <QFont>
 #include <QFormLayout>
+#include <QGridLayout>
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QKeySequence>
@@ -19,24 +21,42 @@
 #include <QMenuBar>
 #include <QMessageBox>
 #include <QPlainTextEdit>
+#include <QPoint>
 #include <QPushButton>
 #include <QRegularExpression>
+#include <QScrollBar>
 #include <QSplitter>
 #include <QTabWidget>
+#include <QTextBrowser>
 #include <QTextCharFormat>
 #include <QTextCursor>
+#include <QTextDocument>
 #include <QTextEdit>
 #include <QTimer>
 #include <QVBoxLayout>
 #include <QWidget>
 #include <QPixmap>
 
+#ifndef AMELIA_VERSION_STRING
+#define AMELIA_VERSION_STRING "6.5"
+#endif
+
 namespace {
+QString appVersionString()
+{
+    return QStringLiteral(AMELIA_VERSION_STRING);
+}
+
+QString appDisplayName()
+{
+    return QStringLiteral("Amelia Qt6 v%1").arg(appVersionString());
+}
+
 QColor transcriptPrefixColor(const QString &role)
 {
     const QString lower = role.toLower();
     if (lower == QStringLiteral("user")) {
-        return QColor(QStringLiteral("#4ea1ff"));
+        return QColor(QStringLiteral("#60a5fa"));
     }
     if (lower == QStringLiteral("assistant")) {
         return QColor(QStringLiteral("#34d399"));
@@ -54,27 +74,60 @@ QColor transcriptBodyColor(const QString &role)
 {
     const QString lower = role.toLower();
     if (lower == QStringLiteral("system")) {
-        return QColor(QStringLiteral("#f8c471"));
+        return QColor(QStringLiteral("#fde68a"));
     }
-    return QColor(QStringLiteral("#e5e7eb"));
+    if (lower == QStringLiteral("assistant")) {
+        return QColor(QStringLiteral("#e5e7eb"));
+    }
+    return QColor(QStringLiteral("#dbe4f0"));
 }
 
 QString transcriptPrefix(const QString &role)
 {
     const QString lower = role.toLower();
     if (lower == QStringLiteral("user")) {
-        return QStringLiteral("USER> ");
+        return QStringLiteral("USER");
     }
     if (lower == QStringLiteral("assistant")) {
-        return QStringLiteral("ASSISTANT> ");
+        return QStringLiteral("ASSISTANT");
     }
     if (lower == QStringLiteral("system")) {
-        return QStringLiteral("[system] ");
+        return QStringLiteral("SYSTEM");
     }
     if (lower == QStringLiteral("status")) {
-        return QStringLiteral("[status] ");
+        return QStringLiteral("STATUS");
     }
-    return QStringLiteral("[") + role + QStringLiteral("] ");
+    return role.toUpper();
+}
+
+QString transcriptRoleBadgeBackground(const QString &role)
+{
+    const QString lower = role.toLower();
+    if (lower == QStringLiteral("user")) {
+        return QStringLiteral("rgba(37, 99, 235, 0.22)");
+    }
+    if (lower == QStringLiteral("assistant")) {
+        return QStringLiteral("rgba(5, 150, 105, 0.22)");
+    }
+    if (lower == QStringLiteral("system")) {
+        return QStringLiteral("rgba(217, 119, 6, 0.22)");
+    }
+    return QStringLiteral("rgba(148, 163, 184, 0.18)");
+}
+
+QString transcriptCardBackground(const QString &role)
+{
+    const QString lower = role.toLower();
+    if (lower == QStringLiteral("assistant")) {
+        return QStringLiteral("#111827");
+    }
+    if (lower == QStringLiteral("user")) {
+        return QStringLiteral("#0f172a");
+    }
+    if (lower == QStringLiteral("system")) {
+        return QStringLiteral("#1f2937");
+    }
+    return QStringLiteral("#111827");
 }
 
 QColor diagnosticCategoryColor(const QString &category)
@@ -116,18 +169,72 @@ QColor diagnosticCategoryColor(const QString &category)
 QStringList splitAssetPaths(const QString &raw)
 {
     QString normalized = raw;
-    normalized.replace(QLatin1Char('\n'), QLatin1Char(';'));
+    normalized.replace(QLatin1Char('\r'), QLatin1Char('\n'));
     normalized.replace(QLatin1Char(','), QLatin1Char(';'));
+    normalized.replace(QLatin1Char('\n'), QLatin1Char(';'));
     const QStringList parts = normalized.split(QLatin1Char(';'), Qt::SkipEmptyParts);
 
-    QStringList paths;
+    QStringList values;
     for (const QString &part : parts) {
         const QString trimmed = part.trimmed();
-        if (!trimmed.isEmpty()) {
-            paths << trimmed;
+        if (!trimmed.isEmpty() && !values.contains(trimmed)) {
+            values << trimmed;
         }
     }
-    return paths;
+    return values;
+}
+
+QStringList extractInventoryFilePaths(const QString &inventoryText)
+{
+    QStringList files;
+    const QStringList lines = inventoryText.split(QLatin1Char('\n'));
+    for (const QString &line : lines) {
+        if (line.startsWith(QStringLiteral("File: "))) {
+            const QString path = line.mid(6).trimmed();
+            if (!path.isEmpty() && !files.contains(path)) {
+                files << path;
+            }
+        }
+    }
+    files.sort(Qt::CaseInsensitive);
+    return files;
+}
+
+QString extractBodyFromHtmlDocument(const QString &html)
+{
+    static const QRegularExpression bodyRegex(QStringLiteral(R"(<body[^>]*>(.*)</body>)"),
+                                              QRegularExpression::DotMatchesEverythingOption
+                                              | QRegularExpression::CaseInsensitiveOption);
+    const QRegularExpressionMatch match = bodyRegex.match(html);
+    if (match.hasMatch()) {
+        return match.captured(1);
+    }
+    return html;
+}
+
+QString escapedPre(const QString &text)
+{
+    QString value = text;
+    while (value.endsWith(QLatin1Char('\n'))) {
+        value.chop(1);
+    }
+    return value.toHtmlEscaped();
+}
+
+QString summarizeCodeBlock(const QString &code)
+{
+    const QStringList lines = code.split(QLatin1Char('\n'));
+    for (const QString &line : lines) {
+        const QString trimmed = line.trimmed();
+        if (!trimmed.isEmpty()) {
+            QString summary = trimmed;
+            if (summary.size() > 46) {
+                summary = summary.left(43) + QStringLiteral("...");
+            }
+            return summary;
+        }
+    }
+    return QStringLiteral("empty block");
 }
 }
 
@@ -135,8 +242,8 @@ MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
     , m_busyFrames({QStringLiteral("◐"), QStringLiteral("◓"), QStringLiteral("◑"), QStringLiteral("◒")})
 {
-    setWindowTitle(QStringLiteral("Amelia Qt6"));
-    setMinimumSize(1280, 820);
+    setWindowTitle(appDisplayName());
+    setMinimumSize(1380, 860);
 
     auto *fileMenu = menuBar()->addMenu(QStringLiteral("&File"));
     auto *memoryMenu = menuBar()->addMenu(QStringLiteral("&Memory"));
@@ -166,20 +273,20 @@ MainWindow::MainWindow(QWidget *parent)
 
     auto *sessionPane = new QWidget(splitter);
     auto *sessionLayout = new QVBoxLayout(sessionPane);
-    auto *sessionTitle = new QLabel(QStringLiteral("Sessions"), sessionPane);
+    auto *sessionTitle = new QLabel(QStringLiteral("Conversations"), sessionPane);
     sessionTitle->setStyleSheet(QStringLiteral("font-weight: 700;"));
+    m_newConversationButton = new QPushButton(QStringLiteral("New conversation"), sessionPane);
     m_conversationsList = new QListWidget(sessionPane);
     m_conversationsList->setSelectionMode(QAbstractItemView::SingleSelection);
-    m_newConversationButton = new QPushButton(QStringLiteral("New conversation"), sessionPane);
     sessionLayout->addWidget(sessionTitle);
-    sessionLayout->addWidget(m_conversationsList, 1);
     sessionLayout->addWidget(m_newConversationButton);
+    sessionLayout->addWidget(m_conversationsList, 1);
 
     auto *chatPane = new QWidget(splitter);
     auto *chatLayout = new QVBoxLayout(chatPane);
 
     auto *titleRow = new QHBoxLayout();
-    auto *title = new QLabel(QStringLiteral("aMELia Qt6 "), chatPane);
+    auto *title = new QLabel(appDisplayName(), chatPane);
     title->setStyleSheet(QStringLiteral("font-weight: 700; font-size: 18px;"));
     auto *logoLabel = new QLabel(chatPane);
     const QPixmap logoPixmap(QStringLiteral(":/branding/amelia_logo.svg"));
@@ -189,14 +296,32 @@ MainWindow::MainWindow(QWidget *parent)
     titleRow->addWidget(logoLabel, 0, Qt::AlignVCenter);
     titleRow->addStretch(1);
 
-    m_transcript = new QTextEdit(chatPane);
+    m_transcript = new QTextBrowser(chatPane);
+    m_transcript->setOpenExternalLinks(false);
+    m_transcript->setOpenLinks(false);
     m_transcript->setReadOnly(true);
+    m_transcript->setContextMenuPolicy(Qt::CustomContextMenu);
     m_transcript->setPlaceholderText(QStringLiteral("Conversation transcript..."));
-    m_transcript->setStyleSheet(QStringLiteral("QTextEdit { background: #0f172a; color: #e5e7eb; }"));
+    m_transcript->setStyleSheet(QStringLiteral(
+        "QTextBrowser { background: #020617; color: #e5e7eb; border: 1px solid #1e293b; border-radius: 10px; padding: 6px; }"));
+
+    auto *transcriptTools = new QHBoxLayout();
+    m_copyLastAnswerButton = new QPushButton(QStringLiteral("Copy last answer"), chatPane);
+    m_copyTranscriptButton = new QPushButton(QStringLiteral("Copy transcript"), chatPane);
+    m_codeBlockCombo = new QComboBox(chatPane);
+    m_codeBlockCombo->setMinimumWidth(320);
+    m_codeBlockCombo->addItem(QStringLiteral("No code blocks yet"));
+    m_copyCodeBlockButton = new QPushButton(QStringLiteral("Copy code block"), chatPane);
+    transcriptTools->addWidget(m_copyLastAnswerButton);
+    transcriptTools->addWidget(m_copyTranscriptButton);
+    transcriptTools->addStretch(1);
+    transcriptTools->addWidget(new QLabel(QStringLiteral("Blocks:"), chatPane));
+    transcriptTools->addWidget(m_codeBlockCombo);
+    transcriptTools->addWidget(m_copyCodeBlockButton);
 
     m_input = new QPlainTextEdit(chatPane);
     m_input->setPlaceholderText(QStringLiteral("Type your prompt here..."));
-    m_input->setMaximumHeight(120);
+    m_input->setMaximumHeight(140);
 
     auto *toolbarLayout = new QHBoxLayout();
     m_externalSearchCheck = new QCheckBox(QStringLiteral("Allow sanitized external search"), chatPane);
@@ -244,6 +369,7 @@ MainWindow::MainWindow(QWidget *parent)
 
     chatLayout->addLayout(titleRow);
     chatLayout->addWidget(m_transcript, 1);
+    chatLayout->addLayout(transcriptTools);
     chatLayout->addWidget(m_input);
     chatLayout->addLayout(toolbarLayout);
     chatLayout->addLayout(controlsLayout);
@@ -306,33 +432,75 @@ MainWindow::MainWindow(QWidget *parent)
         QStringLiteral("Code patch"),
         QStringLiteral("Runbook / docs"),
         QStringLiteral("Incident investigation"),
-        QStringLiteral("Dataset from assets")
+        QStringLiteral("Dataset from assets"),
+        QStringLiteral("Executive summary"),
+        QStringLiteral("Knowledge extraction"),
+        QStringLiteral("KB-only analysis"),
+        QStringLiteral("Migration / refactor plan")
     });
     m_promptLabGoal = new QLineEdit(promptLabTab);
-    m_promptLabGoal->setPlaceholderText(QStringLiteral("What should Amelia learn or generate from these assets?"));
-    m_promptLabAssets = new QLineEdit(promptLabTab);
-    m_promptLabAssets->setPlaceholderText(QStringLiteral("/path/a;/path/b;~/notes.txt"));
+    m_promptLabGoal->setPlaceholderText(QStringLiteral("What should Amelia learn, extract, summarize, or generate?"));
     promptLabForm->addRow(QStringLiteral("Preset:"), m_promptLabPresetCombo);
     promptLabForm->addRow(QStringLiteral("Goal:"), m_promptLabGoal);
-    promptLabForm->addRow(QStringLiteral("Assets:"), m_promptLabAssets);
+
+    m_promptLabImportAssetsEdit = new QPlainTextEdit(promptLabTab);
+    m_promptLabImportAssetsEdit->setPlaceholderText(
+        QStringLiteral("List filesystem assets to import, one per line or separated by ';' or ','\n"
+                       "/path/to/file.md\n/path/to/folder"));
+    m_promptLabImportAssetsEdit->setMaximumHeight(110);
+
+    auto *importButtons = new QHBoxLayout();
+    m_promptLabBrowseAssetsButton = new QPushButton(QStringLiteral("Select files"), promptLabTab);
+    m_promptLabBrowseFolderButton = new QPushButton(QStringLiteral("Select folder"), promptLabTab);
+    m_promptLabImportButton = new QPushButton(QStringLiteral("Import listed assets"), promptLabTab);
+    m_promptLabClearAssetsButton = new QPushButton(QStringLiteral("Clear asset inputs"), promptLabTab);
+    importButtons->addWidget(m_promptLabBrowseAssetsButton);
+    importButtons->addWidget(m_promptLabBrowseFolderButton);
+    importButtons->addWidget(m_promptLabImportButton);
+    importButtons->addWidget(m_promptLabClearAssetsButton);
+
+    m_promptLabKbFilter = new QLineEdit(promptLabTab);
+    m_promptLabKbFilter->setPlaceholderText(QStringLiteral("Filter knowledge-base assets by file name or path"));
+
+    m_promptLabKbAssetsList = new QListWidget(promptLabTab);
+    m_promptLabKbAssetsList->setSelectionMode(QAbstractItemView::ExtendedSelection);
+    m_promptLabKbAssetsList->setAlternatingRowColors(true);
+
+    auto *kbButtons = new QHBoxLayout();
+    m_promptLabAddSelectedKbButton = new QPushButton(QStringLiteral("Add selected KB assets"), promptLabTab);
+    kbButtons->addWidget(m_promptLabAddSelectedKbButton);
+    kbButtons->addStretch(1);
+
+    m_promptLabKbManualEdit = new QLineEdit(promptLabTab);
+    m_promptLabKbManualEdit->setPlaceholderText(
+        QStringLiteral("Extra KB asset identifiers already indexed (paths, names, tags) separated by ';'"));
 
     m_promptLabNotes = new QTextEdit(promptLabTab);
-    m_promptLabNotes->setPlaceholderText(QStringLiteral("Optional notes, style constraints, schema hints, prompt fragments, expected labels, etc."));
+    m_promptLabNotes->setPlaceholderText(QStringLiteral("Optional notes, style constraints, schema hints, prompt fragments, expected labels, or coverage requirements."));
     m_promptLabNotes->setMaximumHeight(130);
 
     auto *promptLabButtons = new QHBoxLayout();
     m_promptLabGenerateButton = new QPushButton(QStringLiteral("Compose recipe"), promptLabTab);
     m_promptLabUseButton = new QPushButton(QStringLiteral("Use in input"), promptLabTab);
-    m_promptLabImportButton = new QPushButton(QStringLiteral("Import listed assets"), promptLabTab);
+    m_promptLabCopyRecipeButton = new QPushButton(QStringLiteral("Copy recipe"), promptLabTab);
     promptLabButtons->addWidget(m_promptLabGenerateButton);
     promptLabButtons->addWidget(m_promptLabUseButton);
-    promptLabButtons->addWidget(m_promptLabImportButton);
+    promptLabButtons->addWidget(m_promptLabCopyRecipeButton);
 
     m_promptLabPreview = new QTextEdit(promptLabTab);
     m_promptLabPreview->setReadOnly(true);
     m_promptLabPreview->setPlaceholderText(QStringLiteral("Composed prompt recipe and JSONL preview appear here."));
 
     promptLabLayout->addLayout(promptLabForm);
+    promptLabLayout->addWidget(new QLabel(QStringLiteral("Filesystem assets to import"), promptLabTab));
+    promptLabLayout->addWidget(m_promptLabImportAssetsEdit);
+    promptLabLayout->addLayout(importButtons);
+    promptLabLayout->addWidget(new QLabel(QStringLiteral("Already indexed knowledge-base assets"), promptLabTab));
+    promptLabLayout->addWidget(m_promptLabKbFilter);
+    promptLabLayout->addWidget(m_promptLabKbAssetsList, 1);
+    promptLabLayout->addLayout(kbButtons);
+    promptLabLayout->addWidget(new QLabel(QStringLiteral("Manual KB references"), promptLabTab));
+    promptLabLayout->addWidget(m_promptLabKbManualEdit);
     promptLabLayout->addWidget(new QLabel(QStringLiteral("Notes / constraints"), promptLabTab));
     promptLabLayout->addWidget(m_promptLabNotes);
     promptLabLayout->addLayout(promptLabButtons);
@@ -351,7 +519,7 @@ MainWindow::MainWindow(QWidget *parent)
 
     rootLayout->addWidget(splitter, 1);
     setCentralWidget(central);
-    resize(1700, 960);
+    resize(1780, 980);
 
     connect(m_sendButton, &QPushButton::clicked, this, &MainWindow::onSendClicked);
     connect(m_stopButton, &QPushButton::clicked, this, &MainWindow::stopRequested);
@@ -368,38 +536,31 @@ MainWindow::MainWindow(QWidget *parent)
     connect(m_promptLabGenerateButton, &QPushButton::clicked, this, &MainWindow::onPromptLabGenerateClicked);
     connect(m_promptLabUseButton, &QPushButton::clicked, this, &MainWindow::onPromptLabUseClicked);
     connect(m_promptLabImportButton, &QPushButton::clicked, this, &MainWindow::onPromptLabImportAssetsClicked);
+    connect(m_promptLabBrowseAssetsButton, &QPushButton::clicked, this, &MainWindow::onPromptLabBrowseAssetsClicked);
+    connect(m_promptLabBrowseFolderButton, &QPushButton::clicked, this, &MainWindow::onPromptLabBrowseFolderClicked);
+    connect(m_promptLabClearAssetsButton, &QPushButton::clicked, this, &MainWindow::onPromptLabClearAssetsClicked);
+    connect(m_promptLabCopyRecipeButton, &QPushButton::clicked, this, &MainWindow::onPromptLabCopyRecipeClicked);
+    connect(m_promptLabAddSelectedKbButton, &QPushButton::clicked, this, &MainWindow::onPromptLabAddSelectedKbAssetsClicked);
+    connect(m_promptLabKbFilter, &QLineEdit::textChanged, this, &MainWindow::onPromptLabKbFilterChanged);
+    connect(m_copyLastAnswerButton, &QPushButton::clicked, this, &MainWindow::onCopyLastAnswerClicked);
+    connect(m_copyTranscriptButton, &QPushButton::clicked, this, &MainWindow::onCopyTranscriptClicked);
+    connect(m_copyCodeBlockButton, &QPushButton::clicked, this, &MainWindow::onCopySelectedCodeBlockClicked);
+    connect(m_transcript, &QTextBrowser::customContextMenuRequested, this, &MainWindow::onTranscriptContextMenuRequested);
 
     if (m_promptLabPreview != nullptr) {
         m_promptLabPreview->setPlainText(buildPromptLabRecipe());
     }
+    refreshCodeBlockSelector();
+    renderTranscript();
 }
-
 
 void MainWindow::appendTranscriptEntry(const QString &role, const QString &text)
 {
-    if (m_transcript == nullptr) {
-        return;
+    m_transcriptEntries.push_back({role, text});
+    if (role == QStringLiteral("assistant")) {
+        m_lastAssistantMessage = text;
     }
-
-    QTextCursor cursor = m_transcript->textCursor();
-    cursor.movePosition(QTextCursor::End);
-    if (!m_transcript->document()->isEmpty()) {
-        cursor.insertBlock();
-    }
-
-    QTextCharFormat prefixFormat;
-    prefixFormat.setFontWeight(QFont::Bold);
-    prefixFormat.setForeground(transcriptPrefixColor(role));
-
-    QTextCharFormat bodyFormat;
-    bodyFormat.setForeground(transcriptBodyColor(role));
-
-    cursor.insertText(transcriptPrefix(role), prefixFormat);
-    cursor.insertText(text, bodyFormat);
-    cursor.insertBlock();
-
-    m_transcript->setTextCursor(cursor);
-    m_transcript->ensureCursorVisible();
+    renderTranscript();
 }
 
 void MainWindow::appendDiagnosticEntry(const QString &timestamp, const QString &category, const QString &message)
@@ -432,6 +593,141 @@ void MainWindow::appendDiagnosticEntry(const QString &timestamp, const QString &
     m_diagnostics->ensureCursorVisible();
 }
 
+QString MainWindow::markdownFragmentToHtml(const QString &markdown) const
+{
+    if (markdown.trimmed().isEmpty()) {
+        return QString();
+    }
+
+    QTextDocument document;
+    document.setMarkdown(markdown);
+    return extractBodyFromHtmlDocument(document.toHtml());
+}
+
+QString MainWindow::renderMessageBodyHtml(const QString &text,
+                                          const QString &role,
+                                          int assistantIndex,
+                                          int &globalCodeIndex,
+                                          int &perMessageCodeIndex)
+{
+    QString html;
+    static const QRegularExpression fenceRegex(
+        QStringLiteral(R"(```([^\n`]*)\n(.*?)```)") ,
+        QRegularExpression::DotMatchesEverythingOption);
+
+    int searchOffset = 0;
+    auto match = fenceRegex.match(text, searchOffset);
+    while (match.hasMatch()) {
+        const int start = match.capturedStart();
+        const int end = match.capturedEnd();
+        const QString before = text.mid(searchOffset, start - searchOffset);
+        html += markdownFragmentToHtml(before);
+
+        QString language = match.captured(1).trimmed();
+        QString code = match.captured(2);
+        if (code.endsWith(QLatin1Char('\n'))) {
+            code.chop(1);
+        }
+
+        ++globalCodeIndex;
+        ++perMessageCodeIndex;
+
+        const QString label = role == QStringLiteral("assistant")
+                ? QStringLiteral("Answer %1 · block %2").arg(assistantIndex).arg(perMessageCodeIndex)
+                : QStringLiteral("%1 · block %2").arg(transcriptPrefix(role)).arg(perMessageCodeIndex);
+        const QString languageBadge = language.isEmpty() ? QStringLiteral("plain text") : language.toHtmlEscaped();
+        const QString summary = summarizeCodeBlock(code).toHtmlEscaped();
+
+        m_codeBlocks.push_back({QStringLiteral("%1 · %2 · %3").arg(label, language.isEmpty() ? QStringLiteral("plain") : language, summary), code});
+
+        html += QStringLiteral(
+                    "<div class='code-card'>"
+                    "<div class='code-meta'><span class='code-label'>%1</span><span class='code-lang'>%2</span></div>"
+                    "<pre>%3</pre>"
+                    "</div>")
+                    .arg(label.toHtmlEscaped(), languageBadge, escapedPre(code));
+
+        searchOffset = end;
+        match = fenceRegex.match(text, searchOffset);
+    }
+
+    html += markdownFragmentToHtml(text.mid(searchOffset));
+    if (html.trimmed().isEmpty()) {
+        html = QStringLiteral("<p>%1</p>").arg(text.toHtmlEscaped().replace(QLatin1Char('\n'), QStringLiteral("<br>")));
+    }
+    return html;
+}
+
+void MainWindow::renderTranscript()
+{
+    if (m_transcript == nullptr) {
+        return;
+    }
+
+    m_codeBlocks.clear();
+    m_lastAssistantMessage.clear();
+
+    QString html;
+    html += QStringLiteral(
+        "<html><head><style>"
+        "body{background:#020617;color:#e5e7eb;font-family:'Noto Sans','DejaVu Sans',sans-serif;}"
+        ".entry{margin:0 0 14px 0;padding:12px 14px;border:1px solid #1f2937;border-radius:12px;}"
+        ".entry-header{margin-bottom:8px;}"
+        ".role-badge{display:inline-block;padding:3px 9px;border-radius:999px;font-weight:700;letter-spacing:0.04em;font-size:11px;}"
+        ".message{font-size:13px;line-height:1.45;}"
+        ".message p{margin:0 0 10px 0;}"
+        ".message ul,.message ol{margin-top:4px;margin-bottom:10px;}"
+        ".message h1,.message h2,.message h3,.message h4{margin:10px 0 6px 0;color:#f8fafc;}"
+        ".message blockquote{margin:8px 0;padding-left:10px;border-left:3px solid #334155;color:#cbd5e1;}"
+        ".message code{background:#111827;color:#dbeafe;padding:2px 5px;border-radius:6px;font-family:'DejaVu Sans Mono','Noto Sans Mono',monospace;}"
+        ".code-card{margin:8px 0 12px 0;border:1px solid #334155;border-radius:10px;overflow:hidden;background:#0b1220;}"
+        ".code-meta{display:flex;justify-content:space-between;gap:12px;padding:7px 10px;background:#111827;border-bottom:1px solid #334155;color:#cbd5e1;font-size:11px;font-weight:700;}"
+        ".code-lang{color:#93c5fd;}"
+        ".code-label{color:#c4b5fd;}"
+        ".code-card pre{margin:0;padding:12px;white-space:pre-wrap;font-family:'DejaVu Sans Mono','Noto Sans Mono',monospace;font-size:12px;color:#e5e7eb;background:#020617;}"
+        "</style></head><body>");
+
+    int assistantIndex = 0;
+    int globalCodeIndex = 0;
+    for (const TranscriptEntry &entry : m_transcriptEntries) {
+        if (entry.role == QStringLiteral("assistant")) {
+            ++assistantIndex;
+            m_lastAssistantMessage = entry.text;
+        }
+
+        int perMessageCodeIndex = 0;
+        const QString bodyHtml = renderMessageBodyHtml(entry.text,
+                                                       entry.role,
+                                                       assistantIndex <= 0 ? 1 : assistantIndex,
+                                                       globalCodeIndex,
+                                                       perMessageCodeIndex);
+        const QString prefixColor = transcriptPrefixColor(entry.role).name();
+        const QString bodyColor = transcriptBodyColor(entry.role).name();
+        html += QStringLiteral(
+                    "<div class='entry' style='background:%1;color:%2;'>"
+                    "<div class='entry-header'><span class='role-badge' style='color:%3;background:%4;'>%5</span></div>"
+                    "<div class='message' style='color:%2;'>%6</div>"
+                    "</div>")
+                    .arg(transcriptCardBackground(entry.role),
+                         bodyColor,
+                         prefixColor,
+                         transcriptRoleBadgeBackground(entry.role),
+                         transcriptPrefix(entry.role).toHtmlEscaped(),
+                         bodyHtml);
+    }
+
+    if (m_transcriptEntries.isEmpty()) {
+        html += QStringLiteral("<p style='color:#94a3b8;'>Conversation transcript...</p>");
+    }
+
+    html += QStringLiteral("</body></html>");
+    m_transcript->setHtml(html);
+    if (m_transcript->verticalScrollBar() != nullptr) {
+        m_transcript->verticalScrollBar()->setValue(m_transcript->verticalScrollBar()->maximum());
+    }
+    refreshCodeBlockSelector();
+}
+
 void MainWindow::appendUserMessage(const QString &text)
 {
     m_streamingAssistant = false;
@@ -440,39 +736,26 @@ void MainWindow::appendUserMessage(const QString &text)
 
 void MainWindow::appendAssistantChunk(const QString &text)
 {
-    QTextCursor cursor = m_transcript->textCursor();
-    cursor.movePosition(QTextCursor::End);
-
-    QTextCharFormat prefixFormat;
-    prefixFormat.setFontWeight(QFont::Bold);
-    prefixFormat.setForeground(transcriptPrefixColor(QStringLiteral("assistant")));
-
-    QTextCharFormat bodyFormat;
-    bodyFormat.setForeground(transcriptBodyColor(QStringLiteral("assistant")));
-
-    if (!m_streamingAssistant) {
-        if (!m_transcript->document()->isEmpty()) {
-            cursor.insertBlock();
-        }
-        cursor.insertText(transcriptPrefix(QStringLiteral("assistant")), prefixFormat);
+    if (!m_streamingAssistant || m_transcriptEntries.isEmpty() || m_transcriptEntries.last().role != QStringLiteral("assistant")) {
+        m_transcriptEntries.push_back({QStringLiteral("assistant"), text});
         m_streamingAssistant = true;
+    } else {
+        m_transcriptEntries.last().text += text;
     }
-
-    cursor.insertText(text, bodyFormat);
-    m_transcript->setTextCursor(cursor);
-    m_transcript->ensureCursorVisible();
+    m_lastAssistantMessage = m_transcriptEntries.last().text;
+    renderTranscript();
 }
 
 void MainWindow::finalizeAssistantMessage(const QString &text)
 {
-    Q_UNUSED(text)
-    if (m_streamingAssistant) {
-        QTextCursor cursor = m_transcript->textCursor();
-        cursor.movePosition(QTextCursor::End);
-        cursor.insertBlock();
-        m_transcript->setTextCursor(cursor);
+    if (m_streamingAssistant && !m_transcriptEntries.isEmpty() && m_transcriptEntries.last().role == QStringLiteral("assistant")) {
+        if (!text.isEmpty()) {
+            m_transcriptEntries.last().text = text;
+        }
+        m_lastAssistantMessage = m_transcriptEntries.last().text;
     }
     m_streamingAssistant = false;
+    renderTranscript();
 }
 
 void MainWindow::appendSystemMessage(const QString &text)
@@ -513,22 +796,72 @@ void MainWindow::setSessionSummary(const QString &text)
 
 void MainWindow::rebuildTranscriptFromPlainText(const QString &text)
 {
-    m_transcript->clear();
+    m_transcriptEntries.clear();
     m_streamingAssistant = false;
+    m_lastAssistantMessage.clear();
 
-    const QStringList blocks = text.split(QRegularExpression(QStringLiteral("\\n\\s*\\n")), Qt::SkipEmptyParts);
-    for (const QString &block : blocks) {
-        const QString trimmed = block.trimmed();
-        if (trimmed.startsWith(QStringLiteral("USER> "))) {
-            appendTranscriptEntry(QStringLiteral("user"), trimmed.mid(6));
-        } else if (trimmed.startsWith(QStringLiteral("ASSISTANT> "))) {
-            appendTranscriptEntry(QStringLiteral("assistant"), trimmed.mid(11));
-        } else if (trimmed.startsWith(QStringLiteral("[system] "))) {
-            appendTranscriptEntry(QStringLiteral("system"), trimmed.mid(9));
-        } else if (!trimmed.isEmpty()) {
-            appendTranscriptEntry(QStringLiteral("system"), trimmed);
+    const QString normalized = text;
+    const QStringList lines = normalized.split(QLatin1Char('\n'));
+
+    QString currentRole;
+    QStringList currentBuffer;
+    auto flushCurrent = [this, &currentRole, &currentBuffer]() {
+        if (currentRole.isEmpty()) {
+            return;
+        }
+        QString content = currentBuffer.join(QStringLiteral("\n"));
+        while (content.startsWith(QLatin1Char('\n'))) {
+            content.remove(0, 1);
+        }
+        while (content.endsWith(QLatin1Char('\n'))) {
+            content.chop(1);
+        }
+        m_transcriptEntries.push_back({currentRole, content});
+        if (currentRole == QStringLiteral("assistant")) {
+            m_lastAssistantMessage = content;
+        }
+        currentRole.clear();
+        currentBuffer.clear();
+    };
+
+    for (const QString &line : lines) {
+        if (line.startsWith(QStringLiteral("USER> "))) {
+            flushCurrent();
+            currentRole = QStringLiteral("user");
+            currentBuffer << line.mid(6);
+            continue;
+        }
+        if (line.startsWith(QStringLiteral("ASSISTANT> "))) {
+            flushCurrent();
+            currentRole = QStringLiteral("assistant");
+            currentBuffer << line.mid(11);
+            continue;
+        }
+        if (line.startsWith(QStringLiteral("[system] "))) {
+            flushCurrent();
+            currentRole = QStringLiteral("system");
+            currentBuffer << line.mid(9);
+            continue;
+        }
+        if (line.startsWith(QStringLiteral("[status] "))) {
+            flushCurrent();
+            currentRole = QStringLiteral("status");
+            currentBuffer << line.mid(9);
+            continue;
+        }
+
+        if (currentRole.isEmpty()) {
+            if (!line.trimmed().isEmpty()) {
+                currentRole = QStringLiteral("system");
+                currentBuffer << line;
+            }
+        } else {
+            currentBuffer << line;
         }
     }
+
+    flushCurrent();
+    renderTranscript();
 }
 
 void MainWindow::setTranscript(const QString &text)
@@ -571,6 +904,9 @@ void MainWindow::setBusy(bool busy)
     m_promptLabGenerateButton->setEnabled(!busy);
     m_promptLabUseButton->setEnabled(!busy);
     m_promptLabImportButton->setEnabled(!busy);
+    m_promptLabBrowseAssetsButton->setEnabled(!busy);
+    m_promptLabBrowseFolderButton->setEnabled(!busy);
+    m_promptLabCopyRecipeButton->setEnabled(!busy);
 
     if (busy) {
         m_busyFrameIndex = 0;
@@ -611,9 +947,47 @@ void MainWindow::setDiagnostics(const QString &text)
     rebuildDiagnosticsFromPlainText(text);
 }
 
+void MainWindow::refreshKbAssetList(const QString &filterText)
+{
+    if (m_promptLabKbAssetsList == nullptr) {
+        return;
+    }
+
+    const QString currentFilter = filterText.trimmed();
+    QStringList selectedPaths;
+    const auto selectedItems = m_promptLabKbAssetsList->selectedItems();
+    for (QListWidgetItem *item : selectedItems) {
+        if (item != nullptr) {
+            selectedPaths << item->data(Qt::UserRole).toString();
+        }
+    }
+
+    m_promptLabKbAssetsList->clear();
+    for (const QString &path : m_knownKbAssets) {
+        if (!currentFilter.isEmpty() && !path.contains(currentFilter, Qt::CaseInsensitive)) {
+            continue;
+        }
+        auto *item = new QListWidgetItem(path, m_promptLabKbAssetsList);
+        item->setData(Qt::UserRole, path);
+        if (selectedPaths.contains(path)) {
+            item->setSelected(true);
+        }
+    }
+
+    if (m_promptLabKbAssetsList->count() == 0) {
+        auto *item = new QListWidgetItem(currentFilter.isEmpty()
+                                             ? QStringLiteral("No indexed KB assets yet")
+                                             : QStringLiteral("No KB assets match this filter"),
+                                         m_promptLabKbAssetsList);
+        item->setFlags(item->flags() & ~Qt::ItemIsSelectable & ~Qt::ItemIsEnabled);
+    }
+}
+
 void MainWindow::setSourceInventory(const QString &text)
 {
     m_sourceInventory->setPlainText(text);
+    m_knownKbAssets = extractInventoryFilePaths(text);
+    refreshKbAssetList(m_promptLabKbFilter != nullptr ? m_promptLabKbFilter->text() : QString());
 }
 
 void MainWindow::setAvailableModels(const QStringList &models, const QString &currentModel)
@@ -709,52 +1083,108 @@ void MainWindow::updateBusyIndicator()
     ++m_busyFrameIndex;
 }
 
+QStringList MainWindow::promptLabImportAssets() const
+{
+    return splitAssetPaths(m_promptLabImportAssetsEdit != nullptr ? m_promptLabImportAssetsEdit->toPlainText() : QString());
+}
+
+QStringList MainWindow::promptLabSelectedKbAssets() const
+{
+    QStringList assets;
+    if (m_promptLabKbAssetsList == nullptr) {
+        return assets;
+    }
+    const auto items = m_promptLabKbAssetsList->selectedItems();
+    for (QListWidgetItem *item : items) {
+        if (item == nullptr) {
+            continue;
+        }
+        const QString value = item->data(Qt::UserRole).toString().trimmed();
+        if (!value.isEmpty() && !assets.contains(value)) {
+            assets << value;
+        }
+    }
+    return assets;
+}
+
+QStringList MainWindow::promptLabManualKbAssets() const
+{
+    return splitAssetPaths(m_promptLabKbManualEdit != nullptr ? m_promptLabKbManualEdit->text() : QString());
+}
+
 QString MainWindow::buildPromptLabRecipe() const
 {
     const QString preset = m_promptLabPresetCombo != nullptr ? m_promptLabPresetCombo->currentText() : QStringLiteral("General grounding");
     const QString goal = m_promptLabGoal != nullptr ? m_promptLabGoal->text().trimmed() : QString();
     const QString notes = m_promptLabNotes != nullptr ? m_promptLabNotes->toPlainText().trimmed() : QString();
-    const QStringList assets = m_promptLabAssets != nullptr ? splitAssetPaths(m_promptLabAssets->text()) : QStringList();
+    const QStringList importAssets = promptLabImportAssets();
+    QStringList kbAssets = promptLabSelectedKbAssets();
+    for (const QString &manual : promptLabManualKbAssets()) {
+        if (!kbAssets.contains(manual)) {
+            kbAssets << manual;
+        }
+    }
 
     QStringList directives;
     if (preset == QStringLiteral("Code patch")) {
-        directives << QStringLiteral("Study the imported assets before suggesting code changes.")
-                   << QStringLiteral("Preserve existing naming and architecture.")
-                   << QStringLiteral("Output paste-ready functions or files only when asked.");
+        directives << QStringLiteral("Study the listed assets before suggesting code changes.")
+                   << QStringLiteral("Preserve existing naming, code style, and architecture.")
+                   << QStringLiteral("Return paste-ready complete functions or files when patching code.");
     } else if (preset == QStringLiteral("Runbook / docs")) {
-        directives << QStringLiteral("Extract grounded operational steps from the imported assets.")
+        directives << QStringLiteral("Extract grounded operational steps from the listed materials.")
                    << QStringLiteral("Prefer concise procedures, prerequisites, rollback, and validation.")
-                   << QStringLiteral("Do not invent commands or environment details.");
+                   << QStringLiteral("Do not invent commands, hosts, or environment details.");
     } else if (preset == QStringLiteral("Incident investigation")) {
-        directives << QStringLiteral("Correlate clues from logs, configs, and notes in the imported assets.")
+        directives << QStringLiteral("Correlate clues from logs, configs, and notes in the listed materials.")
                    << QStringLiteral("Separate evidence, hypotheses, and proposed checks.")
                    << QStringLiteral("Highlight the smallest next diagnostic step.");
     } else if (preset == QStringLiteral("Dataset from assets")) {
-        directives << QStringLiteral("Transform the imported assets into reusable supervision examples.")
+        directives << QStringLiteral("Transform the listed assets into reusable supervision examples.")
                    << QStringLiteral("Produce compact input/output training pairs grounded in those assets.")
                    << QStringLiteral("Reject unsupported labels or invented metadata.");
+    } else if (preset == QStringLiteral("Executive summary")) {
+        directives << QStringLiteral("Summarize only what is supported by the listed materials.")
+                   << QStringLiteral("Surface risks, decisions, and open questions for an executive audience.")
+                   << QStringLiteral("Keep the language direct and non-speculative.");
+    } else if (preset == QStringLiteral("Knowledge extraction")) {
+        directives << QStringLiteral("Extract reusable facts, concepts, and relationships from the listed materials.")
+                   << QStringLiteral("Organize the result for future retrieval or KB curation.")
+                   << QStringLiteral("Flag gaps or duplicated entries explicitly.");
+    } else if (preset == QStringLiteral("KB-only analysis")) {
+        directives << QStringLiteral("Use only already indexed KB assets listed below.")
+                   << QStringLiteral("Do not rely on non-indexed files unless the user imports them explicitly.")
+                   << QStringLiteral("Mention which KB assets were actually used in the answer.");
+    } else if (preset == QStringLiteral("Migration / refactor plan")) {
+        directives << QStringLiteral("Inspect the listed materials and design an ordered migration or refactor plan.")
+                   << QStringLiteral("List impact areas, sequencing, validation, and rollback points.")
+                   << QStringLiteral("Keep the plan grounded in the current implementation or docs.");
     } else {
-        directives << QStringLiteral("Ground every answer in the imported assets and the user request.")
-                   << QStringLiteral("Prefer explicit citations to file names or sections when possible.")
+        directives << QStringLiteral("Ground every answer in the listed materials and the user request.")
+                   << QStringLiteral("Prefer explicit references to asset names, files, or sections when possible.")
                    << QStringLiteral("Say when information is missing instead of guessing.");
     }
 
     const QString displayGoal = goal.isEmpty() ? QStringLiteral("<describe the target outcome>") : goal;
-    const QString displayAssets = assets.isEmpty() ? QStringLiteral("<none listed>") : assets.join(QStringLiteral("; "));
+    const QString displayImportAssets = importAssets.isEmpty() ? QStringLiteral("<none listed>") : importAssets.join(QStringLiteral("; "));
+    const QString displayKbAssets = kbAssets.isEmpty() ? QStringLiteral("<none listed>") : kbAssets.join(QStringLiteral("; "));
+
     QString escapedGoal = goal.isEmpty() ? QStringLiteral("<goal>") : goal;
-    QString escapedAssets = assets.isEmpty() ? QStringLiteral("<none>") : assets.join(QStringLiteral("; "));
+    QString escapedImportAssets = importAssets.isEmpty() ? QStringLiteral("<none>") : importAssets.join(QStringLiteral("; "));
+    QString escapedKbAssets = kbAssets.isEmpty() ? QStringLiteral("<none>") : kbAssets.join(QStringLiteral("; "));
     escapedGoal.replace(QStringLiteral("\""), QStringLiteral("\\\""));
-    escapedAssets.replace(QStringLiteral("\""), QStringLiteral("\\\""));
+    escapedImportAssets.replace(QStringLiteral("\""), QStringLiteral("\\\""));
+    escapedKbAssets.replace(QStringLiteral("\""), QStringLiteral("\\\""));
 
     QStringList lines;
     lines << QStringLiteral("Prompt Lab recipe");
     lines << QStringLiteral("=================");
     lines << QStringLiteral("Preset: %1").arg(preset);
     lines << QStringLiteral("Goal: %1").arg(displayGoal);
-    lines << QStringLiteral("Assets: %1").arg(displayAssets);
+    lines << QStringLiteral("Filesystem assets to import: %1").arg(displayImportAssets);
+    lines << QStringLiteral("Existing KB assets to use: %1").arg(displayKbAssets);
     lines << QString();
     lines << QStringLiteral("Use this with Amelia:");
-    lines << QStringLiteral("You will study the imported assets and answer only from them.");
+    lines << QStringLiteral("Study the requested materials before answering.");
     for (const QString &directive : directives) {
         lines << QStringLiteral("- %1").arg(directive);
     }
@@ -763,12 +1193,14 @@ QString MainWindow::buildPromptLabRecipe() const
     }
     lines << QString();
     lines << QStringLiteral("Suggested working prompt:");
-    lines << QStringLiteral("Analyze the imported assets and help with this goal: %1").arg(escapedGoal);
-    lines << QStringLiteral("Return a grounded answer and identify which imported materials were used.");
+    lines << QStringLiteral("Analyze the requested materials and help with this goal: %1").arg(escapedGoal);
+    lines << QStringLiteral("Imported asset paths: %1").arg(escapedImportAssets);
+    lines << QStringLiteral("Indexed KB assets: %1").arg(escapedKbAssets);
+    lines << QStringLiteral("Return a grounded answer and identify which materials were actually used.");
     lines << QString();
     lines << QStringLiteral("JSONL training sample preview:");
-    lines << QStringLiteral("{\"messages\":[{\"role\":\"system\",\"content\":\"You are Amelia. Answer only from the imported assets.\"},{\"role\":\"user\",\"content\":\"Goal: %1\\nAssets: %2\"},{\"role\":\"assistant\",\"content\":\"Grounded response based on the imported assets.\"}]}")
-                .arg(escapedGoal, escapedAssets);
+    lines << QStringLiteral("{\"messages\":[{\"role\":\"system\",\"content\":\"You are Amelia. Answer only from the requested materials.\"},{\"role\":\"user\",\"content\":\"Goal: %1\\nImport assets: %2\\nKB assets: %3\"},{\"role\":\"assistant\",\"content\":\"Grounded response based on the requested materials.\"}]}")
+                .arg(escapedGoal, escapedImportAssets, escapedKbAssets);
 
     return lines.join(QStringLiteral("\n"));
 }
@@ -792,11 +1224,11 @@ void MainWindow::onPromptLabUseClicked()
 
 void MainWindow::onPromptLabImportAssetsClicked()
 {
-    const QStringList paths = splitAssetPaths(m_promptLabAssets != nullptr ? m_promptLabAssets->text() : QString());
+    const QStringList paths = promptLabImportAssets();
     if (paths.isEmpty()) {
         QMessageBox::information(this,
                                  QStringLiteral("Prompt Lab"),
-                                 QStringLiteral("Add one or more asset paths first. Separate them with ';' or ','."));
+                                 QStringLiteral("Add one or more filesystem asset paths first. Separate them with ';', ',' or new lines."));
         return;
     }
 
@@ -804,13 +1236,191 @@ void MainWindow::onPromptLabImportAssetsClicked()
     m_statusLabel->setText(QStringLiteral("Prompt Lab requested asset import for %1 path(s).").arg(paths.size()));
 }
 
+void MainWindow::onPromptLabBrowseAssetsClicked()
+{
+    const QStringList paths = QFileDialog::getOpenFileNames(this,
+                                                            QStringLiteral("Select Prompt Lab assets"),
+                                                            QString(),
+                                                            QStringLiteral("All Files (*.*)"));
+    if (paths.isEmpty()) {
+        return;
+    }
+
+    QStringList merged = promptLabImportAssets();
+    for (const QString &path : paths) {
+        if (!merged.contains(path)) {
+            merged << path;
+        }
+    }
+    m_promptLabImportAssetsEdit->setPlainText(merged.join(QStringLiteral("\n")));
+    onPromptLabGenerateClicked();
+}
+
+void MainWindow::onPromptLabBrowseFolderClicked()
+{
+    const QString folder = QFileDialog::getExistingDirectory(this,
+                                                             QStringLiteral("Select Prompt Lab asset folder"));
+    if (folder.isEmpty()) {
+        return;
+    }
+
+    QStringList merged = promptLabImportAssets();
+    if (!merged.contains(folder)) {
+        merged << folder;
+    }
+    m_promptLabImportAssetsEdit->setPlainText(merged.join(QStringLiteral("\n")));
+    onPromptLabGenerateClicked();
+}
+
+void MainWindow::onPromptLabClearAssetsClicked()
+{
+    if (m_promptLabImportAssetsEdit != nullptr) {
+        m_promptLabImportAssetsEdit->clear();
+    }
+    if (m_promptLabKbManualEdit != nullptr) {
+        m_promptLabKbManualEdit->clear();
+    }
+    if (m_promptLabKbFilter != nullptr) {
+        m_promptLabKbFilter->clear();
+    }
+    if (m_promptLabKbAssetsList != nullptr) {
+        m_promptLabKbAssetsList->clearSelection();
+    }
+    refreshKbAssetList();
+    onPromptLabGenerateClicked();
+    m_statusLabel->setText(QStringLiteral("Prompt Lab asset fields cleared."));
+}
+
+void MainWindow::onPromptLabCopyRecipeClicked()
+{
+    copyTextToClipboard(buildPromptLabRecipe(), QStringLiteral("Prompt Lab recipe copied to the clipboard."));
+    if (m_promptLabPreview != nullptr) {
+        m_promptLabPreview->setPlainText(buildPromptLabRecipe());
+    }
+}
+
+void MainWindow::onPromptLabAddSelectedKbAssetsClicked()
+{
+    const QStringList selected = promptLabSelectedKbAssets();
+    if (selected.isEmpty()) {
+        QMessageBox::information(this,
+                                 QStringLiteral("Prompt Lab"),
+                                 QStringLiteral("Select one or more indexed KB assets first."));
+        return;
+    }
+
+    QStringList merged = promptLabManualKbAssets();
+    for (const QString &item : selected) {
+        if (!merged.contains(item)) {
+            merged << item;
+        }
+    }
+    m_promptLabKbManualEdit->setText(merged.join(QStringLiteral("; ")));
+    onPromptLabGenerateClicked();
+    m_statusLabel->setText(QStringLiteral("Added %1 KB asset reference(s) to the recipe.").arg(selected.size()));
+}
+
+void MainWindow::onPromptLabKbFilterChanged(const QString &text)
+{
+    refreshKbAssetList(text);
+}
+
+void MainWindow::copyTextToClipboard(const QString &text, const QString &statusMessage)
+{
+    if (QApplication::clipboard() != nullptr) {
+        QApplication::clipboard()->setText(text);
+    }
+    if (m_statusLabel != nullptr) {
+        m_statusLabel->setText(statusMessage);
+    }
+}
+
+void MainWindow::refreshCodeBlockSelector()
+{
+    if (m_codeBlockCombo == nullptr || m_copyCodeBlockButton == nullptr) {
+        return;
+    }
+
+    m_codeBlockCombo->clear();
+    if (m_codeBlocks.isEmpty()) {
+        m_codeBlockCombo->addItem(QStringLiteral("No code blocks yet"));
+        m_codeBlockCombo->setEnabled(false);
+        m_copyCodeBlockButton->setEnabled(false);
+        return;
+    }
+
+    m_codeBlockCombo->setEnabled(true);
+    m_copyCodeBlockButton->setEnabled(true);
+    for (int i = 0; i < m_codeBlocks.size(); ++i) {
+        m_codeBlockCombo->addItem(m_codeBlocks.at(i).label, i);
+    }
+}
+
+void MainWindow::onCopyLastAnswerClicked()
+{
+    if (m_lastAssistantMessage.trimmed().isEmpty()) {
+        m_statusLabel->setText(QStringLiteral("There is no assistant answer to copy yet."));
+        return;
+    }
+    copyTextToClipboard(m_lastAssistantMessage, QStringLiteral("Last assistant answer copied to the clipboard."));
+}
+
+void MainWindow::onCopyTranscriptClicked()
+{
+    QStringList lines;
+    for (const TranscriptEntry &entry : m_transcriptEntries) {
+        lines << QStringLiteral("%1> %2").arg(transcriptPrefix(entry.role), entry.text);
+        lines << QString();
+    }
+    copyTextToClipboard(lines.join(QStringLiteral("\n")).trimmed(), QStringLiteral("Transcript copied to the clipboard."));
+}
+
+void MainWindow::onCopySelectedCodeBlockClicked()
+{
+    const int index = m_codeBlockCombo != nullptr ? m_codeBlockCombo->currentData().toInt() : -1;
+    if (index < 0 || index >= m_codeBlocks.size()) {
+        m_statusLabel->setText(QStringLiteral("There is no code block to copy."));
+        return;
+    }
+    copyTextToClipboard(m_codeBlocks.at(index).code,
+                        QStringLiteral("Copied %1 to the clipboard.").arg(m_codeBlocks.at(index).label));
+}
+
+void MainWindow::onTranscriptContextMenuRequested(const QPoint &pos)
+{
+    if (m_transcript == nullptr) {
+        return;
+    }
+
+    QMenu menu(this);
+    auto *copySelectionAction = menu.addAction(QStringLiteral("Copy selection"));
+    copySelectionAction->setEnabled(!m_transcript->textCursor().selectedText().isEmpty());
+    auto *copyLastAnswerAction = menu.addAction(QStringLiteral("Copy last answer"));
+    copyLastAnswerAction->setEnabled(!m_lastAssistantMessage.trimmed().isEmpty());
+    auto *copyTranscriptAction = menu.addAction(QStringLiteral("Copy transcript"));
+    auto *copyCodeBlockAction = menu.addAction(QStringLiteral("Copy selected code block"));
+    copyCodeBlockAction->setEnabled(!m_codeBlocks.isEmpty());
+
+    QAction *chosen = menu.exec(m_transcript->viewport()->mapToGlobal(pos));
+    if (chosen == copySelectionAction) {
+        m_transcript->copy();
+    } else if (chosen == copyLastAnswerAction) {
+        onCopyLastAnswerClicked();
+    } else if (chosen == copyTranscriptAction) {
+        onCopyTranscriptClicked();
+    } else if (chosen == copyCodeBlockAction) {
+        onCopySelectedCodeBlockClicked();
+    }
+}
+
 void MainWindow::showAboutAmelia()
 {
     QMessageBox::about(this,
                        QStringLiteral("About Amelia"),
-                       QStringLiteral("<b>Amelia Qt6</b><br><br>"
-                                      "A local offline coding tool and assistant built with C++ and Qt6.<br><br>"
-                                      "This build includes colored transcript/diagnostic views, local Ollama inference, persistent knowledge, prompt budgeting, outline-first document generation, Prompt Lab asset training helpers, and operational diagnostics."));
+                       QStringLiteral("<b>Amelia Qt6 v%1</b><br><br>"
+                                      "A local offline coding and knowledge assistant built with C++ and Qt6.<br><br>"
+                                      "This 6.5 build adds a richer formatted transcript, code-block copying, whole-answer copying, a stronger Prompt Lab with KB-aware asset selection, persistent knowledge, prompt budgeting, outline-first document generation, and operational diagnostics.")
+                           .arg(appVersionString()));
 }
 
 void MainWindow::showAboutQtDialog()
