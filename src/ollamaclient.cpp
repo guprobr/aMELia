@@ -393,8 +393,7 @@ void OllamaClient::parseBufferedLines(bool flushRemainder)
     };
 
     while (true) {
-        const int newlineIndex = m_buffer.indexOf('
-');
+        const int newlineIndex = m_buffer.indexOf('\n');
         if (newlineIndex < 0) {
             break;
         }
@@ -439,8 +438,7 @@ void OllamaClient::flushPendingUiDelta(bool force)
 
     const bool shouldFlush = force
             || m_pendingUiDelta.size() >= 220
-            || m_pendingUiDelta.contains(QLatin1Char('
-'))
+            || m_pendingUiDelta.contains(QLatin1Char('\n'))
             || m_pendingUiDelta.endsWith(QLatin1Char('.'))
             || m_pendingUiDelta.endsWith(QLatin1Char(':'));
 
