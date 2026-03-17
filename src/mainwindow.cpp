@@ -179,7 +179,7 @@ MainWindow::MainWindow(QWidget *parent)
     auto *chatLayout = new QVBoxLayout(chatPane);
 
     auto *titleRow = new QHBoxLayout();
-    auto *title = new QLabel(QStringLiteral("Amelia Qt6 - Local coding and cloud assistant"), chatPane);
+    auto *title = new QLabel(QStringLiteral("aMELia Qt6 "), chatPane);
     title->setStyleSheet(QStringLiteral("font-weight: 700; font-size: 18px;"));
     auto *logoLabel = new QLabel(chatPane);
     const QPixmap logoPixmap(QStringLiteral(":/branding/amelia_logo.svg"));
@@ -809,7 +809,7 @@ void MainWindow::showAboutAmelia()
     QMessageBox::about(this,
                        QStringLiteral("About Amelia"),
                        QStringLiteral("<b>Amelia Qt6</b><br><br>"
-                                      "A local offline coding and cloud assistant built with C++ and Qt6.<br><br>"
+                                      "A local offline coding tool and assistant built with C++ and Qt6.<br><br>"
                                       "This build includes colored transcript/diagnostic views, local Ollama inference, persistent knowledge, prompt budgeting, outline-first document generation, Prompt Lab asset training helpers, and operational diagnostics."));
 }
 

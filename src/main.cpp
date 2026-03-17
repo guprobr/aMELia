@@ -44,7 +44,7 @@ R"JSON({
   "maxRelevantMemories": 6,
   "externalSearchTimeoutMs": 15000,
   "ollamaProbeTimeoutMs": 10000,
-  "ollamaResponseHeadersTimeoutMs": 180000,
+  "ollamaResponseHeadersTimeoutMs": 1800000,
   "ollamaFirstTokenTimeoutMs": 600000,
   "ollamaInactivityTimeoutMs": 300000,
   "ollamaTotalTimeoutMs": 0,
