@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Amelia Qt6
+GenericName=Local-first WRCP Assistant
+Comment=Local-first WRCP, Linux and systems engineering assistant
+Exec=amelia_qt6
+Icon=amelia_qt6
+Terminal=false
+Categories=Development;Utility;
+Keywords=WRCP;Kubernetes;Linux;Qt;Ollama;
+StartupNotify=true

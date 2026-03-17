@@ -1,0 +1,3 @@
+2026-03-16T10:55:11Z strategy build failed: cannot migrate instances in a single controller configuration
+2026-03-16T10:55:12Z hint: use stop-start for AIO-SX or single-controller subclouds
+2026-03-16T10:56:02Z dcmanager strategy-config requires worker-apply-type, storage-apply-type, max-parallel-workers and alarm-restriction-type
