@@ -74,7 +74,11 @@ private:
     QString m_pendingUiDelta;
     QString m_activeBaseUrl;
     QString m_activeModel;
-    QStringList m_stopSequences = { QStringLiteral("<END>") };
+    QStringList m_stopSequences = {
+        QStringLiteral("<END>"),
+        QStringLiteral("<|im_end|>"),
+        QStringLiteral("<|endoftext|>")
+    };
     bool m_emittedStarted = false;
     bool m_receivedHeaders = false;
     bool m_receivedFirstToken = false;

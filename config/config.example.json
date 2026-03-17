@@ -1,9 +1,10 @@
 {
   "ollamaBaseUrl": "http://127.0.0.1:11434",
-  "ollamaModel": "qwen2.5-coder:14b",
+  "ollamaModel": "qwen3-coder:30b",
   "docsRoot": "./docs/sample",
   "dataRoot": "${HOME}/.amelia_qt6",
   "knowledgeRoot": "${HOME}/.amelia_qt6/knowledge",
+
   "enableExternalSearch": false,
   "autoSuggestExternalSearch": false,
   "probeOllamaOnStartup": true,
@@ -11,15 +12,30 @@
   "autoPersistMemories": true,
   "autoSaveSessionSummary": true,
   "seedDocsIntoKnowledge": true,
-  "enableSemanticRetrieval": true,
+
+  "_comment_semanticRetrieval": "Keep false — the built-in hash embedder is NOT a real semantic model. Enable only after wiring nomic-embed-text or similar via Ollama.",
+  "enableSemanticRetrieval": false,
+
   "preferOutlinePlanning": true,
   "requireGroundingForProjectQuestions": true,
-  "includeAssistantHistoryInPrompt": false,
+
+  "_comment_assistantHistory": "Enabled so the model can see what it already said and avoid contradictions across turns.",
+  "includeAssistantHistoryInPrompt": true,
+
   "searxngUrl": "http://127.0.0.1:8080/search",
-  "maxHistoryTurns": 4,
-  "maxLocalHits": 3,
+
+  "_comment_historyTurns": "8 turns gives the model meaningful multi-turn continuity.",
+  "maxHistoryTurns": 8,
+
+  "_comment_localHits": "8 hits fills the local budget and reduces the chance the model falls back to training priors.",
+  "maxLocalHits": 8,
+
   "maxExternalHits": 2,
   "maxRelevantMemories": 6,
+
+  "_comment_ragThreshold": "Raise if the model still hallucinates from weak hits. Lower if too many valid prompts are refused.",
+  "ragConfidenceThreshold": 1.2,
+
   "externalSearchTimeoutMs": 15000,
   "ollamaProbeTimeoutMs": 10000,
   "ollamaResponseHeadersTimeoutMs": 180000,
@@ -27,13 +43,19 @@
   "ollamaInactivityTimeoutMs": 300000,
   "ollamaTotalTimeoutMs": 0,
   "maxDiagnosticLines": 400,
+
   "ollamaNumCtx": 32768,
-  "ollamaTemperature": 0.15,
-  "ollamaTopP": 0.95,
-  "ollamaTopK": 50,
-  "ollamaRepeatPenalty": 1.12,
+
+  "_comment_temperature": "0.05 is deliberately low for factual/grounded answers. Raise toward 0.3 only for creative/brainstorming tasks.",
+  "ollamaTemperature": 0.05,
+  "ollamaTopP": 0.90,
+  "ollamaTopK": 40,
+  "ollamaRepeatPenalty": 1.10,
   "ollamaPresencePenalty": 0.0,
   "ollamaFrequencyPenalty": 0.0,
-  "ollamaStopSequences": ["<END>"],
+
+  "_comment_stopSequences": "<|im_end|> and <|endoftext|> are native Qwen3 end-of-turn tokens. They prevent the model from generating garbage after finishing its answer.",
+  "ollamaStopSequences": ["<END>", "<|im_end|>", "<|endoftext|>"],
+
   "externalSearchDomainAllowlist": []
 }

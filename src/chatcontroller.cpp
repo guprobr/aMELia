@@ -64,16 +64,16 @@ bool containsAny(const QString &text, const QStringList &needles)
 QString ansiColorForCategory(const QString &category)
 {
     const QString lower = category.toLower();
-    if (lower == QStringLiteral("backend")) return QStringLiteral("\x1b[38;5;39m");
-    if (lower == QStringLiteral("search")) return QStringLiteral("\x1b[38;5;46m");
-    if (lower == QStringLiteral("rag")) return QStringLiteral("\x1b[38;5;44m");
-    if (lower == QStringLiteral("memory")) return QStringLiteral("\x1b[38;5;208m");
-    if (lower == QStringLiteral("planner")) return QStringLiteral("\x1b[38;5;141m");
+    if (lower == QStringLiteral("backend"))   return QStringLiteral("\x1b[38;5;39m");
+    if (lower == QStringLiteral("search"))    return QStringLiteral("\x1b[38;5;46m");
+    if (lower == QStringLiteral("rag"))       return QStringLiteral("\x1b[38;5;44m");
+    if (lower == QStringLiteral("memory"))    return QStringLiteral("\x1b[38;5;208m");
+    if (lower == QStringLiteral("planner"))   return QStringLiteral("\x1b[38;5;141m");
     if (lower == QStringLiteral("guardrail")) return QStringLiteral("\x1b[38;5;196m");
-    if (lower == QStringLiteral("ingest")) return QStringLiteral("\x1b[38;5;220m");
-    if (lower == QStringLiteral("startup")) return QStringLiteral("\x1b[38;5;213m");
-    if (lower == QStringLiteral("budget")) return QStringLiteral("\x1b[38;5;51m");
-    if (lower == QStringLiteral("chat")) return QStringLiteral("\x1b[38;5;177m");
+    if (lower == QStringLiteral("ingest"))    return QStringLiteral("\x1b[38;5;220m");
+    if (lower == QStringLiteral("startup"))   return QStringLiteral("\x1b[38;5;213m");
+    if (lower == QStringLiteral("budget"))    return QStringLiteral("\x1b[38;5;51m");
+    if (lower == QStringLiteral("chat"))      return QStringLiteral("\x1b[38;5;177m");
     return QStringLiteral("\x1b[0m");
 }
 
@@ -225,6 +225,7 @@ void ChatController::sendUserPrompt(const QString &prompt, bool allowExternalSea
     QString localContext;
     QString localUi;
     int retrievedHits = 0;
+    double bestHitScore = 0.0;
 
     if (outlinePlan.enabled && !outlinePlan.sections.isEmpty()) {
         QStringList promptSections;
@@ -244,13 +245,17 @@ void ChatController::sendUserPrompt(const QString &prompt, bool allowExternalSea
                 }
                 seen.insert(key);
                 uniqueHits.push_back(hit);
+                if (hit.rerankScore > bestHitScore) {
+                    bestHitScore = hit.rerankScore;
+                }
             }
             retrievedHits += uniqueHits.size();
             if (uniqueHits.isEmpty()) {
                 continue;
             }
 
-            const QString sectionPromptContext = trimForBudget(m_rag->formatHitsForPrompt(uniqueHits), m_outlineOnlyFirstPass ? 700 : 1400);
+            // Richer source attribution so the model knows exactly which file each claim comes from.
+            const QString sectionPromptContext = trimForBudget(m_rag->formatHitsForPrompt(uniqueHits), m_outlineOnlyFirstPass ? 1400 : 2800);
             promptSections << QStringLiteral("SECTION: %1\nOBJECTIVE: %2\nSECTION_CONTEXT:\n%3")
                               .arg(section.title,
                                    section.objective,
@@ -285,12 +290,21 @@ void ChatController::sendUserPrompt(const QString &prompt, bool allowExternalSea
 
         const QVector<RagHit> localHits = m_rag->searchHits(trimmed, m_config.maxLocalHits, intent);
         retrievedHits = localHits.size();
-        localContext = trimForBudget(m_rag->formatHitsForPrompt(localHits), m_outlineOnlyFirstPass ? 2200 : 5200);
+        if (!localHits.isEmpty()) {
+            bestHitScore = localHits.first().rerankScore;
+        }
+        // Raised local budget: more grounded text = fewer hallucinations.
+        localContext = trimForBudget(m_rag->formatHitsForPrompt(localHits), m_outlineOnlyFirstPass ? 4800 : 9600);
         localUi = m_rag->formatHitsForUi(localHits);
     }
 
     emit localSourcesReady(localUi.isEmpty() ? QStringLiteral("<none>") : localUi);
-    addDiagnostic(QStringLiteral("rag"), QStringLiteral("Retrieved %1 local hit(s) from %2 source(s)").arg(retrievedHits).arg(m_rag->sourceCount()));
+    addDiagnostic(QStringLiteral("rag"), QStringLiteral("Retrieved %1 local hit(s) from %2 source(s); best rerank score=%3")
+                  .arg(retrievedHits).arg(m_rag->sourceCount())
+                  .arg(QString::number(bestHitScore, 'f', 2)));
+
+    // Store best score so startGeneration() can inject a low-confidence warning.
+    m_lastBestHitScore = bestHitScore;
 
     const bool shouldSearch = allowExternalSearch
             && m_searchBroker->isEnabled()
@@ -595,19 +609,33 @@ void ChatController::startGeneration(const QString &prompt,
                                      const QString &memoryContext)
 {
     const bool needsGrounding = promptRequiresGrounding(prompt);
-    const bool hasGrounding = !localContext.trimmed().isEmpty() || !externalContext.trimmed().isEmpty();
-    if (m_config.requireGroundingForProjectQuestions && needsGrounding && !hasGrounding) {
+    const bool hasAnyContext = !localContext.trimmed().isEmpty() || !externalContext.trimmed().isEmpty();
+
+    // Hard refusal: needs grounding, zero context returned.
+    if (m_config.requireGroundingForProjectQuestions && needsGrounding && !hasAnyContext) {
         const QString refusal = buildGroundingRefusal(prompt);
-        addDiagnostic(QStringLiteral("guardrail"), QStringLiteral("Refused ungrounded answer for project-scoped prompt"));
+        addDiagnostic(QStringLiteral("guardrail"), QStringLiteral("Refused ungrounded answer for project-scoped prompt (no context)"));
         onModelFinished(refusal);
         return;
     }
+
+    // Build prompt messages, optionally injecting a low-confidence warning
+    // so the model knows its RAG context is weak before it starts generating.
+    const bool contextIsWeak = hasAnyContext && (m_lastBestHitScore < m_config.ragConfidenceThreshold);
 
     const QVector<LlmChatMessage> messages = buildPromptMessages(prompt,
                                                                  localContext,
                                                                  externalContext,
                                                                  memoryContext,
-                                                                 m_currentSummary);
+                                                                 m_currentSummary,
+                                                                 contextIsWeak);
+    if (contextIsWeak) {
+        addDiagnostic(QStringLiteral("guardrail"),
+                      QStringLiteral("Low-confidence context (best rerank=%1 < threshold=%2); injected warning into prompt")
+                      .arg(QString::number(m_lastBestHitScore, 'f', 2))
+                      .arg(QString::number(m_config.ragConfidenceThreshold, 'f', 2)));
+    }
+
     int totalChars = 0;
     for (const LlmChatMessage &message : messages) {
         totalChars += message.content.size();
@@ -628,44 +656,81 @@ QVector<LlmChatMessage> ChatController::buildPromptMessages(const QString &userP
                                                             const QString &localContext,
                                                             const QString &externalContext,
                                                             const QString &memoryContext,
-                                                            const QString &sessionSummary) const
+                                                            const QString &sessionSummary,
+                                                            bool contextIsWeak) const
 {
-    const int localBudget = m_outlineOnlyFirstPass ? 2400 : 4200;
-    const int externalBudget = m_outlineOnlyFirstPass ? 700 : 1200;
-    const int memoryBudget = 600;
-    const int summaryBudget = 900;
-    const int outlineBudget = 1200;
-    const int historyBudget = 900;
+    // Raised budgets: feeding more grounded text reduces the chance the model
+    // fills gaps with training priors.
+    const int localBudget    = m_outlineOnlyFirstPass ? 4800  : 9600;
+    const int externalBudget = m_outlineOnlyFirstPass ? 1400  : 2400;
+    const int memoryBudget   = 900;
+    const int summaryBudget  = 1200;
+    const int outlineBudget  = 1400;
+    const int historyBudget  = 2400;
 
     QVector<LlmChatMessage> messages;
     messages.reserve(4);
 
+    // -----------------------------------------------------------------------
+    // System message — strict grounding contract
+    // -----------------------------------------------------------------------
     messages.push_back({
         QStringLiteral("system"),
         QStringLiteral(
-            "You are Amelia, a local offline coding and cloud assistant. "
-            "Answer only from the provided context and the current user request. "
-            "If the answer is not supported by the provided context, say exactly: 'I don't know based on the provided context.' "
-            "Do not guess. Do not invent files, classes, methods, APIs, commands, configuration, project structure, system state, or capabilities. "
-            "Prefer short, factual answers. Never claim you executed tools, inspected files, or accessed the internet unless the context explicitly shows that result.")
+            "You are Amelia, a local offline coding and cloud operations assistant.\n"
+            "\n"
+            "STRICT GROUNDING RULE: Your answer must be derived ONLY from the LOCAL_CONTEXT "
+            "and EXTERNAL_CONTEXT sections that follow. Those sections are your sole "
+            "authoritative sources.\n"
+            "\n"
+            "If the context does not contain sufficient information to answer, respond with "
+            "exactly: 'I don't know based on the provided context.'\n"
+            "\n"
+            "Do NOT use your training knowledge to fill gaps in the context.\n"
+            "Do NOT invent file names, class names, commands, API calls, YAML keys, "
+            "configuration values, or any project-specific detail.\n"
+            "If you catch yourself about to write something not explicitly in the context, "
+            "stop and use the fallback sentence instead.\n"
+            "\n"
+            "Prefer short, factual, direct answers. When you cite a fact, name the source "
+            "file from the context header (e.g. 'per config.yaml:').")
     });
 
+    // -----------------------------------------------------------------------
+    // Developer message — runtime rules + optional mode flags
+    // -----------------------------------------------------------------------
     QStringList developerSections;
     developerSections << QStringLiteral(
         "RUNTIME_RULES:\n"
-        "- Treat LOCAL_CONTEXT and EXTERNAL_CONTEXT as the only authoritative sources for project-specific claims.\n"
-        "- If context is missing or ambiguous, refuse with the exact fallback sentence instead of speculating.\n"
-        "- Do not continue hidden reasoning or role-play.\n"
-        "- End the final answer with <END>.");
+        "- Before writing each sentence, silently verify: is every claim directly supported "
+        "by LOCAL_CONTEXT or EXTERNAL_CONTEXT?\n"
+        "- If a claim is not supported, do not write it. Use the fallback sentence.\n"
+        "- Never supplement missing context with training knowledge.\n"
+        "- Treat any claim about file paths, class names, commands, or config keys as "
+        "grounded only if the exact string appears verbatim in the context.\n"
+        "- Do not role-play, continue hidden reasoning, or break character.\n"
+        "- End every response with <END>.");
+
+    // If the best RAG hit scored below the confidence threshold, warn the model
+    // explicitly so it is primed to apply extra caution.
+    if (contextIsWeak) {
+        developerSections << QStringLiteral(
+            "CONTEXT_QUALITY_WARNING:\n"
+            "The retrieved context has a low relevance score for this query. "
+            "Be extra conservative: only state what is unambiguously present in the context. "
+            "If in doubt, use the fallback sentence.");
+    }
 
     if (m_outlineOnlyFirstPass) {
         developerSections << QStringLiteral(
             "FIRST_PASS_MODE:\n"
-            "Return only a compact outline with assumptions, prerequisites, phases, validation gates, rollback points, and appendix items in markdown.");
+            "Return only a compact outline with assumptions, prerequisites, phases, "
+            "validation gates, rollback points, and appendix items in markdown.");
     } else if (!m_currentOutlinePlanPrompt.trimmed().isEmpty()) {
         developerSections << QStringLiteral(
             "DOCUMENT_MODE:\n"
-            "Follow DOCUMENT_OUTLINE_PLAN and compose the answer section by section using only the supplied evidence.");
+            "Follow DOCUMENT_OUTLINE_PLAN and compose the answer section by section "
+            "using only the supplied evidence.");
     }
 
     const QString memoryTrimmed = trimForBudget(memoryContext, memoryBudget);
@@ -685,6 +750,9 @@ QVector<LlmChatMessage> ChatController::buildPromptMessages(const QString &userP
 
     messages.push_back({QStringLiteral("developer"), developerSections.join(QStringLiteral("\n\n"))});
 
+    // -----------------------------------------------------------------------
+    // User message — context + optional history + the actual request
+    // -----------------------------------------------------------------------
     QStringList userSections;
     const QString localTrimmed = trimForBudget(localContext, localBudget);
     if (!localTrimmed.trimmed().isEmpty()) {
@@ -696,6 +764,7 @@ QVector<LlmChatMessage> ChatController::buildPromptMessages(const QString &userP
         userSections << QStringLiteral("EXTERNAL_CONTEXT:\n%1").arg(externalTrimmed);
     }
 
+    // History — walk newest-first to fill the budget, then reverse.
     QStringList historyLines;
     int historyChars = 0;
     const QVector<Message> history = trimmedHistory();
@@ -818,6 +887,7 @@ QString ChatController::buildBackendSummary() const
              .arg(m_config.ollamaTopK)
              .arg(m_config.ollamaRepeatPenalty, 0, 'f', 2);
     lines << QStringLiteral("Grounding required for project questions: %1").arg(m_config.requireGroundingForProjectQuestions ? QStringLiteral("yes") : QStringLiteral("no"));
+    lines << QStringLiteral("RAG confidence threshold: %1").arg(m_config.ragConfidenceThreshold, 0, 'f', 2);
     lines << QStringLiteral("Assistant history in prompt: %1").arg(m_config.includeAssistantHistoryInPrompt ? QStringLiteral("yes") : QStringLiteral("no"));
     lines << QStringLiteral("Storage root: %1").arg(m_storage != nullptr ? m_storage->dataRoot() : QStringLiteral("<none>"));
     lines << QStringLiteral("Knowledge root: %1").arg(m_storage != nullptr ? m_storage->knowledgeRoot() : QStringLiteral("<none>"));

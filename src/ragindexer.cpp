@@ -394,8 +394,11 @@ int RagIndexer::reindex()
         source.fileSizeBytes = info.size();
 
         if (ok && !text.trimmed().isEmpty()) {
-            constexpr int chunkSize = 1400;
-            constexpr int overlap = 220;
+        // Larger chunks keep procedures and code blocks intact.
+        // 2800 chars ≈ 500-600 tokens; overlap of 420 ensures boundary sentences
+        // are not silently split across adjacent chunks.
+        constexpr int chunkSize = 2800;
+        constexpr int overlap = 420;
             int offset = 0;
             int chunkIndex = 0;
             while (offset < text.size()) {
@@ -583,7 +586,11 @@ QVector<RagHit> RagIndexer::searchHits(const QString &query,
         const double semantic = m_semanticEnabled ? qMax(0.0f, EmbeddingClient::cosineSimilarity(queryEmbedding, chunk.embedding)) : 0.0;
         const double role = roleBias(intent, chunk.sourceRole, preferredRoles);
         const double finalScore = lexical * 0.55 + semantic * 2.8 + role;
-        if (finalScore <= 0.45) {
+        // When semantic retrieval is disabled the semantic score is always 0,
+        // so the effective maximum is lexical * 0.55 + role.
+        // Use a tighter threshold in lexical-only mode to reduce noise hits.
+        const double threshold = m_semanticEnabled ? 0.45 : 0.90;
+        if (finalScore <= threshold) {
             continue;
         }
 
@@ -637,14 +644,14 @@ QString RagIndexer::formatHitsForPrompt(const QVector<RagHit> &hits) const
 {
     QStringList lines;
     for (const RagHit &hit : hits) {
-        lines << QStringLiteral("[%1 | role=%2 | type=%3 | chunk=%4 | rerank=%5 | lexical=%6 | semantic=%7] %8")
+        // Explicit source attribution on its own line so the model can cite
+        // the file name in its answer rather than guessing.
+        lines << QStringLiteral("--- Source: %1 | role=%2 | type=%3 | chunk=%4 | rerank=%5 ---\n%6")
                      .arg(hit.fileName,
                           hit.sourceRole,
                           hit.sourceType,
                           QString::number(hit.chunkIndex),
                           QString::number(hit.rerankScore, 'f', 2),
-                          QString::number(hit.lexicalScore, 'f', 2),
-                          QString::number(hit.semanticScore, 'f', 2),
                           hit.excerpt);
     }
     return lines.join(QStringLiteral("\n\n"));

@@ -116,7 +116,16 @@ QVector<MemoryRecord> MemoryManager::findRelevant(const QString &query, int limi
 
     QString normalized = query.toLower();
     normalized.replace(QRegularExpression(QStringLiteral("[^a-z0-9._-]+")), QStringLiteral(" "));
-    const QStringList terms = normalized.split(QLatin1Char(' '), Qt::SkipEmptyParts);
+    const QStringList rawTerms = normalized.split(QLatin1Char(' '), Qt::SkipEmptyParts);
+
+    // Filter out very short tokens (e.g. "api", "pod", "log") that would
+    // spuriously match almost every memory record and dilute relevance ranking.
+    QStringList terms;
+    for (const QString &t : rawTerms) {
+        if (t.size() >= 4) {
+            terms << t;
+        }
+    }
 
     struct ScoredMemory {
         MemoryRecord memory;

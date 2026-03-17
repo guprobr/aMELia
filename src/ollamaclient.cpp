@@ -64,6 +64,15 @@ void OllamaClient::generate(const QString &baseUrl,
     }
     payload.insert(QStringLiteral("options"), options);
 
+    // Qwen3 extended-thinking suppression.
+    // Setting think=false (Ollama >=0.9) or enable_thinking=false tells the
+    // model not to emit a hidden <think>...</think> reasoning block.  This
+    // reduces first-token latency and prevents thinking tokens from bleeding
+    // through if sanitizeVisibleText ever misses a partial tag.
+    // The field is silently ignored by older Ollama versions, so it is safe
+    // to send unconditionally.
+    payload.insert(QStringLiteral("think"), false);
+
     m_reply = m_network.post(request, QJsonDocument(payload).toJson(QJsonDocument::Compact));
     if (m_reply == nullptr) {
         emit responseError(QStringLiteral("Failed to create Ollama network request."));

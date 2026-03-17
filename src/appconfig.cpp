@@ -213,6 +213,7 @@ AppConfig AppConfigLoader::load(const QString &path, QString *errorMessage)
     config.ollamaRepeatPenalty = readDoubleValue(obj, QStringLiteral("ollamaRepeatPenalty"), config.ollamaRepeatPenalty, 0.0);
     config.ollamaPresencePenalty = readDoubleValue(obj, QStringLiteral("ollamaPresencePenalty"), config.ollamaPresencePenalty, 0.0);
     config.ollamaFrequencyPenalty = readDoubleValue(obj, QStringLiteral("ollamaFrequencyPenalty"), config.ollamaFrequencyPenalty, 0.0);
+    config.ragConfidenceThreshold = readDoubleValue(obj, QStringLiteral("ragConfidenceThreshold"), config.ragConfidenceThreshold, 0.0);
 
     const bool hasLegacyRequestTimeout = obj.contains(QStringLiteral("requestTimeoutMs"));
     const int legacyRequestTimeoutMs = hasLegacyRequestTimeout

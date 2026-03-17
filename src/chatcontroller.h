@@ -85,11 +85,15 @@ private:
                          const QString &localContext,
                          const QString &externalContext,
                          const QString &memoryContext);
+
+    // contextIsWeak: true when best RAG rerank score < ragConfidenceThreshold.
+    // When true, a CONTEXT_QUALITY_WARNING is injected into the developer block.
     QVector<LlmChatMessage> buildPromptMessages(const QString &userPrompt,
                                                 const QString &localContext,
                                                 const QString &externalContext,
                                                 const QString &memoryContext,
-                                                const QString &sessionSummary) const;
+                                                const QString &sessionSummary,
+                                                bool contextIsWeak = false) const;
     QString buildGroundingRefusal(const QString &prompt) const;
     bool promptRequiresGrounding(const QString &prompt) const;
     bool promptLooksCasual(const QString &prompt) const;
@@ -133,6 +137,11 @@ private:
     int m_startupChunkCount = 0;
     int m_streamChunkCount = 0;
     qint64 m_requestStartedMs = 0;
+
+    // Best rerank score from the most recent RAG search — used to decide
+    // whether to inject a CONTEXT_QUALITY_WARNING into the prompt.
+    double m_lastBestHitScore = 0.0;
+
     bool m_busy = false;
     bool m_outlineOnlyFirstPass = false;
 };

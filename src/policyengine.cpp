@@ -38,22 +38,24 @@ QString PolicyEngine::buildSanitizedSearchQuery(const QString &prompt) const
 bool PolicyEngine::shouldUseExternalSearch(const QString &prompt) const
 {
     const QString lower = prompt.toLower();
+
+    // Only trigger external search for queries that genuinely need upstream /
+    // internet-fresh information.  Removed "error", "failed", "kubernetes",
+    // "harbor", "docs", "documentation" — these are extremely common in
+    // local operational prompts where the answer lives in the knowledge base,
+    // not on the internet.  Keeping them caused unnecessary SearXNG round-trips
+    // and leaked query content for purely local questions.
     const QStringList triggerTerms = {
-        QStringLiteral("latest"),
-        QStringLiteral("release notes"),
         QStringLiteral("cve"),
         QStringLiteral("upstream"),
-        QStringLiteral("bug"),
+        QStringLiteral("release notes"),
         QStringLiteral("known issue"),
-        QStringLiteral("kubernetes"),
-        QStringLiteral("containerd"),
-        QStringLiteral("harbor"),
-        QStringLiteral("error"),
-        QStringLiteral("failed"),
         QStringLiteral("regression"),
         QStringLiteral("workaround"),
-        QStringLiteral("docs"),
-        QStringLiteral("documentation")
+        QStringLiteral("latest version"),
+        QStringLiteral("changelog"),
+        QStringLiteral("security advisory"),
+        QStringLiteral("patch notes")
     };
 
     for (const QString &term : triggerTerms) {
