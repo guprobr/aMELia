@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Amelia Qt6
+GenericName=Local coding and cloud assistant
+Comment=Local offline coding and cloud assistant
+Exec=amelia_qt6
+Icon=amelia_qt6
+Terminal=false
+Categories=Development;Utility;
+Keywords=Coding;Cloud;Linux;Qt;Ollama;Kubernetes;
+StartupNotify=true

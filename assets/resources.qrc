@@ -1,0 +1,5 @@
+<RCC>
+  <qresource prefix="/branding">
+    <file>amelia_logo.svg</file>
+  </qresource>
+</RCC>
