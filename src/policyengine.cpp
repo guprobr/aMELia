@@ -37,17 +37,40 @@ QString PolicyEngine::buildSanitizedSearchQuery(const QString &prompt) const
 
 bool PolicyEngine::shouldUseExternalSearch(const QString &prompt) const
 {
-    const QString lower = prompt.toLower();
+    const QString lower = prompt.toLower().trimmed();
 
-    // Only trigger external search for queries that genuinely need upstream /
-    // internet-fresh information.  Removed "error", "failed", "kubernetes",
-    // "harbor", "docs", "documentation" — these are extremely common in
-    // local operational prompts where the answer lives in the knowledge base,
-    // not on the internet.  Keeping them caused unnecessary SearXNG round-trips
-    // and leaked query content for purely local questions.
-    const QStringList triggerTerms = {
-        QStringLiteral("cve"),
-        QStringLiteral("upstream"),
+    if (lower.isEmpty()) {
+        return false;
+    }
+
+    const auto containsAny = [](const QString &text, const QStringList &needles) -> bool {
+        for (const QString &needle : needles) {
+            if (!needle.isEmpty() && text.contains(needle, Qt::CaseInsensitive)) {
+                return true;
+            }
+        }
+        return false;
+    };
+
+    // Strong explicit user intent to use the web/internet.
+    static const QRegularExpression explicitInternetIntent(
+        QStringLiteral("\\b(?:search(?:\\s+the)?\\s+(?:internet|web|online)|"
+                       "search\\s+online|web\\s+search|internet\\s+search|"
+                       "look\\s+up|lookup|find\\s+online|browse\\s+for|google)\\b"),
+        QRegularExpression::CaseInsensitiveOption);
+
+    if (explicitInternetIntent.match(lower).hasMatch()) {
+        return true;
+    }
+
+    // Signals that usually indicate public / fresh / upstream information.
+    const QStringList publicInfoSignals = {
+        QStringLiteral("who is"),
+        QStringLiteral("what is"),
+        QStringLiteral("latest"),
+        QStringLiteral("current"),
+        QStringLiteral("recent"),
+        QStringLiteral("news"),
         QStringLiteral("release notes"),
         QStringLiteral("known issue"),
         QStringLiteral("regression"),
@@ -55,13 +78,50 @@ bool PolicyEngine::shouldUseExternalSearch(const QString &prompt) const
         QStringLiteral("latest version"),
         QStringLiteral("changelog"),
         QStringLiteral("security advisory"),
-        QStringLiteral("patch notes")
+        QStringLiteral("patch notes"),
+        QStringLiteral("upstream"),
+        QStringLiteral("cve")
     };
 
-    for (const QString &term : triggerTerms) {
-        if (lower.contains(term)) {
-            return true;
-        }
+    // Strongly local / repo-oriented signals. These should stay grounded in
+    // Amelia's KB unless the user explicitly asked to search the internet.
+    const QStringList localOnlySignals = {
+        QStringLiteral("my project"),
+        QStringLiteral("our project"),
+        QStringLiteral("this project"),
+        QStringLiteral("this repo"),
+        QStringLiteral("our repo"),
+        QStringLiteral("repository"),
+        QStringLiteral("codebase"),
+        QStringLiteral("source tree"),
+        QStringLiteral("this file"),
+        QStringLiteral("that file"),
+        QStringLiteral("which file"),
+        QStringLiteral("class "),
+        QStringLiteral("function "),
+        QStringLiteral("method "),
+        QStringLiteral("cmakelists"),
+        QStringLiteral("in amelia"),
+        QStringLiteral("our code"),
+        QStringLiteral("knowledge base"),
+        QStringLiteral("kb")
+    };
+
+    const bool looksLocal = containsAny(lower, localOnlySignals);
+    const bool looksPublicOrFresh = containsAny(lower, publicInfoSignals);
+
+    if (looksPublicOrFresh && !looksLocal) {
+        return true;
+    }
+
+    // A direct "who is X" style query should usually go external unless the
+    // user clearly framed it as a KB-only question.
+    static const QRegularExpression identityQuestion(
+        QStringLiteral("^\\s*(?:who\\s+is|what\\s+is)\\b"),
+        QRegularExpression::CaseInsensitiveOption);
+
+    if (identityQuestion.match(lower).hasMatch() && !looksLocal) {
+        return true;
     }
 
     return false;

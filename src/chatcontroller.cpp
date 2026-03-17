@@ -15,6 +15,8 @@
 #include <QDir>
 #include <QFileInfo>
 #include <QSet>
+#include <QMetaObject>
+#include <QtConcurrent/QtConcurrentRun>
 #include <QTimer>
 
 #include <cstdio>
@@ -113,8 +115,27 @@ ChatController::ChatController(const AppConfig &config, QObject *parent)
     m_rag->setDocsRoot(m_storage->knowledgeRoot());
     m_rag->setCachePath(m_storage->ragCachePath());
     m_rag->setSemanticEnabled(m_config.enableSemanticRetrieval);
+
+    m_reindexWatcher = new QFutureWatcher<int>(this);
+    connect(m_reindexWatcher, &QFutureWatcher<int>::finished, this, [this]() {
+        const int chunks = m_reindexWatcher->result();
+        m_startupChunkCount = chunks;
+        m_indexing = false;
+
+        emit indexingProgressChanged(qMax(1, chunks), qMax(1, chunks), QStringLiteral("Index complete."));
+        emit indexingStateChanged(false);
+        emit systemNotice(QStringLiteral("Local docs indexed: %1 chunks across %2 sources.").arg(chunks).arg(m_rag->sourceCount()));
+        addDiagnostic(QStringLiteral("rag"),
+                      QStringLiteral("Reindex finished: %1 chunks across %2 source(s)")
+                          .arg(chunks)
+                          .arg(m_rag->sourceCount()));
+        refreshSourceInventory();
+        emit statusChanged(QStringLiteral("Ready."));
+        emit backendSummaryReady(buildBackendSummary());
+    });
+
     if (!m_rag->loadCache()) {
-        m_startupChunkCount = m_rag->reindex();
+        QTimer::singleShot(0, this, &ChatController::reindexDocs);
     } else {
         m_startupChunkCount = m_rag->chunkCount();
     }
@@ -153,6 +174,10 @@ ChatController::ChatController(const AppConfig &config, QObject *parent)
 
 ChatController::~ChatController()
 {
+    if (m_reindexWatcher != nullptr && m_reindexWatcher->isRunning()) {
+        m_reindexWatcher->waitForFinished();
+    }
+
     delete m_outlinePlanner;
     delete m_policy;
     delete m_rag;
@@ -166,6 +191,11 @@ ChatController::~ChatController()
 
 void ChatController::sendUserPrompt(const QString &prompt, bool allowExternalSearch)
 {
+    if (m_indexing) {
+        emit systemNotice(QStringLiteral("Local docs are still indexing. Wait for reindex to finish before sending a prompt."));
+        return;
+    }
+
     if (m_busy) {
         emit systemNotice(QStringLiteral("A request is already running. Stop it before sending a new one."));
         return;
@@ -341,15 +371,36 @@ void ChatController::stopGeneration()
 
 void ChatController::reindexDocs()
 {
+    if (m_busy) {
+        emit systemNotice(QStringLiteral("Stop the current generation before reindexing local docs."));
+        return;
+    }
+
+    if (m_indexing) {
+        emit systemNotice(QStringLiteral("A document reindex is already running."));
+        return;
+    }
+
+    m_indexing = true;
+    m_rag->setSemanticEnabled(m_config.enableSemanticRetrieval);
+
+    emit indexingStateChanged(true);
+    emit indexingProgressChanged(0, 0, QStringLiteral("Preparing local docs..."));
     emit statusChanged(QStringLiteral("Reindexing local docs..."));
     addDiagnostic(QStringLiteral("rag"), QStringLiteral("Reindex started for %1").arg(m_storage->knowledgeRoot()));
-    m_rag->setSemanticEnabled(m_config.enableSemanticRetrieval);
-    const int chunks = m_rag->reindex();
-    emit systemNotice(QStringLiteral("Local docs indexed: %1 chunks across %2 sources.").arg(chunks).arg(m_rag->sourceCount()));
-    addDiagnostic(QStringLiteral("rag"), QStringLiteral("Reindex finished: %1 chunks across %2 source(s)").arg(chunks).arg(m_rag->sourceCount()));
-    refreshSourceInventory();
-    emit statusChanged(QStringLiteral("Ready."));
-    emit backendSummaryReady(buildBackendSummary());
+
+    m_reindexWatcher->setFuture(QtConcurrent::run([this]() -> int {
+        return m_rag->reindex([this](int value, int maximum, const QString &label) {
+            QMetaObject::invokeMethod(this,
+                                      [this, value, maximum, label]() {
+                                          emit indexingProgressChanged(value, maximum, label);
+                                          if (!label.trimmed().isEmpty()) {
+                                              emit statusChanged(label);
+                                          }
+                                      },
+                                      Qt::QueuedConnection);
+        });
+    }));
 }
 
 void ChatController::probeBackend()
@@ -580,9 +631,19 @@ void ChatController::emitStartupNotices()
                            m_config.ollamaBaseUrl,
                            m_config.dataRoot,
                            m_storage->knowledgeRoot()));
-    emit systemNotice(QStringLiteral("Local docs ready on startup: %1 chunks across %2 sources.").arg(m_startupChunkCount).arg(m_rag->sourceCount()));
+
+    if (m_indexing) {
+        emit systemNotice(QStringLiteral("Local docs are being indexed in the background..."));
+    } else {
+        emit systemNotice(QStringLiteral("Local docs ready on startup: %1 chunks across %2 sources.")
+                          .arg(m_startupChunkCount)
+                          .arg(m_rag->sourceCount()));
+    }
+
     addDiagnostic(QStringLiteral("startup"), QStringLiteral("Amelia booted with data root %1").arg(m_storage->dataRoot()));
-    addDiagnostic(QStringLiteral("startup"), QStringLiteral("Knowledge root %1 contains %2 indexed source(s)").arg(m_storage->knowledgeRoot()).arg(m_rag->sourceCount()));
+    addDiagnostic(QStringLiteral("startup"), QStringLiteral("Knowledge root %1 contains %2 indexed source(s)")
+                  .arg(m_storage->knowledgeRoot())
+                  .arg(m_rag->sourceCount()));
     refreshConversationList();
     refreshMemoryPanel();
     refreshSummaryPanel();

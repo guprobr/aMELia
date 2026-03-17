@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.21)
-project(amelia_qt6 VERSION 6.5 LANGUAGES CXX)
+project(amelia_qt6 LANGUAGES CXX)
 
 include(GNUInstallDirs)
 
@@ -10,7 +10,7 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-find_package(Qt6 REQUIRED COMPONENTS Core Widgets Network)
+find_package(Qt6 REQUIRED COMPONENTS Core Widgets Network Concurrent)
 
 qt_standard_project_setup()
 
@@ -53,11 +53,7 @@ target_link_libraries(amelia_qt6
         Qt6::Core
         Qt6::Widgets
         Qt6::Network
-)
-
-target_compile_definitions(amelia_qt6
-    PRIVATE
-        AMELIA_VERSION_STRING="${PROJECT_VERSION}"
+        Qt6::Concurrent
 )
 
 install(TARGETS amelia_qt6

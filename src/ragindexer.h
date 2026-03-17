@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QString>
+#include <functional>
 #include <QStringList>
 #include <QVector>
 
@@ -26,7 +27,7 @@ public:
     void setCachePath(const QString &cachePath);
     void setSemanticEnabled(bool enabled);
 
-    int reindex();
+    int reindex(const std::function<void(int, int, const QString &)> &progressCallback = {});
     bool loadCache();
     bool saveCache() const;
 

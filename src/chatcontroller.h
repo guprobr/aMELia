@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QObject>
+#include <QFutureWatcher>
 #include <QString>
 #include <QStringList>
 #include <QVector>
@@ -59,6 +60,8 @@ signals:
     void diagnosticsReady(const QString &text);
     void sourceInventoryReady(const QString &text);
     void backendModelsReady(const QStringList &models, const QString &currentModel);
+    void indexingStateChanged(bool active);
+    void indexingProgressChanged(int value, int maximum, const QString &label);
 
 private slots:
     void onSearchStarted(const QString &query, const QString &requestUrl);
@@ -134,6 +137,7 @@ private:
     QString m_pendingMemoryContext;
     QStringList m_availableModels;
     QStringList m_diagnostics;
+    QFutureWatcher<int> *m_reindexWatcher = nullptr;
     int m_startupChunkCount = 0;
     int m_streamChunkCount = 0;
     qint64 m_requestStartedMs = 0;
@@ -143,5 +147,6 @@ private:
     double m_lastBestHitScore = 0.0;
 
     bool m_busy = false;
+    bool m_indexing = false;
     bool m_outlineOnlyFirstPass = false;
 };

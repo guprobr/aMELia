@@ -3,7 +3,6 @@
 #include <QMainWindow>
 #include <QString>
 #include <QStringList>
-#include <QVector>
 
 class QAction;
 class QCheckBox;
@@ -13,8 +12,8 @@ class QLineEdit;
 class QListWidget;
 class QListWidgetItem;
 class QPlainTextEdit;
+class QProgressBar;
 class QPushButton;
-class QTextBrowser;
 class QTextEdit;
 class QTimer;
 
@@ -39,6 +38,8 @@ public:
                              const QString &currentId);
     void setStatusText(const QString &text);
     void setBusy(bool busy);
+    void setIndexingActive(bool active);
+    void setIndexingProgress(int value, int maximum, const QString &label);
     void setBackendSummary(const QString &text);
     void setDiagnostics(const QString &text);
     void setSourceInventory(const QString &text);
@@ -72,48 +73,15 @@ private slots:
     void onPromptLabGenerateClicked();
     void onPromptLabUseClicked();
     void onPromptLabImportAssetsClicked();
-    void onPromptLabBrowseAssetsClicked();
-    void onPromptLabBrowseFolderClicked();
-    void onPromptLabClearAssetsClicked();
-    void onPromptLabCopyRecipeClicked();
-    void onPromptLabAddSelectedKbAssetsClicked();
-    void onPromptLabKbFilterChanged(const QString &text);
-    void onCopyLastAnswerClicked();
-    void onCopyTranscriptClicked();
-    void onCopySelectedCodeBlockClicked();
-    void onTranscriptContextMenuRequested(const QPoint &pos);
 
 private:
-    struct TranscriptEntry {
-        QString role;
-        QString text;
-    };
-
-    struct CodeBlockItem {
-        QString label;
-        QString code;
-    };
-
     void appendTranscriptEntry(const QString &role, const QString &text);
     void appendDiagnosticEntry(const QString &timestamp, const QString &category, const QString &message);
     void rebuildTranscriptFromPlainText(const QString &text);
     void rebuildDiagnosticsFromPlainText(const QString &text);
     QString buildPromptLabRecipe() const;
-    void renderTranscript();
-    QString renderMessageBodyHtml(const QString &text,
-                                  const QString &role,
-                                  int assistantIndex,
-                                  int &globalCodeIndex,
-                                  int &perMessageCodeIndex);
-    QString markdownFragmentToHtml(const QString &markdown) const;
-    void refreshCodeBlockSelector();
-    void refreshKbAssetList(const QString &filterText = QString());
-    QStringList promptLabImportAssets() const;
-    QStringList promptLabSelectedKbAssets() const;
-    QStringList promptLabManualKbAssets() const;
-    void copyTextToClipboard(const QString &text, const QString &statusMessage);
 
-    QTextBrowser *m_transcript = nullptr;
+    QTextEdit *m_transcript = nullptr;
     QPlainTextEdit *m_input = nullptr;
     QPlainTextEdit *m_privacyPreview = nullptr;
     QPlainTextEdit *m_localSources = nullptr;
@@ -129,13 +97,9 @@ private:
     QComboBox *m_modelCombo = nullptr;
     QComboBox *m_promptLabPresetCombo = nullptr;
     QLineEdit *m_promptLabGoal = nullptr;
-    QPlainTextEdit *m_promptLabImportAssetsEdit = nullptr;
-    QLineEdit *m_promptLabKbFilter = nullptr;
-    QListWidget *m_promptLabKbAssetsList = nullptr;
-    QLineEdit *m_promptLabKbManualEdit = nullptr;
+    QLineEdit *m_promptLabAssets = nullptr;
     QTextEdit *m_promptLabNotes = nullptr;
     QTextEdit *m_promptLabPreview = nullptr;
-    QComboBox *m_codeBlockCombo = nullptr;
     QPushButton *m_sendButton = nullptr;
     QPushButton *m_stopButton = nullptr;
     QPushButton *m_reindexButton = nullptr;
@@ -145,27 +109,17 @@ private:
     QPushButton *m_rememberButton = nullptr;
     QPushButton *m_importFilesButton = nullptr;
     QPushButton *m_importFolderButton = nullptr;
-    QPushButton *m_copyLastAnswerButton = nullptr;
-    QPushButton *m_copyTranscriptButton = nullptr;
-    QPushButton *m_copyCodeBlockButton = nullptr;
     QPushButton *m_promptLabGenerateButton = nullptr;
     QPushButton *m_promptLabUseButton = nullptr;
     QPushButton *m_promptLabImportButton = nullptr;
-    QPushButton *m_promptLabBrowseAssetsButton = nullptr;
-    QPushButton *m_promptLabBrowseFolderButton = nullptr;
-    QPushButton *m_promptLabClearAssetsButton = nullptr;
-    QPushButton *m_promptLabCopyRecipeButton = nullptr;
-    QPushButton *m_promptLabAddSelectedKbButton = nullptr;
     QLabel *m_statusLabel = nullptr;
+    QProgressBar *m_taskProgressBar = nullptr;
     QLabel *m_busyIndicatorLabel = nullptr;
     QTimer *m_busyIndicatorTimer = nullptr;
     QStringList m_busyFrames;
-    QStringList m_knownKbAssets;
-    QVector<TranscriptEntry> m_transcriptEntries;
-    QVector<CodeBlockItem> m_codeBlocks;
-    QString m_lastAssistantMessage;
     int m_busyFrameIndex = 0;
     bool m_streamingAssistant = false;
+    bool m_indexingActive = false;
     bool m_updatingConversationList = false;
     bool m_updatingModelList = false;
     QAction *m_aboutAmeliaAction = nullptr;

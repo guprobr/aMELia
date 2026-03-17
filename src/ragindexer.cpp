@@ -365,7 +365,7 @@ void RagIndexer::rebuildEmbeddings()
     }
 }
 
-int RagIndexer::reindex()
+int RagIndexer::reindex(const std::function<void(int, int, const QString &)> &progressCallback)
 {
     m_chunks.clear();
     m_sources.clear();
@@ -374,11 +374,29 @@ int RagIndexer::reindex()
         return 0;
     }
 
-    QDirIterator it(m_docsRoot, extensions(), QDir::Files, QDirIterator::Subdirectories);
-    while (it.hasNext()) {
-        const QString path = it.next();
+    QStringList paths;
+    QDirIterator gatherIt(m_docsRoot, extensions(), QDir::Files, QDirIterator::Subdirectories);
+    while (gatherIt.hasNext()) {
+        paths.push_back(gatherIt.next());
+    }
+
+    const int totalFiles = paths.size();
+    if (progressCallback) {
+        progressCallback(0, totalFiles > 0 ? totalFiles : 1, QStringLiteral("Scanning local documents..."));
+    }
+
+    for (int i = 0; i < totalFiles; ++i) {
+        const QString path = paths.at(i);
         const QFileInfo info(path);
         const QString sourceType = detectSourceType(info);
+
+        if (progressCallback) {
+            const QString phaseLabel = (info.suffix().compare(QStringLiteral("pdf"), Qt::CaseInsensitive) == 0)
+                    ? QStringLiteral("Extracting PDF %1 / %2: %3").arg(i + 1).arg(totalFiles).arg(info.fileName())
+                    : QStringLiteral("Indexing file %1 / %2: %3").arg(i + 1).arg(totalFiles).arg(info.fileName());
+            progressCallback(i, totalFiles, phaseLabel);
+        }
+
         QString text;
         QString extractor;
         const bool ok = readTextFile(path, &text, &extractor);
@@ -394,11 +412,11 @@ int RagIndexer::reindex()
         source.fileSizeBytes = info.size();
 
         if (ok && !text.trimmed().isEmpty()) {
-        // Larger chunks keep procedures and code blocks intact.
-        // 2800 chars ≈ 500-600 tokens; overlap of 420 ensures boundary sentences
-        // are not silently split across adjacent chunks.
-        constexpr int chunkSize = 2800;
-        constexpr int overlap = 420;
+            // Larger chunks keep procedures and code blocks intact.
+            // 2800 chars ≈ 500-600 tokens; overlap of 420 ensures boundary sentences
+            // are not silently split across adjacent chunks.
+            constexpr int chunkSize = 2800;
+            constexpr int overlap = 420;
             int offset = 0;
             int chunkIndex = 0;
             while (offset < text.size()) {
@@ -421,6 +439,14 @@ int RagIndexer::reindex()
         }
 
         m_sources.push_back(source);
+
+        if (progressCallback) {
+            progressCallback(i + 1, totalFiles, QStringLiteral("Indexed %1 / %2: %3").arg(i + 1).arg(totalFiles).arg(info.fileName()));
+        }
+    }
+
+    if (progressCallback) {
+        progressCallback(0, 0, QStringLiteral("Building embeddings..."));
     }
 
     rebuildEmbeddings();
@@ -435,7 +461,18 @@ int RagIndexer::reindex()
         return a.fileName < b.fileName;
     });
 
+    if (progressCallback) {
+        progressCallback(0, 0, QStringLiteral("Saving cache..."));
+    }
+
     saveCache();
+
+    if (progressCallback) {
+        progressCallback(totalFiles > 0 ? totalFiles : 1,
+                         totalFiles > 0 ? totalFiles : 1,
+                         QStringLiteral("Index complete."));
+    }
+
     return m_chunks.size();
 }
 

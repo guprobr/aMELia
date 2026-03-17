@@ -11,10 +11,6 @@
 #include <QStringList>
 #include <QTextStream>
 
-#ifndef AMELIA_VERSION_STRING
-#define AMELIA_VERSION_STRING "6.5"
-#endif
-
 namespace {
 QString preferredUserConfigPath()
 {
@@ -181,7 +177,6 @@ int main(int argc, char *argv[])
     QApplication app(argc, argv);
     QApplication::setWindowIcon(QIcon(QStringLiteral(":/branding/amelia_logo.svg")));
     QApplication::setApplicationName(QStringLiteral("amelia_qt6"));
-    QApplication::setApplicationVersion(QStringLiteral(AMELIA_VERSION_STRING));
     QApplication::setOrganizationName(QStringLiteral("guprobr"));
 
     QStringList bootstrapMessages;
@@ -244,6 +239,10 @@ int main(int argc, char *argv[])
                      &window, &MainWindow::setConversationList);
     QObject::connect(&controller, &ChatController::busyChanged,
                      &window, &MainWindow::setBusy);
+    QObject::connect(&controller, &ChatController::indexingStateChanged,
+                     &window, &MainWindow::setIndexingActive);
+    QObject::connect(&controller, &ChatController::indexingProgressChanged,
+                     &window, &MainWindow::setIndexingProgress);
     QObject::connect(&controller, &ChatController::statusChanged,
                      &window, &MainWindow::setStatusText);
     QObject::connect(&controller, &ChatController::backendSummaryReady,
