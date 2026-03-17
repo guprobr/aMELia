@@ -1,4 +1,4 @@
-# Amelia Qt6 v6.5
+# Amelia Qt6 v6.69
 
 Amelia is a local offline Qt6/C++ coding and cloud assistant. It talks to a local Ollama server, keeps state on disk under `~/.amelia_qt6`, and can optionally use sanitized external search.
 
