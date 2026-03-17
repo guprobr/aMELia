@@ -8,10 +8,12 @@ class QAction;
 class QCheckBox;
 class QComboBox;
 class QLabel;
+class QLineEdit;
 class QListWidget;
 class QListWidgetItem;
 class QPlainTextEdit;
 class QPushButton;
+class QTextEdit;
 class QTimer;
 
 class MainWindow : public QMainWindow {
@@ -65,9 +67,18 @@ private slots:
     void showAboutAmelia();
     void showAboutQtDialog();
     void onClearMemoriesTriggered();
+    void onPromptLabGenerateClicked();
+    void onPromptLabUseClicked();
+    void onPromptLabImportAssetsClicked();
 
 private:
-    QPlainTextEdit *m_transcript = nullptr;
+    void appendTranscriptEntry(const QString &role, const QString &text);
+    void appendDiagnosticEntry(const QString &timestamp, const QString &category, const QString &message);
+    void rebuildTranscriptFromPlainText(const QString &text);
+    void rebuildDiagnosticsFromPlainText(const QString &text);
+    QString buildPromptLabRecipe() const;
+
+    QTextEdit *m_transcript = nullptr;
     QPlainTextEdit *m_input = nullptr;
     QPlainTextEdit *m_privacyPreview = nullptr;
     QPlainTextEdit *m_localSources = nullptr;
@@ -76,11 +87,16 @@ private:
     QPlainTextEdit *m_backendSummary = nullptr;
     QPlainTextEdit *m_memoriesView = nullptr;
     QPlainTextEdit *m_sessionSummary = nullptr;
-    QPlainTextEdit *m_diagnostics = nullptr;
+    QTextEdit *m_diagnostics = nullptr;
     QPlainTextEdit *m_sourceInventory = nullptr;
     QListWidget *m_conversationsList = nullptr;
     QCheckBox *m_externalSearchCheck = nullptr;
     QComboBox *m_modelCombo = nullptr;
+    QComboBox *m_promptLabPresetCombo = nullptr;
+    QLineEdit *m_promptLabGoal = nullptr;
+    QLineEdit *m_promptLabAssets = nullptr;
+    QTextEdit *m_promptLabNotes = nullptr;
+    QTextEdit *m_promptLabPreview = nullptr;
     QPushButton *m_sendButton = nullptr;
     QPushButton *m_stopButton = nullptr;
     QPushButton *m_reindexButton = nullptr;
@@ -90,6 +106,9 @@ private:
     QPushButton *m_rememberButton = nullptr;
     QPushButton *m_importFilesButton = nullptr;
     QPushButton *m_importFolderButton = nullptr;
+    QPushButton *m_promptLabGenerateButton = nullptr;
+    QPushButton *m_promptLabUseButton = nullptr;
+    QPushButton *m_promptLabImportButton = nullptr;
     QLabel *m_statusLabel = nullptr;
     QLabel *m_busyIndicatorLabel = nullptr;
     QTimer *m_busyIndicatorTimer = nullptr;

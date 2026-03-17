@@ -1,37 +1,72 @@
-# Amelia Qt6 v6.1
+# Amelia Qt6 v6.2
 
 Amelia is a local offline Qt6/C++ coding and cloud assistant. It talks to a local Ollama server, keeps state on disk under `~/.amelia_qt6`, and can optionally use sanitized external search.
 
-This v6.1 build focuses on reducing hallucinations in code, infrastructure, and project-specific answers.
+This v6.2 build keeps the anti-hallucination work from v6.1 and adds visual diagnostics plus a lightweight training-oriented Prompt Lab in the UI.
 
-## What changed in v6.1
+## What changed in v6.2
 
-### Anti-hallucination architecture
+### Colored diagnostics
 
-- switched Ollama calls from flat `/api/generate` prompting to structured `/api/chat`
-- separated `system`, `developer`, and `user` messages
-- added a strict offline coding/system prompt
-- added a hard refusal path for project-scoped questions with no grounded evidence
-- removed assistant-history recycling from prompts by default
-- stripped `<think>` and `<END>` markers from visible output
+Amelia now emits category-colored diagnostics in two places:
 
-### Safer coding defaults
+- terminal / console output with ANSI colors
+- the in-app **Diagnostics** tab with per-category colors
 
-Amelia now uses conservative generation defaults aimed at coding and cloud work:
+Diagnostic categories include:
 
-```json
-{
-  "ollamaTemperature": 0.15,
-  "ollamaTopP": 0.95,
-  "ollamaTopK": 50,
-  "ollamaRepeatPenalty": 1.12,
-  "ollamaPresencePenalty": 0.0,
-  "ollamaFrequencyPenalty": 0.0,
-  "ollamaStopSequences": ["<END>"]
-}
+- `backend`
+- `search`
+- `rag`
+- `memory`
+- `planner`
+- `guardrail`
+- `ingest`
+- `startup`
+- `budget`
+- `chat`
+
+To disable terminal colors, set:
+
+```bash
+export NO_COLOR=1
 ```
 
-### Grounding policy
+### Colored transcript
+
+The main conversation transcript is now rendered as rich text with distinct colors for:
+
+- user messages
+- assistant messages
+- system notices
+
+This makes long local sessions much easier to scan while testing prompts, grounding, and retrieval behavior.
+
+### Prompt Lab training helper tab
+
+A new **Prompt Lab** tab was added to the right-side panel. It is not a full model trainer, but it does make training-style preparation much easier.
+
+Prompt Lab lets you:
+
+- choose a preset such as `Code patch`, `Runbook / docs`, `Incident investigation`, or `Dataset from assets`
+- describe a concrete goal
+- list asset paths to import into the knowledge base
+- add extra notes, schema hints, style constraints, or supervision hints
+- generate a reusable grounded prompt recipe
+- preview a compact JSONL-style training example
+- copy that recipe straight into the main input box
+- import the listed assets into Amelia knowledge storage
+
+### Memory manager fixes merged
+
+This build also merges the recent memory fixes:
+
+- fixed regex escaping for platform/release extraction
+- restored `scoreMemory(...)` so linking succeeds again
+
+## Grounding and safety behavior
+
+Amelia still follows the v6.1 grounding rules.
 
 For project-scoped prompts such as questions about:
 
@@ -41,21 +76,11 @@ For project-scoped prompts such as questions about:
 - current indexed documentation
 - local filesystem or configuration state
 
-Amelia now refuses to guess when no supporting context is present and returns:
+Amelia refuses to guess when no supporting context is present and returns:
 
 ```text
 I don't know based on the provided context.
 ```
-
-### Timeouts
-
-This build keeps the phase-based timeout model:
-
-- `ollamaProbeTimeoutMs`
-- `ollamaResponseHeadersTimeoutMs`
-- `ollamaFirstTokenTimeoutMs`
-- `ollamaInactivityTimeoutMs`
-- `ollamaTotalTimeoutMs`
 
 ## Runtime layout
 
@@ -117,21 +142,10 @@ cmake --install .
 - icon: `${CMAKE_INSTALL_PREFIX}/share/icons/hicolor/scalable/apps/amelia_qt6.svg`
 - example config: `${CMAKE_INSTALL_PREFIX}/share/amelia_qt6/config/config.example.json`
 
-## Git default
-
-This v6.1 package is prepared with the repository default branch set to `master`.
-
-If you initialize a new remote manually:
-
-```bash
-git init -b master
-git add .
-git commit -m "Amelia Qt6 v6.1 anti-hallucination patch"
-```
-
 ## Notes
 
 - Amelia is intentionally local-first.
 - External search is disabled by default.
+- Prompt Lab helps prepare grounded prompt and JSONL-style samples, but it does not fine-tune models by itself.
 - Sample docs may still exist in `docs/sample/`; remove or replace them as needed for your own knowledge base.
 - PDF ingestion still depends on `pdftotext` being available on the system.

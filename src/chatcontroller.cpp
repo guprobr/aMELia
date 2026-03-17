@@ -17,6 +17,8 @@
 #include <QSet>
 #include <QTimer>
 
+#include <cstdio>
+
 namespace {
 QString nowIso()
 {
@@ -57,6 +59,34 @@ bool containsAny(const QString &text, const QStringList &needles)
         }
     }
     return false;
+}
+
+QString ansiColorForCategory(const QString &category)
+{
+    const QString lower = category.toLower();
+    if (lower == QStringLiteral("backend")) return QStringLiteral("\x1b[38;5;39m");
+    if (lower == QStringLiteral("search")) return QStringLiteral("\x1b[38;5;46m");
+    if (lower == QStringLiteral("rag")) return QStringLiteral("\x1b[38;5;44m");
+    if (lower == QStringLiteral("memory")) return QStringLiteral("\x1b[38;5;208m");
+    if (lower == QStringLiteral("planner")) return QStringLiteral("\x1b[38;5;141m");
+    if (lower == QStringLiteral("guardrail")) return QStringLiteral("\x1b[38;5;196m");
+    if (lower == QStringLiteral("ingest")) return QStringLiteral("\x1b[38;5;220m");
+    if (lower == QStringLiteral("startup")) return QStringLiteral("\x1b[38;5;213m");
+    if (lower == QStringLiteral("budget")) return QStringLiteral("\x1b[38;5;51m");
+    if (lower == QStringLiteral("chat")) return QStringLiteral("\x1b[38;5;177m");
+    return QStringLiteral("\x1b[0m");
+}
+
+void printDiagnosticToConsole(const QString &category, const QString &line)
+{
+    const QByteArray payload = line.toUtf8();
+    if (qEnvironmentVariableIsSet("NO_COLOR")) {
+        std::fprintf(stderr, "%s\n", payload.constData());
+    } else {
+        const QByteArray color = ansiColorForCategory(category).toUtf8();
+        std::fprintf(stderr, "%s%s\x1b[0m\n", color.constData(), payload.constData());
+    }
+    std::fflush(stderr);
 }
 }
 
@@ -942,6 +972,7 @@ void ChatController::addDiagnostic(const QString &category, const QString &messa
             .arg(QDateTime::currentDateTime().toString(QStringLiteral("yyyy-MM-dd hh:mm:ss")),
                  category,
                  message);
+    printDiagnosticToConsole(category, line);
     m_diagnostics.push_back(line);
     while (m_diagnostics.size() > m_config.maxDiagnosticLines) {
         m_diagnostics.removeFirst();

@@ -44,6 +44,69 @@ QVector<MemoryRecord> MemoryManager::loadAll(QString *errorMessage) const
     return m_storage->loadMemories(errorMessage);
 }
 
+int MemoryManager::scoreMemory(const MemoryRecord &memory, const QStringList &terms)
+{
+    if (terms.isEmpty()) {
+        return memory.pinned ? 1 : 0;
+    }
+
+    const QString key = memory.key.toLower();
+    const QString value = memory.value.toLower();
+    const QString category = memory.category.toLower();
+
+    int score = 0;
+    QSet<QString> matchedTerms;
+
+    for (const QString &term : terms) {
+        if (term.isEmpty() || matchedTerms.contains(term)) {
+            continue;
+        }
+
+        bool matched = false;
+
+        if (key == term) {
+            score += 40;
+            matched = true;
+        } else if (key.contains(term)) {
+            score += 24;
+            matched = true;
+        }
+
+        if (category == term) {
+            score += 20;
+            matched = true;
+        } else if (category.contains(term)) {
+            score += 12;
+            matched = true;
+        }
+
+        if (value.contains(term)) {
+            score += 10;
+            matched = true;
+        }
+
+        if (matched) {
+            matchedTerms.insert(term);
+        }
+    }
+
+    if (!matchedTerms.isEmpty()) {
+        score += matchedTerms.size() * 3;
+    }
+
+    if (memory.pinned) {
+        score += 8;
+    }
+
+    if (memory.confidence >= 0.95) {
+        score += 4;
+    } else if (memory.confidence >= 0.80) {
+        score += 2;
+    }
+
+    return score;
+}
+
 QVector<MemoryRecord> MemoryManager::findRelevant(const QString &query, int limit) const
 {
     QVector<MemoryRecord> memories = loadAll(nullptr);
@@ -200,7 +263,9 @@ QVector<MemoryRecord> MemoryManager::extractAutoMemories(const QString &userText
         items.push_back(memory);
     }
 
-    const QRegularExpression platformRegex(QStringLiteral("\b(?:platform|release)\s+(\d+\.\d+)\b"), QRegularExpression::CaseInsensitiveOption);
+    const QRegularExpression platformRegex(
+        QStringLiteral("\\b(?:platform|release)\\s+(\\d+\\.\\d+)\\b"),
+        QRegularExpression::CaseInsensitiveOption);
     const QRegularExpressionMatch match = platformRegex.match(trimmed);
     if (match.hasMatch()) {
         MemoryRecord memory;
@@ -257,21 +322,4 @@ QString MemoryManager::normalizeKey(const QString &text)
         key = QStringLiteral("memory-note");
     }
     return key.left(64);
-}
-
-int MemoryManager::scoreMemory(const MemoryRecord &memory, const QStringList &terms)
-{
-    const QString haystack = QStringLiteral("%1 %2 %3")
-            .arg(memory.key.toLower(), memory.value.toLower(), memory.category.toLower());
-
-    int score = 0;
-    for (const QString &term : terms) {
-        if (term.size() < 3) {
-            continue;
-        }
-        if (haystack.contains(term)) {
-            score += 10;
-        }
-    }
-    return score;
 }
