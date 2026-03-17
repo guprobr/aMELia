@@ -1,8 +1,8 @@
 #pragma once
 
 #include <QString>
-#include <functional>
 #include <QStringList>
+#include <functional>
 #include <QVector>
 
 #include "outlineplanner.h"

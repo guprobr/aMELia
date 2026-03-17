@@ -2,78 +2,71 @@
 
 Amelia is a local offline Qt6/C++ coding and cloud assistant. It talks to a local Ollama server, keeps state on disk under `~/.amelia_qt6`, and can optionally use sanitized external search.
 
-This v6.5 build upgrades the main answer surface and Prompt Lab instead of treating them like raw text boxes.
+This v6.5 build keeps the anti-hallucination work from v6.1, preserves the Prompt Lab workflow, and adds asynchronous PDF-aware indexing progress in the UI.
 
-## What changed in v6.5
+## What changed in v6.2
 
-### Richer formatted transcript output
+### Colored diagnostics
 
-The main transcript is now rendered as structured rich text cards instead of a plain colored stream.
+Amelia now emits category-colored diagnostics in two places:
 
-It now gives you:
+- terminal / console output with ANSI colors
+- the in-app **Diagnostics** tab with per-category colors
 
-- better spacing and readability for long answers
-- markdown-style paragraphs, lists, headings, and inline code rendered more cleanly
-- fenced code blocks rendered in dedicated code panels
-- clearer separation between `USER`, `ASSISTANT`, and `SYSTEM`
-- improved transcript restore behavior for multiline answers and code-heavy replies
+Diagnostic categories include:
 
-### Copy helpers for answers and code blocks
+- `backend`
+- `search`
+- `rag`
+- `memory`
+- `planner`
+- `guardrail`
+- `ingest`
+- `startup`
+- `budget`
+- `chat`
 
-The transcript toolbar now includes:
+To disable terminal colors, set:
 
-- **Copy last answer**
-- **Copy transcript**
-- **Copy code block** from a selector populated with the detected fenced blocks in the conversation output
+```bash
+export NO_COLOR=1
+```
 
-There is also a transcript context menu with the same copy actions.
+### Colored transcript
 
-This makes it much easier to:
+The main conversation transcript is now rendered as rich text with distinct colors for:
 
-- grab the whole assistant answer quickly
-- copy only one generated code block without manual selection
-- preserve formatting while reviewing long technical replies
+- user messages
+- assistant messages
+- system notices
 
-### Prompt Lab improvements
+This makes long local sessions much easier to scan while testing prompts, grounding, and retrieval behavior.
 
-Prompt Lab in v6.5 is more practical for real KB and patch workflows.
+### Prompt Lab training helper tab
 
-It now adds:
+A new **Prompt Lab** tab was added to the right-side panel. It is not a full model trainer, but it does make training-style preparation much easier.
 
-- more presets:
-  - `General grounding`
-  - `Code patch`
-  - `Runbook / docs`
-  - `Incident investigation`
-  - `Dataset from assets`
-  - `Executive summary`
-  - `Knowledge extraction`
-  - `KB-only analysis`
-  - `Migration / refactor plan`
-- a dedicated multiline area for **filesystem assets to import**
-- **Select files** and **Select folder** helpers
-- a filterable list of **already indexed knowledge-base assets**
-- the ability to add selected KB assets directly into the recipe
-- a dedicated field for **manual KB references** that are already in the knowledge base
-- a **Copy recipe** action in addition to **Use in input**
+Prompt Lab lets you:
 
-This means Prompt Lab can now work with both:
+- choose a preset such as `Code patch`, `Runbook / docs`, `Incident investigation`, or `Dataset from assets`
+- describe a concrete goal
+- list asset paths to import into the knowledge base
+- add extra notes, schema hints, style constraints, or supervision hints
+- generate a reusable grounded prompt recipe
+- preview a compact JSONL-style training example
+- copy that recipe straight into the main input box
+- import the listed assets into Amelia knowledge storage
 
-- assets that still need importing
-- assets that already exist in Amelia's indexed knowledge base
+### Memory manager fixes merged
 
-### Versioning visible in the UI
+This build also merges the recent memory fixes:
 
-Version `6.5` now appears in:
-
-- the main window title bar
-- the main header label
-- the **About Amelia** dialog
-- the CMake project version and application version metadata
+- fixed regex escaping for platform/release extraction
+- restored `scoreMemory(...)` so linking succeeds again
 
 ## Grounding and safety behavior
 
-Amelia still follows the grounding-first behavior from earlier builds.
+Amelia still follows the v6.1 grounding rules.
 
 For project-scoped prompts such as questions about:
 
@@ -154,5 +147,12 @@ cmake --install .
 - Amelia is intentionally local-first.
 - External search is disabled by default.
 - Prompt Lab helps prepare grounded prompt and JSONL-style samples, but it does not fine-tune models by itself.
+- Sample docs may still exist in `docs/sample/`; remove or replace them as needed for your own knowledge base.
 - PDF ingestion still depends on `pdftotext` being available on the system.
-- This build is aimed at making long technical answers easier to read and easier to copy back into real patch workflows.
+
+
+## What's new in v6.5
+
+- Asynchronous local document reindexing so `pdftotext` does not block the main UI thread.
+- Status-bar progress indicator for local indexing and PDF extraction.
+- Preserves the current Prompt Lab asset helpers and existing UI enhancements.

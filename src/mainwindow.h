@@ -73,6 +73,11 @@ private slots:
     void onPromptLabGenerateClicked();
     void onPromptLabUseClicked();
     void onPromptLabImportAssetsClicked();
+    void onPromptLabBrowseFilesClicked();
+    void onPromptLabBrowseFolderClicked();
+    void onPromptLabCopyRecipeClicked();
+    void onCopyLastAnswerClicked();
+    void onCopyCodeBlocksClicked();
 
 private:
     void appendTranscriptEntry(const QString &role, const QString &text);
@@ -80,6 +85,7 @@ private:
     void rebuildTranscriptFromPlainText(const QString &text);
     void rebuildDiagnosticsFromPlainText(const QString &text);
     QString buildPromptLabRecipe() const;
+    void insertTranscriptMessage(const QString &role, const QString &text);
 
     QTextEdit *m_transcript = nullptr;
     QPlainTextEdit *m_input = nullptr;
@@ -98,6 +104,7 @@ private:
     QComboBox *m_promptLabPresetCombo = nullptr;
     QLineEdit *m_promptLabGoal = nullptr;
     QLineEdit *m_promptLabAssets = nullptr;
+    QLineEdit *m_promptLabKbAssets = nullptr;
     QTextEdit *m_promptLabNotes = nullptr;
     QTextEdit *m_promptLabPreview = nullptr;
     QPushButton *m_sendButton = nullptr;
@@ -112,6 +119,11 @@ private:
     QPushButton *m_promptLabGenerateButton = nullptr;
     QPushButton *m_promptLabUseButton = nullptr;
     QPushButton *m_promptLabImportButton = nullptr;
+    QPushButton *m_promptLabBrowseFilesButton = nullptr;
+    QPushButton *m_promptLabBrowseFolderButton = nullptr;
+    QPushButton *m_promptLabCopyRecipeButton = nullptr;
+    QPushButton *m_copyLastAnswerButton = nullptr;
+    QPushButton *m_copyCodeBlocksButton = nullptr;
     QLabel *m_statusLabel = nullptr;
     QProgressBar *m_taskProgressBar = nullptr;
     QLabel *m_busyIndicatorLabel = nullptr;
@@ -119,6 +131,8 @@ private:
     QStringList m_busyFrames;
     int m_busyFrameIndex = 0;
     bool m_streamingAssistant = false;
+    int m_streamingAssistantStartPosition = -1;
+    QString m_lastAssistantMessage;
     bool m_indexingActive = false;
     bool m_updatingConversationList = false;
     bool m_updatingModelList = false;

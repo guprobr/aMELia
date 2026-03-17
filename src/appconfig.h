@@ -17,8 +17,8 @@ struct AppConfig {
     QString knowledgeRoot;
 
     // --- RAG / retrieval ---
-    bool enableExternalSearch = false;
-    bool autoSuggestExternalSearch = false;
+    bool enableExternalSearch = true;
+    bool autoSuggestExternalSearch = true;
     bool probeOllamaOnStartup = true;
     bool restoreLastConversationOnStartup = true;
     bool autoPersistMemories = true;
@@ -81,7 +81,7 @@ struct AppConfig {
     // context "confident enough" to answer a grounded question.
     // Raise this if the model still hallucinates from weak hits; lower if
     // too many valid prompts are refused.
-    double ragConfidenceThreshold = 1.2;
+    double ragConfidenceThreshold = 0.95;
 };
 
 class AppConfigLoader {

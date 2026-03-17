@@ -15,9 +15,9 @@
 #include <QDir>
 #include <QFileInfo>
 #include <QSet>
+#include <QTimer>
 #include <QMetaObject>
 #include <QtConcurrent/QtConcurrentRun>
-#include <QTimer>
 
 #include <cstdio>
 
@@ -720,8 +720,6 @@ QVector<LlmChatMessage> ChatController::buildPromptMessages(const QString &userP
                                                             const QString &sessionSummary,
                                                             bool contextIsWeak) const
 {
-    // Raised budgets: feeding more grounded text reduces the chance the model
-    // fills gaps with training priors.
     const int localBudget    = m_outlineOnlyFirstPass ? 4800  : 9600;
     const int externalBudget = m_outlineOnlyFirstPass ? 1400  : 2400;
     const int memoryBudget   = 900;
@@ -732,61 +730,87 @@ QVector<LlmChatMessage> ChatController::buildPromptMessages(const QString &userP
     QVector<LlmChatMessage> messages;
     messages.reserve(4);
 
-    // -----------------------------------------------------------------------
-    // System message — strict grounding contract
-    // -----------------------------------------------------------------------
     messages.push_back({
         QStringLiteral("system"),
         QStringLiteral(
-            "You are Amelia, a local offline coding and cloud operations assistant.\n"
+            "You are Amelia, a local coding and cloud operations assistant.\n"
             "\n"
-            "STRICT GROUNDING RULE: Your answer must be derived ONLY from the LOCAL_CONTEXT "
-            "and EXTERNAL_CONTEXT sections that follow. Those sections are your sole "
-            "authoritative sources.\n"
+            "GROUNDING RULE: Your answer must stay grounded in the supplied LOCAL_CONTEXT "
+            "and EXTERNAL_CONTEXT sections.\n"
             "\n"
-            "If the context does not contain sufficient information to answer, respond with "
-            "exactly: 'I don't know based on the provided context.'\n"
+            "LOCAL_CONTEXT contains indexed local knowledge, files, notes, logs, and KB "
+            "material retrieved by Amelia.\n"
             "\n"
-            "Do NOT use your training knowledge to fill gaps in the context.\n"
+            "EXTERNAL_CONTEXT contains web results or external references retrieved by "
+            "Amelia at runtime. If EXTERNAL_CONTEXT is present, you may use it as valid "
+            "evidence.\n"
+            "\n"
+            "Do NOT claim that you cannot search the internet or access external sources "
+            "when EXTERNAL_CONTEXT has been provided. Refer to it naturally as retrieved "
+            "external context or retrieved web context.\n"
+            "\n"
+            "Do NOT use built-in model knowledge to fill gaps in the supplied context.\n"
             "Do NOT invent file names, class names, commands, API calls, YAML keys, "
-            "configuration values, or any project-specific detail.\n"
-            "If you catch yourself about to write something not explicitly in the context, "
-            "stop and use the fallback sentence instead.\n"
+            "configuration values, URLs, or project-specific details.\n"
             "\n"
-            "Prefer short, factual, direct answers. When you cite a fact, name the source "
-            "file from the context header (e.g. 'per config.yaml:').")
+            "If LOCAL_CONTEXT or EXTERNAL_CONTEXT contains relevant material, answer from "
+            "the strongest supported facts and themes, even when the context is partial, "
+            "broad, or imperfect. Summarize what is supported before discussing limits.\n"
+            "\n"
+            "Use the exact fallback sentence only when BOTH LOCAL_CONTEXT and "
+            "EXTERNAL_CONTEXT are absent, empty, or clearly unrelated to the request: "
+            "'I couldn't find enough grounded context to answer that safely.'\n"
+            "\n"
+            "For broad KB exploration requests such as asking what Amelia learned from new "
+            "assets, summarize the strongest recurring topics, themes, source types, or "
+            "representative areas visible in the retrieved context instead of refusing.\n"
+            "\n"
+            "When the user asks for a TOC, chapters, or a structured outline, you may "
+            "derive that structure from recurring supported themes in the supplied context.\n"
+            "\n"
+            "Prefer short, factual, direct answers. When practical, cite the supporting "
+            "file name or section named in the supplied context.")
     });
 
-    // -----------------------------------------------------------------------
-    // Developer message — runtime rules + optional mode flags
-    // -----------------------------------------------------------------------
     QStringList developerSections;
     developerSections << QStringLiteral(
         "RUNTIME_RULES:\n"
-        "- Before writing each sentence, silently verify: is every claim directly supported "
-        "by LOCAL_CONTEXT or EXTERNAL_CONTEXT?\n"
-        "- If a claim is not supported, do not write it. Use the fallback sentence.\n"
-        "- Never supplement missing context with training knowledge.\n"
-        "- Treat any claim about file paths, class names, commands, or config keys as "
-        "grounded only if the exact string appears verbatim in the context.\n"
+        "- Before writing each sentence, silently verify that every factual claim is "
+        "supported by LOCAL_CONTEXT or EXTERNAL_CONTEXT.\n"
+        "- If a claim is unsupported, omit it. Do not invent bridging details.\n"
+        "- Never supplement missing context with built-in model knowledge.\n"
+        "- Treat project-specific claims about file paths, class names, commands, config "
+        "keys, versions, or behaviors as grounded only if they appear explicitly in the "
+        "supplied context.\n"
+        "- If EXTERNAL_CONTEXT is present, you may summarize it and answer from it.\n"
+        "- Do not say you are unable to browse the internet when EXTERNAL_CONTEXT exists; "
+        "the application may already have fetched external information for you.\n"
+        "- When context is broad but relevant, summarize the strongest supported themes, "
+        "patterns, or representative points instead of reflexively refusing.\n"
+        "- Use the fallback sentence only when there is genuinely no usable grounded "
+        "evidence for the request.\n"
+        "- If the user asks what you learned from the KB or new assets, summarize the most "
+        "visible supported topics or document families present in LOCAL_CONTEXT.\n"
+        "- If the user asks for a chapter list, TOC, or outline and the context contains "
+        "relevant themes, produce the outline from those themes before refusing.\n"
         "- Do not role-play, continue hidden reasoning, or break character.\n"
         "- End every response with <END>.");
 
-    // If the best RAG hit scored below the confidence threshold, warn the model
-    // explicitly so it is primed to apply extra caution.
     if (contextIsWeak) {
         developerSections << QStringLiteral(
             "CONTEXT_QUALITY_WARNING:\n"
             "The retrieved context has a low relevance score for this query. "
-            "Be extra conservative: only state what is unambiguously present in the context. "
-            "If in doubt, use the fallback sentence.");
+            "Be conservative and avoid overclaiming, but still try to summarize the best "
+            "supported facts, themes, or structure that are clearly present before "
+            "refusing.");
     }
 
     if (m_outlineOnlyFirstPass) {
         developerSections << QStringLiteral(
             "FIRST_PASS_MODE:\n"
-            "Return only a compact outline with assumptions, prerequisites, phases, "
-            "validation gates, rollback points, and appendix items in markdown.");
+            "Return a compact markdown outline or TOC grounded in the supplied evidence. "
+            "When the evidence is partial but relevant, prefer a best-effort outline over "
+            "a refusal.");
     } else if (!m_currentOutlinePlanPrompt.trimmed().isEmpty()) {
         developerSections << QStringLiteral(
             "DOCUMENT_MODE:\n"
@@ -811,9 +835,6 @@ QVector<LlmChatMessage> ChatController::buildPromptMessages(const QString &userP
 
     messages.push_back({QStringLiteral("developer"), developerSections.join(QStringLiteral("\n\n"))});
 
-    // -----------------------------------------------------------------------
-    // User message — context + optional history + the actual request
-    // -----------------------------------------------------------------------
     QStringList userSections;
     const QString localTrimmed = trimForBudget(localContext, localBudget);
     if (!localTrimmed.trimmed().isEmpty()) {
@@ -825,7 +846,6 @@ QVector<LlmChatMessage> ChatController::buildPromptMessages(const QString &userP
         userSections << QStringLiteral("EXTERNAL_CONTEXT:\n%1").arg(externalTrimmed);
     }
 
-    // History — walk newest-first to fill the budget, then reverse.
     QStringList historyLines;
     int historyChars = 0;
     const QVector<Message> history = trimmedHistory();
@@ -837,7 +857,8 @@ QVector<LlmChatMessage> ChatController::buildPromptMessages(const QString &userP
         if (message.role == QStringLiteral("user") && message.content == userPrompt) {
             continue;
         }
-        const QString line = QStringLiteral("%1: %2").arg(message.role.toUpper(), message.content.simplified());
+        const QString line = QStringLiteral("%1: %2")
+                                 .arg(message.role.toUpper(), message.content.simplified());
         const int cost = line.size() + 2;
         if (!historyLines.isEmpty() && historyChars + cost > historyBudget) {
             break;
@@ -845,8 +866,10 @@ QVector<LlmChatMessage> ChatController::buildPromptMessages(const QString &userP
         historyLines.prepend(line);
         historyChars += cost;
     }
+
     if (!historyLines.isEmpty()) {
-        userSections << QStringLiteral("RECENT_CONVERSATION:\n%1").arg(historyLines.join(QStringLiteral("\n\n")));
+        userSections << QStringLiteral("RECENT_CONVERSATION:\n%1")
+                            .arg(historyLines.join(QStringLiteral("\n\n")));
     }
 
     userSections << QStringLiteral("USER_REQUEST:\n%1").arg(userPrompt);
@@ -858,7 +881,7 @@ QVector<LlmChatMessage> ChatController::buildPromptMessages(const QString &userP
 QString ChatController::buildGroundingRefusal(const QString &prompt) const
 {
     Q_UNUSED(prompt)
-    return QStringLiteral("I don't know based on the provided context. Please index the relevant files, docs, or logs and try again.");
+    return QStringLiteral("I couldn't find enough grounded context to answer that safely. Try rephrasing with stronger keywords, importing more relevant files, or enabling External Search.");
 }
 
 bool ChatController::promptRequiresGrounding(const QString &prompt) const
@@ -900,11 +923,7 @@ bool ChatController::promptRequiresGrounding(const QString &prompt) const
         QStringLiteral("our code")
     };
 
-    if (containsAny(lower, strongSignals)) {
-        return true;
-    }
-
-    return isStructuredDocumentRequest(prompt);
+    return containsAny(lower, strongSignals);
 }
 
 bool ChatController::promptLooksCasual(const QString &prompt) const

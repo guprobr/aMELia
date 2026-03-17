@@ -1,10 +1,10 @@
 #pragma once
 
 #include <QObject>
-#include <QFutureWatcher>
 #include <QString>
 #include <QStringList>
 #include <QVector>
+#include <QFutureWatcher>
 
 #include "appconfig.h"
 #include "llmclient.h"
@@ -55,13 +55,13 @@ signals:
                                const QStringList &titles,
                                const QString &currentId);
     void busyChanged(bool busy);
+    void indexingStateChanged(bool active);
+    void indexingProgressChanged(int value, int maximum, const QString &label);
     void statusChanged(const QString &text);
     void backendSummaryReady(const QString &text);
     void diagnosticsReady(const QString &text);
     void sourceInventoryReady(const QString &text);
     void backendModelsReady(const QStringList &models, const QString &currentModel);
-    void indexingStateChanged(bool active);
-    void indexingProgressChanged(int value, int maximum, const QString &label);
 
 private slots:
     void onSearchStarted(const QString &query, const QString &requestUrl);
@@ -137,7 +137,6 @@ private:
     QString m_pendingMemoryContext;
     QStringList m_availableModels;
     QStringList m_diagnostics;
-    QFutureWatcher<int> *m_reindexWatcher = nullptr;
     int m_startupChunkCount = 0;
     int m_streamChunkCount = 0;
     qint64 m_requestStartedMs = 0;
@@ -146,6 +145,7 @@ private:
     // whether to inject a CONTEXT_QUALITY_WARNING into the prompt.
     double m_lastBestHitScore = 0.0;
 
+    QFutureWatcher<int> *m_reindexWatcher = nullptr;
     bool m_busy = false;
     bool m_indexing = false;
     bool m_outlineOnlyFirstPass = false;
