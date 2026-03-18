@@ -50,7 +50,7 @@ R"JSON({
   "maxExternalHits": 2,
   "maxRelevantMemories": 6,
   "externalSearchTimeoutMs": 15000,
-  "desktopNotificationTimeoutMs": 7000,
+  "desktopNotificationTimeoutMs": 2500,
   "ollamaProbeTimeoutMs": 10000,
   "ollamaResponseHeadersTimeoutMs": 1800000,
   "ollamaFirstTokenTimeoutMs": 600000,

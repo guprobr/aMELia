@@ -348,6 +348,19 @@ MainWindow::MainWindow(QWidget *parent)
 
     auto *tabs = new QTabWidget(rightPane);
 
+    m_diagnostics = new QTextEdit(tabs);
+    m_diagnostics->setReadOnly(true);
+    m_diagnostics->setStyleSheet(QStringLiteral("QTextEdit { background: #0b1220; color: #e5e7eb; }"));
+    tabs->addTab(m_diagnostics, QStringLiteral("Diagnostics"));
+
+    m_backendSummary = new QPlainTextEdit(tabs);
+    m_backendSummary->setReadOnly(true);
+    tabs->addTab(m_backendSummary, QStringLiteral("Backend"));
+
+    m_sourceInventory = new QPlainTextEdit(tabs);
+    m_sourceInventory->setReadOnly(true);
+    tabs->addTab(m_sourceInventory, QStringLiteral("Knowledge Base"));
+
     m_privacyPreview = new QPlainTextEdit(tabs);
     m_privacyPreview->setReadOnly(true);
     tabs->addTab(m_privacyPreview, QStringLiteral("Privacy"));
@@ -364,10 +377,6 @@ MainWindow::MainWindow(QWidget *parent)
     m_externalSources->setReadOnly(true);
     tabs->addTab(m_externalSources, QStringLiteral("External Sources"));
 
-    m_sourceInventory = new QPlainTextEdit(tabs);
-    m_sourceInventory->setReadOnly(true);
-    tabs->addTab(m_sourceInventory, QStringLiteral("Knowledge Base"));
-
     m_memoriesView = new QPlainTextEdit(tabs);
     m_memoriesView->setReadOnly(true);
     tabs->addTab(m_memoriesView, QStringLiteral("Memory"));
@@ -375,15 +384,6 @@ MainWindow::MainWindow(QWidget *parent)
     m_sessionSummary = new QPlainTextEdit(tabs);
     m_sessionSummary->setReadOnly(true);
     tabs->addTab(m_sessionSummary, QStringLiteral("Session Summary"));
-
-    m_backendSummary = new QPlainTextEdit(tabs);
-    m_backendSummary->setReadOnly(true);
-    tabs->addTab(m_backendSummary, QStringLiteral("Backend"));
-
-    m_diagnostics = new QTextEdit(tabs);
-    m_diagnostics->setReadOnly(true);
-    m_diagnostics->setStyleSheet(QStringLiteral("QTextEdit { background: #0b1220; color: #e5e7eb; }"));
-    tabs->addTab(m_diagnostics, QStringLiteral("Diagnostics"));
 
     auto *promptLabTab = new QWidget(tabs);
     auto *promptLabLayout = new QVBoxLayout(promptLabTab);

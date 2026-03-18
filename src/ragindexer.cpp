@@ -98,6 +98,11 @@ QString cleanedText(QString text)
     return text.simplified();
 }
 
+bool isCancelRequested(const std::atomic_bool *cancelRequested)
+{
+    return cancelRequested != nullptr && cancelRequested->load(std::memory_order_relaxed);
+}
+
 bool readTextFile(const QString &path, QString *text, QString *extractor, std::atomic_bool *cancelRequested)
 {
     QFileInfo info(path);
@@ -111,15 +116,23 @@ bool readTextFile(const QString &path, QString *text, QString *extractor, std::a
             }
             return false;
         }
-        while (!process.waitForFinished(200)) {
-            if (cancelRequested != nullptr && cancelRequested->load()) {
+        while (!process.waitForFinished(150)) {
+            if (isCancelRequested(cancelRequested)) {
                 process.kill();
                 process.waitForFinished(1000);
                 if (extractor != nullptr) {
-                    *extractor = QStringLiteral("pdf:cancelled");
+                    *extractor = QStringLiteral("canceled");
                 }
                 return false;
             }
+        }
+        if (isCancelRequested(cancelRequested)) {
+            process.kill();
+            process.waitForFinished(1000);
+            if (extractor != nullptr) {
+                *extractor = QStringLiteral("canceled");
+            }
+            return false;
         }
         if (process.exitStatus() != QProcess::NormalExit || process.exitCode() != 0) {
             if (extractor != nullptr) {
@@ -136,6 +149,13 @@ bool readTextFile(const QString &path, QString *text, QString *extractor, std::a
         return true;
     }
 
+    if (isCancelRequested(cancelRequested)) {
+        if (extractor != nullptr) {
+            *extractor = QStringLiteral("canceled");
+        }
+        return false;
+    }
+
     QFile file(path);
     if (!file.open(QIODevice::ReadOnly)) {
         return false;
@@ -143,6 +163,13 @@ bool readTextFile(const QString &path, QString *text, QString *extractor, std::a
 
     const QByteArray bytes = file.readAll();
     file.close();
+
+    if (isCancelRequested(cancelRequested)) {
+        if (extractor != nullptr) {
+            *extractor = QStringLiteral("canceled");
+        }
+        return false;
+    }
     if (bytes.contains('\0')) {
         if (extractor != nullptr) {
             *extractor = QStringLiteral("binary-skipped");
@@ -366,6 +393,11 @@ void RagIndexer::setSemanticEnabled(bool enabled)
     m_semanticEnabled = enabled;
 }
 
+void RagIndexer::requestCancel()
+{
+    m_cancelRequested.store(true, std::memory_order_relaxed);
+}
+
 void RagIndexer::rebuildEmbeddings()
 {
     ensureEmbeddingsForChunks(m_chunks);
@@ -396,6 +428,15 @@ bool RagIndexer::sourceMatchesFile(const SourceInfo &source, const QFileInfo &in
 
 int RagIndexer::reindex(const std::function<void(int, int, const QString &)> &progressCallback)
 {
+    m_cancelRequested.store(false, std::memory_order_relaxed);
+
+    auto cancelEarly = [this, &progressCallback]() -> int {
+        if (progressCallback) {
+            progressCallback(0, 0, QStringLiteral("Indexing canceled."));
+        }
+        return m_chunks.size();
+    };
+
     if (m_docsRoot.trimmed().isEmpty()) {
         m_chunks.clear();
         m_sources.clear();
@@ -405,6 +446,9 @@ int RagIndexer::reindex(const std::function<void(int, int, const QString &)> &pr
     QStringList paths;
     QDirIterator gatherIt(m_docsRoot, extensions(), QDir::Files, QDirIterator::Subdirectories);
     while (gatherIt.hasNext()) {
+        if (m_cancelRequested.load(std::memory_order_relaxed)) {
+            return cancelEarly();
+        }
         paths.push_back(gatherIt.next());
     }
     std::sort(paths.begin(), paths.end());
@@ -435,6 +479,10 @@ int RagIndexer::reindex(const std::function<void(int, int, const QString &)> &pr
     EmbeddingClient embedder;
 
     for (int i = 0; i < totalFiles; ++i) {
+        if (m_cancelRequested.load(std::memory_order_relaxed)) {
+            return cancelEarly();
+        }
+
         const QString path = paths.at(i);
         const QFileInfo info(path);
         const QString sourceType = detectSourceType(info);
@@ -450,12 +498,18 @@ int RagIndexer::reindex(const std::function<void(int, int, const QString &)> &pr
             QVector<Chunk> reusedChunks = chunksIt.value();
             if (m_semanticEnabled) {
                 for (Chunk &chunk : reusedChunks) {
+                    if (m_cancelRequested.load(std::memory_order_relaxed)) {
+                        return cancelEarly();
+                    }
                     if (chunk.embedding.isEmpty()) {
                         chunk.embedding = embedder.embedText(chunk.text);
                     }
                 }
             } else {
                 for (Chunk &chunk : reusedChunks) {
+                    if (m_cancelRequested.load(std::memory_order_relaxed)) {
+                        return cancelEarly();
+                    }
                     chunk.embedding.clear();
                 }
             }
@@ -484,7 +538,7 @@ int RagIndexer::reindex(const std::function<void(int, int, const QString &)> &pr
 
         QString textValue;
         QString extractor;
-        const bool ok = readTextFile(path, &textValue, &extractor);
+        const bool ok = readTextFile(path, &textValue, &extractor, &m_cancelRequested);
         const QString sourceRole = detectSourceRole(info, sourceType, textValue);
 
         SourceInfo source;
@@ -502,6 +556,10 @@ int RagIndexer::reindex(const std::function<void(int, int, const QString &)> &pr
             int offset = 0;
             int chunkIndex = 0;
             while (offset < textValue.size()) {
+                if (m_cancelRequested.load(std::memory_order_relaxed)) {
+                    return cancelEarly();
+                }
+
                 Chunk chunk;
                 chunk.filePath = path;
                 chunk.fileName = info.fileName();
@@ -511,6 +569,9 @@ int RagIndexer::reindex(const std::function<void(int, int, const QString &)> &pr
                 chunk.chunkIndex = chunkIndex++;
                 chunk.fileModifiedMs = source.fileModifiedMs;
                 if (m_semanticEnabled) {
+                    if (m_cancelRequested.load(std::memory_order_relaxed)) {
+                        return cancelEarly();
+                    }
                     chunk.embedding = embedder.embedText(chunk.text);
                 }
                 newChunks.push_back(chunk);
@@ -546,8 +607,8 @@ int RagIndexer::reindex(const std::function<void(int, int, const QString &)> &pr
         return a.fileName < b.fileName;
     });
 
-    if (m_cancelRequested.load()) {
-        return m_chunks.size();
+    if (m_cancelRequested.load(std::memory_order_relaxed)) {
+        return cancelEarly();
     }
 
     if (progressCallback) {

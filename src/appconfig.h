@@ -59,7 +59,7 @@ struct AppConfig {
     int ollamaInactivityTimeoutMs = 300000;
     int ollamaTotalTimeoutMs = 0;
     int maxDiagnosticLines = 400;
-    int desktopNotificationTimeoutMs = 7000;
+    int desktopNotificationTimeoutMs = 2500;
     int ollamaNumCtx = 32768;
     int ollamaTopK = 40;
 
