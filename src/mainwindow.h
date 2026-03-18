@@ -86,6 +86,13 @@ private:
     void rebuildDiagnosticsFromPlainText(const QString &text);
     QString buildPromptLabRecipe() const;
     void insertTranscriptMessage(const QString &role, const QString &text);
+    void beginResponseProgress(const QString &label = QString());
+    void setResponseProgressStage(int value, const QString &label);
+    void setResponseProgressBusy(const QString &label);
+    void updateResponseStreamingProgress(const QString &chunk);
+    void finishResponseProgress(const QString &label = QString());
+    void cancelResponseProgress(const QString &label = QString());
+    void resetTaskProgressBar();
 
     QTextEdit *m_transcript = nullptr;
     QPlainTextEdit *m_input = nullptr;
@@ -133,6 +140,11 @@ private:
     bool m_streamingAssistant = false;
     int m_streamingAssistantStartPosition = -1;
     QString m_lastAssistantMessage;
+    bool m_responseProgressActive = false;
+    bool m_responseFirstTokenReceived = false;
+    int m_responseProgressValue = 0;
+    int m_streamReceivedChars = 0;
+    int m_streamEstimatedChars = 1400;
     bool m_indexingActive = false;
     bool m_updatingConversationList = false;
     bool m_updatingModelList = false;

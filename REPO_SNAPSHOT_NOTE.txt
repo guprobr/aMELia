@@ -1,0 +1,14 @@
+Snapshot source: current public master branch of https://github.com/guprobr/aMELia as fetched from raw file URLs on 2026-03-18.
+
+Included:
+- build-relevant source tree (CMakeLists.txt, src/, assets/, packaging/, config/, scripts/, README.md, .gitignore)
+- response lifecycle progress bar implementation in src/mainwindow.h and src/mainwindow.cpp
+
+Not included:
+- README.pdf
+- rEADMEL.pdf
+- .vscode/
+
+Asset note:
+- assets/amelia_logo.png was fetched from the repository.
+- assets/amelia_logo.svg could not be fetched directly with the available tool path, so this snapshot includes a valid SVG wrapper that embeds the repository PNG.

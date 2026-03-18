@@ -605,6 +605,145 @@ void MainWindow::appendDiagnosticEntry(const QString &timestamp, const QString &
     m_diagnostics->ensureCursorVisible();
 }
 
+
+void MainWindow::resetTaskProgressBar()
+{
+    if (m_taskProgressBar == nullptr) {
+        return;
+    }
+
+    m_taskProgressBar->setVisible(false);
+    m_taskProgressBar->setRange(0, 100);
+    m_taskProgressBar->setValue(0);
+    m_taskProgressBar->setFormat(QStringLiteral("%p%"));
+}
+
+void MainWindow::beginResponseProgress(const QString &label)
+{
+    if (m_taskProgressBar == nullptr || m_indexingActive) {
+        return;
+    }
+
+    m_responseProgressActive = true;
+    m_responseFirstTokenReceived = false;
+    m_responseProgressValue = 5;
+    m_streamReceivedChars = 0;
+    m_streamEstimatedChars = 1400;
+
+    m_taskProgressBar->setVisible(true);
+    m_taskProgressBar->setRange(0, 100);
+    m_taskProgressBar->setValue(m_responseProgressValue);
+    m_taskProgressBar->setFormat(label.isEmpty()
+                                 ? QStringLiteral("Preparing prompt... %p%")
+                                 : label + QStringLiteral(" %p%"));
+}
+
+void MainWindow::setResponseProgressStage(int value, const QString &label)
+{
+    if (m_taskProgressBar == nullptr || !m_responseProgressActive || m_indexingActive) {
+        return;
+    }
+
+    const int clampedValue = qBound(0, value, 100);
+    m_responseProgressValue = qMax(m_responseProgressValue, clampedValue);
+
+    m_taskProgressBar->setVisible(true);
+    m_taskProgressBar->setRange(0, 100);
+    m_taskProgressBar->setValue(m_responseProgressValue);
+    m_taskProgressBar->setFormat(label.isEmpty()
+                                 ? QStringLiteral("%p%")
+                                 : label + QStringLiteral(" %p%"));
+}
+
+void MainWindow::setResponseProgressBusy(const QString &label)
+{
+    if (m_taskProgressBar == nullptr || !m_responseProgressActive || m_indexingActive) {
+        return;
+    }
+
+    m_taskProgressBar->setVisible(true);
+    m_taskProgressBar->setRange(0, 0);
+    m_taskProgressBar->setFormat(label.isEmpty() ? QStringLiteral("Working...") : label);
+}
+
+void MainWindow::updateResponseStreamingProgress(const QString &chunk)
+{
+    if (m_taskProgressBar == nullptr || !m_responseProgressActive || m_indexingActive || chunk.isEmpty()) {
+        return;
+    }
+
+    if (!m_responseFirstTokenReceived) {
+        m_responseFirstTokenReceived = true;
+        m_responseProgressValue = qMax(m_responseProgressValue, 65);
+    }
+
+    m_streamReceivedChars += chunk.size();
+    if (m_streamReceivedChars >= m_streamEstimatedChars) {
+        m_streamEstimatedChars = m_streamReceivedChars + qMax(300, chunk.size() * 4);
+    }
+
+    const double ratio = m_streamEstimatedChars > 0
+            ? static_cast<double>(m_streamReceivedChars) / static_cast<double>(m_streamEstimatedChars)
+            : 0.0;
+
+    int nextValue = 65 + static_cast<int>(ratio * 30.0);
+    nextValue = qBound(65, nextValue, 95);
+    m_responseProgressValue = qMax(m_responseProgressValue, nextValue);
+
+    m_taskProgressBar->setVisible(true);
+    m_taskProgressBar->setRange(0, 100);
+    m_taskProgressBar->setValue(m_responseProgressValue);
+    m_taskProgressBar->setFormat(QStringLiteral("Generating answer... %p%"));
+}
+
+void MainWindow::finishResponseProgress(const QString &label)
+{
+    if (m_taskProgressBar == nullptr) {
+        return;
+    }
+
+    m_taskProgressBar->setVisible(true);
+    m_taskProgressBar->setRange(0, 100);
+    m_taskProgressBar->setValue(100);
+    m_taskProgressBar->setFormat(label.isEmpty() ? QStringLiteral("Done") : label);
+
+    m_responseProgressActive = false;
+    m_responseFirstTokenReceived = false;
+    m_responseProgressValue = 0;
+    m_streamReceivedChars = 0;
+    m_streamEstimatedChars = 1400;
+
+    QTimer::singleShot(1400, this, [this]() {
+        if (!m_responseProgressActive && !m_indexingActive) {
+            resetTaskProgressBar();
+        }
+    });
+}
+
+void MainWindow::cancelResponseProgress(const QString &label)
+{
+    if (m_taskProgressBar == nullptr) {
+        return;
+    }
+
+    m_taskProgressBar->setVisible(true);
+    m_taskProgressBar->setRange(0, 100);
+    m_taskProgressBar->setValue(0);
+    m_taskProgressBar->setFormat(label.isEmpty() ? QStringLiteral("Canceled") : label);
+
+    m_responseProgressActive = false;
+    m_responseFirstTokenReceived = false;
+    m_responseProgressValue = 0;
+    m_streamReceivedChars = 0;
+    m_streamEstimatedChars = 1400;
+
+    QTimer::singleShot(1600, this, [this]() {
+        if (!m_responseProgressActive && !m_indexingActive) {
+            resetTaskProgressBar();
+        }
+    });
+}
+
 void MainWindow::appendUserMessage(const QString &text)
 {
     m_streamingAssistant = false;
@@ -636,6 +775,7 @@ void MainWindow::appendAssistantChunk(const QString &text)
     cursor.insertText(text, bodyFormat);
     m_transcript->setTextCursor(cursor);
     m_transcript->ensureCursorVisible();
+    updateResponseStreamingProgress(text);
 }
 
 void MainWindow::finalizeAssistantMessage(const QString &text)
@@ -653,6 +793,10 @@ void MainWindow::finalizeAssistantMessage(const QString &text)
 
     m_streamingAssistant = false;
     m_streamingAssistantStartPosition = -1;
+
+    if (m_responseProgressActive) {
+        finishResponseProgress(QStringLiteral("Answer complete"));
+    }
 }
 
 void MainWindow::appendSystemMessage(const QString &text)
@@ -743,6 +887,28 @@ void MainWindow::setConversationList(const QStringList &ids,
 void MainWindow::setStatusText(const QString &text)
 {
     m_statusLabel->setText(text);
+
+    if (!m_responseProgressActive || m_indexingActive) {
+        return;
+    }
+
+    if (text.startsWith(QStringLiteral("Analyzing knowledge base"), Qt::CaseInsensitive)) {
+        setResponseProgressStage(15, QStringLiteral("Preparing grounded context..."));
+    } else if (text.startsWith(QStringLiteral("Searching external sources"), Qt::CaseInsensitive)) {
+        setResponseProgressBusy(QStringLiteral("Searching external sources..."));
+    } else if (text.startsWith(QStringLiteral("External search finished"), Qt::CaseInsensitive)) {
+        setResponseProgressStage(50, QStringLiteral("External context ready"));
+    } else if (text.startsWith(QStringLiteral("Sending request to local model"), Qt::CaseInsensitive)) {
+        setResponseProgressStage(60, QStringLiteral("Sending request to local model..."));
+    } else if (text.startsWith(QStringLiteral("Awaiting first local tokens"), Qt::CaseInsensitive)) {
+        setResponseProgressBusy(QStringLiteral("Waiting for first token..."));
+    } else if (text.startsWith(QStringLiteral("Streaming response locally"), Qt::CaseInsensitive)) {
+        setResponseProgressStage(65, QStringLiteral("Generating answer..."));
+    } else if (text == QStringLiteral("Stopped.")) {
+        cancelResponseProgress(QStringLiteral("Generation stopped"));
+    } else if (text == QStringLiteral("Error.")) {
+        cancelResponseProgress(QStringLiteral("Generation failed"));
+    }
 }
 
 void MainWindow::setBusy(bool busy)
@@ -762,6 +928,7 @@ void MainWindow::setBusy(bool busy)
     if (m_promptLabCopyRecipeButton != nullptr) m_promptLabCopyRecipeButton->setEnabled(!busy);
 
     if (busy) {
+        beginResponseProgress(QStringLiteral("Preparing prompt..."));
         m_busyFrameIndex = 0;
         updateBusyIndicator();
         m_busyIndicatorLabel->show();
@@ -796,10 +963,7 @@ void MainWindow::setIndexingActive(bool active)
         m_taskProgressBar->setFormat(QStringLiteral("Indexing local docs..."));
         m_statusLabel->setText(QStringLiteral("Indexing local docs..."));
     } else {
-        m_taskProgressBar->setVisible(false);
-        m_taskProgressBar->setRange(0, 100);
-        m_taskProgressBar->setValue(0);
-        m_taskProgressBar->setFormat(QStringLiteral("%p%"));
+        resetTaskProgressBar();
         if (!m_stopButton->isEnabled()) {
             m_statusLabel->setText(QStringLiteral("Ready."));
         }

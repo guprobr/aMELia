@@ -4,6 +4,8 @@ Amelia is a local-first Qt6/C++ coding and cloud assistant that talks to a local
 
 This build keeps the earlier **bootstrap visibility**, **incremental indexing**, **responsive prompt preparation**, **transcript formatting**, and **Prompt Lab enhancements**, and adds **native desktop notifications** for meaningful task lifecycle events.
 
+It also adds a **response lifecycle progress bar** in the status area, so Amelia now shows visual progress from prompt preparation through external search / backend wait time until the answer stream completes.
+
 ## What's new in v6.99
 
 ### Native desktop notifications
