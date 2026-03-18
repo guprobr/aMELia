@@ -39,7 +39,10 @@ public:
     void clearMemories();
     void setBackendModel(const QString &model);
     void importKnowledgePaths(const QStringList &paths);
+    void removeKnowledgeAssets(const QStringList &paths);
+    void clearKnowledgeBase();
     void prepareForShutdown();
+    void startBootstrap();
 
 signals:
     void assistantStreamChunk(const QString &chunk);
@@ -64,6 +67,7 @@ signals:
     void sourceInventoryReady(const QString &text);
     void backendModelsReady(const QStringList &models, const QString &currentModel);
     void desktopNotificationRequested(const QString &title, const QString &message, int severity);
+    void startupFinished();
 
 private slots:
     void onSearchStarted(const QString &query, const QString &requestUrl);
@@ -166,6 +170,14 @@ private:
     // whether to inject a CONTEXT_QUALITY_WARNING into the prompt.
     double m_lastBestHitScore = 0.0;
 
+    struct StartupLoadResult {
+        bool cacheLoaded = false;
+        bool cacheStale = false;
+        int chunkCount = 0;
+        int sourceCount = 0;
+    };
+
+    QFutureWatcher<StartupLoadResult> *m_startupLoadWatcher = nullptr;
     QFutureWatcher<int> *m_reindexWatcher = nullptr;
     QFutureWatcher<PromptPreparationResult> *m_promptPreparationWatcher = nullptr;
     quint64 m_promptPreparationSerial = 0;
@@ -173,4 +185,5 @@ private:
     bool m_indexing = false;
     bool m_outlineOnlyFirstPass = false;
     bool m_shuttingDown = false;
+    bool m_bootstrapStarted = false;
 };

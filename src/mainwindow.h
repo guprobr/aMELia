@@ -16,6 +16,7 @@ class QProgressBar;
 class QPushButton;
 class QTextEdit;
 class QTimer;
+class QUrl;
 
 class MainWindow : public QMainWindow {
     Q_OBJECT
@@ -58,6 +59,8 @@ signals:
     void backendModelSelected(const QString &model);
     void importPathsRequested(const QStringList &paths);
     void clearMemoriesRequested();
+    void removeKnowledgeAssetsRequested(const QStringList &paths);
+    void clearKnowledgeBaseRequested();
 
 private slots:
     void onSendClicked();
@@ -78,6 +81,9 @@ private slots:
     void onPromptLabCopyRecipeClicked();
     void onCopyLastAnswerClicked();
     void onCopyCodeBlocksClicked();
+    void onRemoveSelectedKnowledgeAssetsClicked();
+    void onClearKnowledgeBaseClicked();
+    void onTranscriptAnchorClicked(const QUrl &url);
 
 private:
     void appendTranscriptEntry(const QString &role, const QString &text);
@@ -105,6 +111,7 @@ private:
     QPlainTextEdit *m_sessionSummary = nullptr;
     QTextEdit *m_diagnostics = nullptr;
     QPlainTextEdit *m_sourceInventory = nullptr;
+    QListWidget *m_sourceInventoryList = nullptr;
     QListWidget *m_conversationsList = nullptr;
     QCheckBox *m_externalSearchCheck = nullptr;
     QComboBox *m_modelCombo = nullptr;
@@ -131,6 +138,8 @@ private:
     QPushButton *m_promptLabCopyRecipeButton = nullptr;
     QPushButton *m_copyLastAnswerButton = nullptr;
     QPushButton *m_copyCodeBlocksButton = nullptr;
+    QPushButton *m_removeSelectedAssetButton = nullptr;
+    QPushButton *m_clearKnowledgeBaseButton = nullptr;
     QLabel *m_statusLabel = nullptr;
     QProgressBar *m_taskProgressBar = nullptr;
     QLabel *m_busyIndicatorLabel = nullptr;
@@ -151,4 +160,5 @@ private:
     QAction *m_aboutAmeliaAction = nullptr;
     QAction *m_aboutQtAction = nullptr;
     QAction *m_clearMemoriesAction = nullptr;
+    QStringList m_transcriptCodeBlocks;
 };

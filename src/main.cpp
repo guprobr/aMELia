@@ -7,12 +7,14 @@
 
 #include <QApplication>
 #include <QCoreApplication>
+#include <QEventLoop>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
 #include <QIcon>
 #include <QStringList>
 #include <QTextStream>
+#include <QTimer>
 
 namespace {
 QString preferredUserConfigPath()
@@ -189,137 +191,147 @@ int main(int argc, char *argv[])
     QApplication::setOrganizationName(QStringLiteral("guprobr"));
     QApplication::setQuitOnLastWindowClosed(true);
 
-    BootstrapDialog bootstrap;
-    bootstrap.show();
-    bootstrap.setStatusText(QStringLiteral("Preparing Amelia runtime..."));
-    app.processEvents();
+    auto *bootstrap = new BootstrapDialog();
+    bootstrap->show();
+    bootstrap->raise();
+    bootstrap->activateWindow();
+    bootstrap->repaint();
+    bootstrap->setStatusText(QStringLiteral("Preparing Amelia runtime..."));
+    app.processEvents(QEventLoop::AllEvents, 100);
 
     QStringList bootstrapMessages;
     ensureUserDataRoot(bootstrapMessages);
     ensureUserConfigSeeded(bootstrapMessages);
     for (const QString &message : bootstrapMessages) {
-        bootstrap.appendLog(message);
+        bootstrap->appendLog(message);
     }
-    app.processEvents();
 
     QString configPathMessage;
     const QString configPath = resolveConfigPath(&configPathMessage);
     if (!configPathMessage.isEmpty()) {
-        bootstrap.appendLog(configPathMessage);
+        bootstrap->appendLog(configPathMessage);
     }
 
     QString configLoadMessage;
     const AppConfig config = AppConfigLoader::load(configPath, &configLoadMessage);
     if (!configLoadMessage.isEmpty()) {
-        bootstrap.appendLog(configLoadMessage);
+        bootstrap->appendLog(configLoadMessage);
     }
-    bootstrap.setStatusText(QStringLiteral("Building Amelia interface..."));
-    app.processEvents();
 
-    auto *window = new MainWindow();
-    auto *notifications = new NotificationCenter(config, &app);
-    notifications->setAlertWidget(window);
+    QTimer::singleShot(0, &app, [&, config, bootstrapMessages, configPathMessage, configLoadMessage]() {
+        bootstrap->setStatusText(QStringLiteral("Building Amelia interface..."));
+        bootstrap->appendLog(QStringLiteral("Creating main window..."));
 
-    bootstrap.appendLog(QStringLiteral("Main window created."));
-    bootstrap.setStatusText(QStringLiteral("Loading controller and cached knowledge..."));
-    app.processEvents();
+        auto *window = new MainWindow();
+        auto *notifications = new NotificationCenter(config, &app);
+        notifications->setAlertWidget(window);
+        auto *controller = new ChatController(config);
 
-    auto *controller = new ChatController(config);
-    bootstrap.appendLog(QStringLiteral("Controller initialized."));
+        QObject::connect(controller, &ChatController::statusChanged,
+                         bootstrap, &BootstrapDialog::setStatusText);
+        QObject::connect(controller, &ChatController::systemNotice,
+                         bootstrap, &BootstrapDialog::appendLog);
 
-    QObject::connect(controller, &ChatController::statusChanged,
-                     &bootstrap, &BootstrapDialog::setStatusText);
-    QObject::connect(controller, &ChatController::systemNotice,
-                     &bootstrap, &BootstrapDialog::appendLog);
+        QObject::connect(window, &MainWindow::promptSubmitted,
+                         controller, &ChatController::sendUserPrompt);
+        QObject::connect(window, &MainWindow::stopRequested,
+                         controller, &ChatController::stopGeneration);
+        QObject::connect(window, &MainWindow::reindexRequested,
+                         controller, &ChatController::reindexDocs);
+        QObject::connect(window, &MainWindow::testBackendRequested,
+                         controller, &ChatController::probeBackend);
+        QObject::connect(window, &MainWindow::refreshModelsRequested,
+                         controller, &ChatController::refreshBackendModels);
+        QObject::connect(window, &MainWindow::newConversationRequested,
+                         controller, &ChatController::newConversation);
+        QObject::connect(window, &MainWindow::conversationSelected,
+                         controller, &ChatController::loadConversationById);
+        QObject::connect(window, &MainWindow::rememberRequested,
+                         controller, &ChatController::rememberNote);
+        QObject::connect(window, &MainWindow::backendModelSelected,
+                         controller, &ChatController::setBackendModel);
+        QObject::connect(window, &MainWindow::importPathsRequested,
+                         controller, &ChatController::importKnowledgePaths);
+        QObject::connect(window, &MainWindow::clearMemoriesRequested,
+                         controller, &ChatController::clearMemories);
+        QObject::connect(window, &MainWindow::removeKnowledgeAssetsRequested,
+                         controller, &ChatController::removeKnowledgeAssets);
+        QObject::connect(window, &MainWindow::clearKnowledgeBaseRequested,
+                         controller, &ChatController::clearKnowledgeBase);
 
-    QObject::connect(window, &MainWindow::promptSubmitted,
-                     controller, &ChatController::sendUserPrompt);
-    QObject::connect(window, &MainWindow::stopRequested,
-                     controller, &ChatController::stopGeneration);
-    QObject::connect(window, &MainWindow::reindexRequested,
-                     controller, &ChatController::reindexDocs);
-    QObject::connect(window, &MainWindow::testBackendRequested,
-                     controller, &ChatController::probeBackend);
-    QObject::connect(window, &MainWindow::refreshModelsRequested,
-                     controller, &ChatController::refreshBackendModels);
-    QObject::connect(window, &MainWindow::newConversationRequested,
-                     controller, &ChatController::newConversation);
-    QObject::connect(window, &MainWindow::conversationSelected,
-                     controller, &ChatController::loadConversationById);
-    QObject::connect(window, &MainWindow::rememberRequested,
-                     controller, &ChatController::rememberNote);
-    QObject::connect(window, &MainWindow::backendModelSelected,
-                     controller, &ChatController::setBackendModel);
-    QObject::connect(window, &MainWindow::importPathsRequested,
-                     controller, &ChatController::importKnowledgePaths);
-    QObject::connect(window, &MainWindow::clearMemoriesRequested,
-                     controller, &ChatController::clearMemories);
+        QObject::connect(controller, &ChatController::assistantStreamChunk,
+                         window, &MainWindow::appendAssistantChunk);
+        QObject::connect(controller, &ChatController::assistantCompleted,
+                         window, &MainWindow::finalizeAssistantMessage);
+        QObject::connect(controller, &ChatController::systemNotice,
+                         window, &MainWindow::appendSystemMessage);
+        QObject::connect(controller, &ChatController::privacyPreviewReady,
+                         window, &MainWindow::setPrivacyPreview);
+        QObject::connect(controller, &ChatController::localSourcesReady,
+                         window, &MainWindow::setLocalSources);
+        QObject::connect(controller, &ChatController::externalSourcesReady,
+                         window, &MainWindow::setExternalSources);
+        QObject::connect(controller, &ChatController::outlinePlanReady,
+                         window, &MainWindow::setOutlinePlan);
+        QObject::connect(controller, &ChatController::memoriesViewReady,
+                         window, &MainWindow::setMemoriesView);
+        QObject::connect(controller, &ChatController::sessionSummaryReady,
+                         window, &MainWindow::setSessionSummary);
+        QObject::connect(controller, &ChatController::transcriptRestored,
+                         window, &MainWindow::setTranscript);
+        QObject::connect(controller, &ChatController::conversationListReady,
+                         window, &MainWindow::setConversationList);
+        QObject::connect(controller, &ChatController::busyChanged,
+                         window, &MainWindow::setBusy);
+        QObject::connect(controller, &ChatController::indexingStateChanged,
+                         window, &MainWindow::setIndexingActive);
+        QObject::connect(controller, &ChatController::indexingProgressChanged,
+                         window, &MainWindow::setIndexingProgress);
+        QObject::connect(controller, &ChatController::statusChanged,
+                         window, &MainWindow::setStatusText);
+        QObject::connect(controller, &ChatController::backendSummaryReady,
+                         window, &MainWindow::setBackendSummary);
+        QObject::connect(controller, &ChatController::diagnosticsReady,
+                         window, &MainWindow::setDiagnostics);
+        QObject::connect(controller, &ChatController::sourceInventoryReady,
+                         window, &MainWindow::setSourceInventory);
+        QObject::connect(controller, &ChatController::backendModelsReady,
+                         window, &MainWindow::setAvailableModels);
+        QObject::connect(controller, &ChatController::desktopNotificationRequested,
+                         notifications, &NotificationCenter::notify);
 
-    QObject::connect(controller, &ChatController::assistantStreamChunk,
-                     window, &MainWindow::appendAssistantChunk);
-    QObject::connect(controller, &ChatController::assistantCompleted,
-                     window, &MainWindow::finalizeAssistantMessage);
-    QObject::connect(controller, &ChatController::systemNotice,
-                     window, &MainWindow::appendSystemMessage);
-    QObject::connect(controller, &ChatController::privacyPreviewReady,
-                     window, &MainWindow::setPrivacyPreview);
-    QObject::connect(controller, &ChatController::localSourcesReady,
-                     window, &MainWindow::setLocalSources);
-    QObject::connect(controller, &ChatController::externalSourcesReady,
-                     window, &MainWindow::setExternalSources);
-    QObject::connect(controller, &ChatController::outlinePlanReady,
-                     window, &MainWindow::setOutlinePlan);
-    QObject::connect(controller, &ChatController::memoriesViewReady,
-                     window, &MainWindow::setMemoriesView);
-    QObject::connect(controller, &ChatController::sessionSummaryReady,
-                     window, &MainWindow::setSessionSummary);
-    QObject::connect(controller, &ChatController::transcriptRestored,
-                     window, &MainWindow::setTranscript);
-    QObject::connect(controller, &ChatController::conversationListReady,
-                     window, &MainWindow::setConversationList);
-    QObject::connect(controller, &ChatController::busyChanged,
-                     window, &MainWindow::setBusy);
-    QObject::connect(controller, &ChatController::indexingStateChanged,
-                     window, &MainWindow::setIndexingActive);
-    QObject::connect(controller, &ChatController::indexingProgressChanged,
-                     window, &MainWindow::setIndexingProgress);
-    QObject::connect(controller, &ChatController::statusChanged,
-                     window, &MainWindow::setStatusText);
-    QObject::connect(controller, &ChatController::backendSummaryReady,
-                     window, &MainWindow::setBackendSummary);
-    QObject::connect(controller, &ChatController::diagnosticsReady,
-                     window, &MainWindow::setDiagnostics);
-    QObject::connect(controller, &ChatController::sourceInventoryReady,
-                     window, &MainWindow::setSourceInventory);
-    QObject::connect(controller, &ChatController::backendModelsReady,
-                     window, &MainWindow::setAvailableModels);
-    QObject::connect(controller, &ChatController::desktopNotificationRequested,
-                     notifications, &NotificationCenter::notify);
+        window->setExternalSearchEnabledDefault(config.enableExternalSearch);
 
-    window->setExternalSearchEnabledDefault(config.enableExternalSearch);
-
-    for (const QString &bootstrapMessage : bootstrapMessages) {
-        if (!bootstrapMessage.isEmpty()) {
-            window->appendSystemMessage(bootstrapMessage);
+        for (const QString &bootstrapMessage : bootstrapMessages) {
+            if (!bootstrapMessage.isEmpty()) {
+                window->appendSystemMessage(bootstrapMessage);
+            }
         }
-    }
-    if (!configPathMessage.isEmpty()) {
-        window->appendSystemMessage(configPathMessage);
-    }
-    if (!configLoadMessage.isEmpty()) {
-        window->appendSystemMessage(configLoadMessage);
-    }
+        if (!configPathMessage.isEmpty()) {
+            window->appendSystemMessage(configPathMessage);
+        }
+        if (!configLoadMessage.isEmpty()) {
+            window->appendSystemMessage(configLoadMessage);
+        }
 
-    QObject::connect(&app, &QGuiApplication::lastWindowClosed,
-                     &app, &QCoreApplication::quit);
-    QObject::connect(&app, &QCoreApplication::aboutToQuit, &app, [controller, notifications, window]() {
-        notifications->shutdown();
-        controller->prepareForShutdown();
-        window->hide();
+        QObject::connect(&app, &QGuiApplication::lastWindowClosed,
+                         &app, &QCoreApplication::quit);
+        QObject::connect(&app, &QCoreApplication::aboutToQuit, &app, [controller, notifications, window, bootstrap]() {
+            notifications->shutdown();
+            controller->prepareForShutdown();
+            window->hide();
+            bootstrap->hide();
+        });
+
+        QObject::connect(controller, &ChatController::startupFinished, &app, [window, bootstrap]() {
+            bootstrap->appendLog(QStringLiteral("Showing main window..."));
+            window->show();
+            bootstrap->hide();
+        });
+
+        bootstrap->appendLog(QStringLiteral("Controller created. Starting asynchronous bootstrap..."));
+        controller->startBootstrap();
     });
 
-    bootstrap.appendLog(QStringLiteral("Showing main window..."));
-    window->show();
-    bootstrap.close();
     return app.exec();
 }

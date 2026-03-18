@@ -12,6 +12,7 @@
 #include "toolexecutor.h"
 
 #include <QDateTime>
+#include <QFile>
 #include <QDir>
 #include <QFileInfo>
 #include <QSet>
@@ -107,14 +108,48 @@ ChatController::ChatController(const AppConfig &config, QObject *parent)
     , m_sessionSummarizer(new SessionSummarizer())
     , m_outlinePlanner(new OutlinePlanner())
 {
-    QString storageError;
-    m_storage->initialize(m_config.dataRoot, m_config.knowledgeRoot, &storageError);
-
-    seedInitialKnowledge();
-
-    m_rag->setDocsRoot(m_storage->knowledgeRoot());
-    m_rag->setCachePath(m_storage->ragCachePath());
     m_rag->setSemanticEnabled(m_config.enableSemanticRetrieval);
+
+    m_startupLoadWatcher = new QFutureWatcher<StartupLoadResult>(this);
+    connect(m_startupLoadWatcher, &QFutureWatcher<StartupLoadResult>::finished, this, [this]() {
+        if (m_shuttingDown) {
+            return;
+        }
+
+        const StartupLoadResult result = m_startupLoadWatcher->result();
+        m_startupChunkCount = result.chunkCount;
+
+        if (result.cacheLoaded) {
+            const QString message = QStringLiteral("Loaded cached knowledge: %1 chunks across %2 sources.")
+                    .arg(result.chunkCount)
+                    .arg(result.sourceCount);
+            emit systemNotice(message);
+            addDiagnostic(QStringLiteral("startup"), message);
+            emit statusChanged(QStringLiteral("Knowledge cache ready."));
+
+            if (result.cacheStale) {
+                const QString staleMessage = QStringLiteral("Knowledge cache is stale. Scheduling an incremental refresh in the background...");
+                emit systemNotice(staleMessage);
+                notifyTaskStarted(QStringLiteral("Knowledge refresh"), staleMessage);
+                QTimer::singleShot(0, this, &ChatController::reindexDocs);
+            }
+        } else {
+            const QString noCacheMessage = QStringLiteral("No usable cache found. Starting knowledge indexing in the background...");
+            emit systemNotice(noCacheMessage);
+            addDiagnostic(QStringLiteral("startup"), noCacheMessage);
+            notifyTaskStarted(QStringLiteral("Knowledge indexing"), noCacheMessage);
+            QTimer::singleShot(0, this, &ChatController::reindexDocs);
+        }
+
+        emit backendSummaryReady(buildBackendSummary());
+        QTimer::singleShot(0, this, &ChatController::emitStartupNotices);
+        QTimer::singleShot(0, this, &ChatController::restoreStartupState);
+        if (m_config.probeOllamaOnStartup) {
+            QTimer::singleShot(0, this, &ChatController::probeBackend);
+        }
+
+        emit startupFinished();
+    });
 
     m_reindexWatcher = new QFutureWatcher<int>(this);
     connect(m_reindexWatcher, &QFutureWatcher<int>::finished, this, [this]() {
@@ -185,21 +220,6 @@ ChatController::ChatController(const AppConfig &config, QObject *parent)
         startGeneration(result.prompt, result.localContext, QString(), result.memoryContext);
     });
 
-    const bool cacheLoaded = m_rag->loadCache();
-    if (cacheLoaded) {
-        m_startupChunkCount = m_rag->chunkCount();
-        if (m_rag->cacheNeedsRefresh()) {
-            QTimer::singleShot(0, this, [this]() {
-                const QString staleMessage = QStringLiteral("Knowledge cache is stale. Scheduling an incremental refresh in the background...");
-                emit systemNotice(staleMessage);
-                notifyTaskStarted(QStringLiteral("Knowledge refresh"), staleMessage);
-                reindexDocs();
-            });
-        }
-    } else {
-        QTimer::singleShot(0, this, &ChatController::reindexDocs);
-    }
-
     m_searchBroker->setEnabled(m_config.enableExternalSearch);
     m_searchBroker->setEndpoint(m_config.searxngUrl);
     m_searchBroker->setAllowedDomains(m_config.externalSearchDomainAllowlist);
@@ -223,18 +243,14 @@ ChatController::ChatController(const AppConfig &config, QObject *parent)
     connect(m_llmClient, &OllamaClient::responseError, this, &ChatController::onModelError);
     connect(m_llmClient, &OllamaClient::backendProbeFinished, this, &ChatController::onBackendProbeFinished);
     connect(m_llmClient, &OllamaClient::modelsListed, this, &ChatController::onModelsListed);
-
-    QTimer::singleShot(0, this, &ChatController::emitStartupNotices);
-    QTimer::singleShot(0, this, &ChatController::restoreStartupState);
-    if (m_config.probeOllamaOnStartup) {
-        QTimer::singleShot(0, this, &ChatController::probeBackend);
-    }
-    Q_UNUSED(storageError)
 }
 
 ChatController::~ChatController()
 {
     if (!m_shuttingDown) {
+        if (m_startupLoadWatcher != nullptr && m_startupLoadWatcher->isRunning()) {
+            m_startupLoadWatcher->waitForFinished();
+        }
         if (m_reindexWatcher != nullptr && m_reindexWatcher->isRunning()) {
             m_rag->requestCancel();
             m_reindexWatcher->waitForFinished();
@@ -274,6 +290,49 @@ void ChatController::prepareForShutdown()
     }
 
     disconnect(this, nullptr, nullptr, nullptr);
+}
+
+void ChatController::startBootstrap()
+{
+    if (m_shuttingDown || m_bootstrapStarted) {
+        return;
+    }
+
+    m_bootstrapStarted = true;
+
+    emit statusChanged(QStringLiteral("Initializing storage and knowledge paths..."));
+    emit systemNotice(QStringLiteral("Initializing Amelia storage roots..."));
+
+    QString storageError;
+    if (!m_storage->initialize(m_config.dataRoot, m_config.knowledgeRoot, &storageError)) {
+        const QString message = storageError.isEmpty()
+                ? QStringLiteral("Failed to initialize Amelia storage.")
+                : storageError;
+        emit systemNotice(message);
+        addDiagnostic(QStringLiteral("startup"), message);
+        notifyTaskFailed(QStringLiteral("Startup failed"), message);
+        emit backendSummaryReady(buildBackendSummary());
+        emit startupFinished();
+        return;
+    }
+
+    seedInitialKnowledge();
+
+    m_rag->setDocsRoot(m_storage->knowledgeRoot());
+    m_rag->setCachePath(m_storage->ragCachePath());
+    m_rag->setSemanticEnabled(m_config.enableSemanticRetrieval);
+
+    emit statusChanged(QStringLiteral("Loading cached knowledge in the background..."));
+    emit systemNotice(QStringLiteral("Loading cached knowledge base asynchronously..."));
+
+    m_startupLoadWatcher->setFuture(QtConcurrent::run([this]() -> StartupLoadResult {
+        StartupLoadResult result;
+        result.cacheLoaded = m_rag->loadCache();
+        result.chunkCount = m_rag->chunkCount();
+        result.sourceCount = m_rag->sourceCount();
+        result.cacheStale = result.cacheLoaded && m_rag->cacheNeedsRefresh();
+        return result;
+    }));
 }
 
 void ChatController::notifyTaskStarted(const QString &title, const QString &message)
@@ -647,6 +706,83 @@ void ChatController::importKnowledgePaths(const QStringList &paths)
     } else {
         notifyTaskFailed(QStringLiteral("Knowledge import failed"), message.isEmpty() ? QStringLiteral("No files were imported into the knowledge base.") : message);
     }
+}
+
+void ChatController::removeKnowledgeAssets(const QStringList &paths)
+{
+    if (paths.isEmpty()) {
+        return;
+    }
+    if (m_busy || m_indexing) {
+        emit systemNotice(QStringLiteral("Stop the current task before removing knowledge base assets."));
+        return;
+    }
+
+    const QString canonicalRoot = QFileInfo(m_storage->knowledgeRoot()).canonicalFilePath();
+    if (canonicalRoot.isEmpty()) {
+        emit systemNotice(QStringLiteral("Knowledge root is not available."));
+        return;
+    }
+
+    int removed = 0;
+    for (const QString &path : paths) {
+        const QFileInfo info(path);
+        const QString canonicalPath = info.canonicalFilePath();
+        if (canonicalPath.isEmpty() || !canonicalPath.startsWith(canonicalRoot)) {
+            addDiagnostic(QStringLiteral("ingest"), QStringLiteral("Skipped out-of-root delete request: %1").arg(path));
+            continue;
+        }
+        if (QFile::remove(canonicalPath)) {
+            ++removed;
+        }
+    }
+
+    const QString message = removed > 0
+            ? QStringLiteral("Removed %1 knowledge base asset(s).").arg(removed)
+            : QStringLiteral("No knowledge base assets were removed.");
+    emit systemNotice(message);
+    addDiagnostic(QStringLiteral("ingest"), message);
+    if (removed > 0) {
+        notifyTaskSucceeded(QStringLiteral("Knowledge assets removed"), message);
+        reindexDocs();
+    } else {
+        notifyTaskFailed(QStringLiteral("Knowledge asset removal failed"), message);
+    }
+}
+
+void ChatController::clearKnowledgeBase()
+{
+    if (m_busy || m_indexing) {
+        emit systemNotice(QStringLiteral("Stop the current task before clearing the knowledge base."));
+        return;
+    }
+
+    const QString knowledgeRoot = m_storage->knowledgeRoot();
+    QDir rootDir(knowledgeRoot);
+    if (!rootDir.exists()) {
+        emit systemNotice(QStringLiteral("Knowledge base is already empty."));
+        return;
+    }
+
+    notifyTaskStarted(QStringLiteral("Knowledge base clear started"), QStringLiteral("Removing all imported assets from the knowledge base."));
+
+    const bool removed = rootDir.removeRecursively();
+    QDir().mkpath(knowledgeRoot);
+    QFile::remove(m_storage->ragCachePath());
+
+    if (!removed) {
+        const QString message = QStringLiteral("Failed to clear the knowledge base root: %1").arg(knowledgeRoot);
+        emit systemNotice(message);
+        addDiagnostic(QStringLiteral("ingest"), message);
+        notifyTaskFailed(QStringLiteral("Knowledge base clear failed"), message);
+        return;
+    }
+
+    const QString message = QStringLiteral("Knowledge base cleared.");
+    emit systemNotice(message);
+    addDiagnostic(QStringLiteral("ingest"), message);
+    notifyTaskSucceeded(QStringLiteral("Knowledge base cleared"), message);
+    reindexDocs();
 }
 
 void ChatController::onSearchStarted(const QString &query, const QString &requestUrl)

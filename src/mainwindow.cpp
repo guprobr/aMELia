@@ -7,6 +7,10 @@
 #include <QClipboard>
 #include <QCheckBox>
 #include <QColor>
+#include <QUrl>
+#include <QTextDocument>
+#include <QTextBrowser>
+#include <QDesktopServices>
 #include <QComboBox>
 #include <QFileDialog>
 #include <QFont>
@@ -200,6 +204,95 @@ QString extractCodeBlocks(const QString &text)
     return blocks.join(QStringLiteral("\n\n---\n\n"));
 }
 
+
+QString bodyFragmentFromDocument(const QTextDocument &doc)
+{
+    QString html = doc.toHtml();
+    const int bodyStart = html.indexOf(QStringLiteral("<body"));
+    if (bodyStart >= 0) {
+        const int fragmentStart = html.indexOf(QLatin1Char('>'), bodyStart);
+        const int bodyEnd = html.indexOf(QStringLiteral("</body>"), fragmentStart);
+        if (fragmentStart >= 0 && bodyEnd > fragmentStart) {
+            return html.mid(fragmentStart + 1, bodyEnd - fragmentStart - 1);
+        }
+    }
+    return html;
+}
+
+QString markdownFragmentToHtml(const QString &markdown)
+{
+    const QString trimmed = markdown.trimmed();
+    if (trimmed.isEmpty()) {
+        return QString();
+    }
+
+    QTextDocument doc;
+    doc.setDocumentMargin(0.0);
+    doc.setMarkdown(trimmed);
+    QString html = bodyFragmentFromDocument(doc);
+
+    html.replace(QStringLiteral("<pre"), QStringLiteral("<pre style=\"background:#0b1220;color:#e5e7eb;padding:12px;border-radius:10px;border:1px solid #243043;overflow:auto;\""));
+    html.replace(QStringLiteral("<code"), QStringLiteral("<code style=\"background:#111827;color:#f8fafc;padding:2px 5px;border-radius:4px;\""));
+    html.replace(QStringLiteral("<blockquote"), QStringLiteral("<blockquote style=\"border-left:4px solid #475569;margin:10px 0;padding:6px 12px;color:#cbd5e1;background:#0f172a;border-radius:6px;\""));
+    html.replace(QStringLiteral("<table"), QStringLiteral("<table style=\"border-collapse:collapse;width:100%;margin:10px 0;\""));
+    html.replace(QStringLiteral("<th"), QStringLiteral("<th style=\"border:1px solid #334155;padding:6px 8px;background:#111827;color:#f8fafc;text-align:left;\""));
+    html.replace(QStringLiteral("<td"), QStringLiteral("<td style=\"border:1px solid #334155;padding:6px 8px;color:#e5e7eb;\""));
+    html.replace(QStringLiteral("<a href="), QStringLiteral("<a style=\"color:#93c5fd;\" href="));
+    return html;
+}
+
+QString messageToRichHtml(const QString &role, const QString &text, QStringList *codeBlocks)
+{
+    const QString rolePrefix = transcriptPrefix(role).toHtmlEscaped();
+    const QString prefixColor = transcriptPrefixColor(role).name();
+    const QString bodyColor = transcriptBodyColor(role).name();
+    QStringList bodyParts;
+
+    const QVector<TranscriptSegment> segments = splitTranscriptSegments(text);
+    for (const TranscriptSegment &segment : segments) {
+        if (segment.isCode) {
+            const QString code = segment.text.trimmed();
+            if (code.isEmpty()) {
+                continue;
+            }
+            const int codeIndex = codeBlocks != nullptr ? codeBlocks->size() : 0;
+            if (codeBlocks != nullptr) {
+                codeBlocks->push_back(code);
+            }
+            const QString languageBadge = segment.language.trimmed().isEmpty()
+                    ? QStringLiteral("code")
+                    : segment.language.trimmed().toHtmlEscaped();
+            bodyParts << QStringLiteral(
+                "<div style=\"margin:10px 0 14px 0;\">"
+                "<div style=\"display:flex;justify-content:space-between;align-items:center;margin:0 0 6px 0;\">"
+                "<span style=\"font-size:11px;font-weight:700;color:#93c5fd;text-transform:uppercase;letter-spacing:0.08em;\">%1</span>"
+                "<a href=\"copycode:%2\" style=\"font-size:12px;color:#93c5fd;text-decoration:none;background:#0f172a;padding:4px 8px;border-radius:6px;border:1px solid #334155;\">Copy code</a>"
+                "</div>"
+                "<pre style=\"margin:0;background:#020617;color:#e2e8f0;padding:12px;border-radius:10px;border:1px solid #334155;overflow:auto;white-space:pre-wrap;\"><code>%3</code></pre>"
+                "</div>")
+                .arg(languageBadge)
+                .arg(codeIndex)
+                .arg(code.toHtmlEscaped());
+        } else {
+            const QString html = markdownFragmentToHtml(segment.text);
+            if (!html.trimmed().isEmpty()) {
+                bodyParts << html;
+            }
+        }
+    }
+
+    if (bodyParts.isEmpty()) {
+        bodyParts << QStringLiteral("<p>%1</p>").arg(text.toHtmlEscaped().replace(QStringLiteral("\n"), QStringLiteral("<br>")));
+    }
+
+    return QStringLiteral(
+        "<div style=\"margin:8px 0 14px 0;padding:10px 12px;border-radius:12px;background:#111827;border:1px solid #1f2937;\">"
+        "<div style=\"font-weight:700;color:%1;margin:0 0 8px 0;\">%2</div>"
+        "<div style=\"color:%3;\">%4</div>"
+        "</div>")
+        .arg(prefixColor, rolePrefix, bodyColor, bodyParts.join(QStringLiteral("\n")));
+}
+
 void appendPathsToLineEdit(QLineEdit *lineEdit, const QStringList &paths)
 {
     if (lineEdit == nullptr || paths.isEmpty()) {
@@ -273,10 +366,14 @@ MainWindow::MainWindow(QWidget *parent)
     titleRow->addWidget(logoLabel, 0, Qt::AlignVCenter);
     titleRow->addStretch(1);
 
-    m_transcript = new QTextEdit(chatPane);
+    auto *transcriptBrowser = new QTextBrowser(chatPane);
+    transcriptBrowser->setOpenLinks(false);
+    transcriptBrowser->setOpenExternalLinks(false);
+    m_transcript = transcriptBrowser;
     m_transcript->setReadOnly(true);
     m_transcript->setPlaceholderText(QStringLiteral("Conversation transcript..."));
     m_transcript->setStyleSheet(QStringLiteral("QTextEdit { background: #0f172a; color: #e5e7eb; }"));
+    connect(transcriptBrowser, &QTextBrowser::anchorClicked, this, &MainWindow::onTranscriptAnchorClicked);
 
     m_input = new QPlainTextEdit(chatPane);
     m_input->setPlaceholderText(QStringLiteral("Type your prompt here..."));
@@ -300,11 +397,11 @@ MainWindow::MainWindow(QWidget *parent)
     m_sendButton = new QPushButton(QStringLiteral("Send"), chatPane);
     m_stopButton = new QPushButton(QStringLiteral("Stop"), chatPane);
     m_reindexButton = new QPushButton(QStringLiteral("Reindex docs"), chatPane);
-    m_testBackendButton = new QPushButton(QStringLiteral("Test Ollama"), chatPane);
+    m_testBackendButton = nullptr;
     m_refreshModelsButton = new QPushButton(QStringLiteral("List models"), chatPane);
     m_rememberButton = new QPushButton(QStringLiteral("Remember input"), chatPane);
     m_copyLastAnswerButton = new QPushButton(QStringLiteral("Copy answer"), chatPane);
-    m_copyCodeBlocksButton = new QPushButton(QStringLiteral("Copy code"), chatPane);
+    m_copyCodeBlocksButton = nullptr;
     m_importFilesButton = new QPushButton(QStringLiteral("Import files"), chatPane);
     m_importFolderButton = new QPushButton(QStringLiteral("Import folder"), chatPane);
     m_statusLabel = new QLabel(QStringLiteral("Ready."), chatPane);
@@ -322,9 +419,7 @@ MainWindow::MainWindow(QWidget *parent)
     controlsLayout->addWidget(m_importFolderButton);
     controlsLayout->addWidget(m_rememberButton);
     controlsLayout->addWidget(m_copyLastAnswerButton);
-    controlsLayout->addWidget(m_copyCodeBlocksButton);
     controlsLayout->addStretch(1);
-    controlsLayout->addWidget(m_testBackendButton);
     controlsLayout->addWidget(m_refreshModelsButton);
     controlsLayout->addWidget(m_reindexButton);
     controlsLayout->addWidget(m_stopButton);
@@ -352,38 +447,6 @@ MainWindow::MainWindow(QWidget *parent)
     m_diagnostics->setReadOnly(true);
     m_diagnostics->setStyleSheet(QStringLiteral("QTextEdit { background: #0b1220; color: #e5e7eb; }"));
     tabs->addTab(m_diagnostics, QStringLiteral("Diagnostics"));
-
-    m_backendSummary = new QPlainTextEdit(tabs);
-    m_backendSummary->setReadOnly(true);
-    tabs->addTab(m_backendSummary, QStringLiteral("Backend"));
-
-    m_sourceInventory = new QPlainTextEdit(tabs);
-    m_sourceInventory->setReadOnly(true);
-    tabs->addTab(m_sourceInventory, QStringLiteral("Knowledge Base"));
-
-    m_privacyPreview = new QPlainTextEdit(tabs);
-    m_privacyPreview->setReadOnly(true);
-    tabs->addTab(m_privacyPreview, QStringLiteral("Privacy"));
-
-    m_outlinePlan = new QPlainTextEdit(tabs);
-    m_outlinePlan->setReadOnly(true);
-    tabs->addTab(m_outlinePlan, QStringLiteral("Outline Plan"));
-
-    m_localSources = new QPlainTextEdit(tabs);
-    m_localSources->setReadOnly(true);
-    tabs->addTab(m_localSources, QStringLiteral("Local Sources"));
-
-    m_externalSources = new QPlainTextEdit(tabs);
-    m_externalSources->setReadOnly(true);
-    tabs->addTab(m_externalSources, QStringLiteral("External Sources"));
-
-    m_memoriesView = new QPlainTextEdit(tabs);
-    m_memoriesView->setReadOnly(true);
-    tabs->addTab(m_memoriesView, QStringLiteral("Memory"));
-
-    m_sessionSummary = new QPlainTextEdit(tabs);
-    m_sessionSummary->setReadOnly(true);
-    tabs->addTab(m_sessionSummary, QStringLiteral("Session Summary"));
 
     auto *promptLabTab = new QWidget(tabs);
     auto *promptLabLayout = new QVBoxLayout(promptLabTab);
@@ -447,6 +510,52 @@ MainWindow::MainWindow(QWidget *parent)
     promptLabLayout->addWidget(m_promptLabPreview, 1);
     tabs->addTab(promptLabTab, QStringLiteral("Prompt Lab"));
 
+    m_backendSummary = new QPlainTextEdit(tabs);
+    m_backendSummary->setReadOnly(true);
+    tabs->addTab(m_backendSummary, QStringLiteral("Backend"));
+
+    auto *kbTab = new QWidget(tabs);
+    auto *kbLayout = new QVBoxLayout(kbTab);
+    m_sourceInventory = new QPlainTextEdit(kbTab);
+    m_sourceInventory->setReadOnly(true);
+    m_sourceInventory->setMaximumHeight(120);
+    m_sourceInventoryList = new QListWidget(kbTab);
+    m_sourceInventoryList->setSelectionMode(QAbstractItemView::ExtendedSelection);
+    auto *kbButtons = new QHBoxLayout();
+    m_removeSelectedAssetButton = new QPushButton(QStringLiteral("Remove selected"), kbTab);
+    m_clearKnowledgeBaseButton = new QPushButton(QStringLiteral("Clear KB"), kbTab);
+    kbButtons->addWidget(m_removeSelectedAssetButton);
+    kbButtons->addWidget(m_clearKnowledgeBaseButton);
+    kbButtons->addStretch(1);
+    kbLayout->addWidget(m_sourceInventory);
+    kbLayout->addWidget(m_sourceInventoryList, 1);
+    kbLayout->addLayout(kbButtons);
+    tabs->addTab(kbTab, QStringLiteral("Knowledge Base"));
+
+    m_privacyPreview = new QPlainTextEdit(tabs);
+    m_privacyPreview->setReadOnly(true);
+    tabs->addTab(m_privacyPreview, QStringLiteral("Privacy"));
+
+    m_outlinePlan = new QPlainTextEdit(tabs);
+    m_outlinePlan->setReadOnly(true);
+    tabs->addTab(m_outlinePlan, QStringLiteral("Outline Plan"));
+
+    m_localSources = new QPlainTextEdit(tabs);
+    m_localSources->setReadOnly(true);
+    tabs->addTab(m_localSources, QStringLiteral("Local Sources"));
+
+    m_externalSources = new QPlainTextEdit(tabs);
+    m_externalSources->setReadOnly(true);
+    tabs->addTab(m_externalSources, QStringLiteral("External Sources"));
+
+    m_memoriesView = new QPlainTextEdit(tabs);
+    m_memoriesView->setReadOnly(true);
+    tabs->addTab(m_memoriesView, QStringLiteral("Memory"));
+
+    m_sessionSummary = new QPlainTextEdit(tabs);
+    m_sessionSummary->setReadOnly(true);
+    tabs->addTab(m_sessionSummary, QStringLiteral("Session Summary"));
+
     rightLayout->addWidget(contextTitle);
     rightLayout->addWidget(tabs, 1);
 
@@ -473,7 +582,6 @@ MainWindow::MainWindow(QWidget *parent)
     connect(m_sendButton, &QPushButton::clicked, this, &MainWindow::onSendClicked);
     connect(m_stopButton, &QPushButton::clicked, this, &MainWindow::stopRequested);
     connect(m_reindexButton, &QPushButton::clicked, this, &MainWindow::reindexRequested);
-    connect(m_testBackendButton, &QPushButton::clicked, this, &MainWindow::testBackendRequested);
     connect(m_refreshModelsButton, &QPushButton::clicked, this, &MainWindow::refreshModelsRequested);
     connect(m_newConversationButton, &QPushButton::clicked, this, &MainWindow::newConversationRequested);
     connect(m_rememberButton, &QPushButton::clicked, this, &MainWindow::onRememberClicked);
@@ -489,7 +597,8 @@ MainWindow::MainWindow(QWidget *parent)
     connect(m_promptLabBrowseFolderButton, &QPushButton::clicked, this, &MainWindow::onPromptLabBrowseFolderClicked);
     connect(m_promptLabCopyRecipeButton, &QPushButton::clicked, this, &MainWindow::onPromptLabCopyRecipeClicked);
     connect(m_copyLastAnswerButton, &QPushButton::clicked, this, &MainWindow::onCopyLastAnswerClicked);
-    connect(m_copyCodeBlocksButton, &QPushButton::clicked, this, &MainWindow::onCopyCodeBlocksClicked);
+    connect(m_removeSelectedAssetButton, &QPushButton::clicked, this, &MainWindow::onRemoveSelectedKnowledgeAssetsClicked);
+    connect(m_clearKnowledgeBaseButton, &QPushButton::clicked, this, &MainWindow::onClearKnowledgeBaseClicked);
 
     if (m_promptLabPreview != nullptr) {
         m_promptLabPreview->setPlainText(buildPromptLabRecipe());
@@ -511,65 +620,11 @@ void MainWindow::insertTranscriptMessage(const QString &role, const QString &tex
     QTextCursor cursor = m_transcript->textCursor();
     cursor.movePosition(QTextCursor::End);
     if (!m_transcript->document()->isEmpty()) {
-        cursor.insertBlock();
+        cursor.insertHtml(QStringLiteral("<div style=\"height:6px\"></div>"));
     }
 
-    QTextCharFormat prefixFormat;
-    prefixFormat.setFontWeight(QFont::Bold);
-    prefixFormat.setForeground(transcriptPrefixColor(role));
-
-    QTextCharFormat bodyFormat;
-    bodyFormat.setForeground(transcriptBodyColor(role));
-
-    QTextCharFormat codeFormat;
-    codeFormat.setForeground(QColor(QStringLiteral("#dbeafe")));
-    codeFormat.setBackground(QColor(QStringLiteral("#111827")));
-    codeFormat.setFontFamilies({QStringLiteral("Monospace"), QStringLiteral("Courier New"), QStringLiteral("DejaVu Sans Mono")});
-
-    QTextCharFormat codeHeaderFormat;
-    codeHeaderFormat.setForeground(QColor(QStringLiteral("#93c5fd")));
-    codeHeaderFormat.setFontWeight(QFont::Bold);
-
-    QTextBlockFormat codeBlockFormat;
-    codeBlockFormat.setBackground(QColor(QStringLiteral("#0b1220")));
-    codeBlockFormat.setTopMargin(4.0);
-    codeBlockFormat.setBottomMargin(4.0);
-    codeBlockFormat.setLeftMargin(12.0);
-    codeBlockFormat.setRightMargin(8.0);
-
-    cursor.insertText(transcriptPrefix(role), prefixFormat);
-
-    const QVector<TranscriptSegment> segments = splitTranscriptSegments(text);
-    if (segments.isEmpty()) {
-        cursor.insertText(text, bodyFormat);
-        cursor.insertBlock();
-        m_transcript->setTextCursor(cursor);
-        m_transcript->ensureCursorVisible();
-        return;
-    }
-
-    bool insertedCode = false;
-    for (const TranscriptSegment &segment : segments) {
-        if (!segment.isCode) {
-            if (!segment.text.isEmpty()) {
-                cursor.insertText(segment.text, bodyFormat);
-            }
-            continue;
-        }
-
-        if (!insertedCode) {
-            cursor.insertBlock();
-            insertedCode = true;
-        }
-        cursor.insertBlock(codeBlockFormat, codeFormat);
-        const QString label = segment.language.trimmed().isEmpty()
-                ? QStringLiteral("[code]")
-                : QStringLiteral("[code: %1]").arg(segment.language.trimmed());
-        cursor.insertText(label + QStringLiteral("\n"), codeHeaderFormat);
-        cursor.insertText(segment.text.trimmed() + QStringLiteral("\n"), codeFormat);
-        cursor.insertBlock();
-    }
-
+    const QString html = messageToRichHtml(role, text, &m_transcriptCodeBlocks);
+    cursor.insertHtml(html);
     cursor.insertBlock();
     m_transcript->setTextCursor(cursor);
     m_transcript->ensureCursorVisible();
@@ -842,6 +897,7 @@ void MainWindow::rebuildTranscriptFromPlainText(const QString &text)
     m_streamingAssistant = false;
     m_streamingAssistantStartPosition = -1;
     m_lastAssistantMessage.clear();
+    m_transcriptCodeBlocks.clear();
 
     const QStringList blocks = text.split(QRegularExpression(QStringLiteral("\n\\s*\n")), Qt::SkipEmptyParts);
     for (const QString &block : blocks) {
@@ -926,6 +982,8 @@ void MainWindow::setBusy(bool busy)
     if (m_promptLabBrowseFilesButton != nullptr) m_promptLabBrowseFilesButton->setEnabled(!busy && !m_indexingActive);
     if (m_promptLabBrowseFolderButton != nullptr) m_promptLabBrowseFolderButton->setEnabled(!busy && !m_indexingActive);
     if (m_promptLabCopyRecipeButton != nullptr) m_promptLabCopyRecipeButton->setEnabled(!busy);
+    if (m_removeSelectedAssetButton != nullptr) m_removeSelectedAssetButton->setEnabled(!busy && !m_indexingActive);
+    if (m_clearKnowledgeBaseButton != nullptr) m_clearKnowledgeBaseButton->setEnabled(!busy && !m_indexingActive);
 
     if (busy) {
         beginResponseProgress(QStringLiteral("Preparing prompt..."));
@@ -952,6 +1010,8 @@ void MainWindow::setIndexingActive(bool active)
     m_promptLabImportButton->setEnabled(!active && !m_stopButton->isEnabled());
     if (m_promptLabBrowseFilesButton != nullptr) m_promptLabBrowseFilesButton->setEnabled(!active && !m_stopButton->isEnabled());
     if (m_promptLabBrowseFolderButton != nullptr) m_promptLabBrowseFolderButton->setEnabled(!active && !m_stopButton->isEnabled());
+    if (m_removeSelectedAssetButton != nullptr) m_removeSelectedAssetButton->setEnabled(!active && !m_stopButton->isEnabled());
+    if (m_clearKnowledgeBaseButton != nullptr) m_clearKnowledgeBaseButton->setEnabled(!active && !m_stopButton->isEnabled());
 
     if (m_taskProgressBar == nullptr) {
         return;
@@ -1025,7 +1085,114 @@ void MainWindow::setDiagnostics(const QString &text)
 
 void MainWindow::setSourceInventory(const QString &text)
 {
-    m_sourceInventory->setPlainText(text);
+    if (m_sourceInventory != nullptr) {
+        QStringList lines = text.split(QLatin1Char('\n'));
+        QStringList summary;
+        while (!lines.isEmpty()) {
+            const QString line = lines.takeFirst();
+            if (line.trimmed().isEmpty()) {
+                break;
+            }
+            summary << line;
+        }
+        m_sourceInventory->setPlainText(summary.join(QStringLiteral("\n")));
+    }
+
+    if (m_sourceInventoryList == nullptr) {
+        return;
+    }
+
+    m_sourceInventoryList->clear();
+    if (text.trimmed().isEmpty() || text.trimmed() == QStringLiteral("<none>")) {
+        return;
+    }
+
+    const QStringList blocks = text.split(QRegularExpression(QStringLiteral("\n\\s*\n")), Qt::SkipEmptyParts);
+    for (const QString &block : blocks) {
+        const QStringList lines = block.split(QLatin1Char('\n'), Qt::SkipEmptyParts);
+        QString filePath;
+        QStringList details;
+        for (const QString &line : lines) {
+            if (line.startsWith(QStringLiteral("File: "))) {
+                filePath = line.mid(6).trimmed();
+            } else {
+                details << line.trimmed();
+            }
+        }
+        if (filePath.isEmpty()) {
+            continue;
+        }
+        auto *item = new QListWidgetItem(filePath, m_sourceInventoryList);
+        item->setData(Qt::UserRole, filePath);
+        item->setToolTip(details.join(QStringLiteral("\n")));
+    }
+}
+
+void MainWindow::onRemoveSelectedKnowledgeAssetsClicked()
+{
+    if (m_sourceInventoryList == nullptr) {
+        return;
+    }
+
+    const QList<QListWidgetItem *> items = m_sourceInventoryList->selectedItems();
+    QStringList paths;
+    for (QListWidgetItem *item : items) {
+        if (item == nullptr) {
+            continue;
+        }
+        const QString path = item->data(Qt::UserRole).toString().trimmed();
+        if (!path.isEmpty()) {
+            paths << path;
+        }
+    }
+
+    if (paths.isEmpty()) {
+        QMessageBox::information(this,
+                                 QStringLiteral("Knowledge Base"),
+                                 QStringLiteral("Select one or more knowledge base assets first."));
+        return;
+    }
+
+    const auto answer = QMessageBox::question(this,
+                                              QStringLiteral("Remove knowledge assets"),
+                                              QStringLiteral("Remove %1 selected asset(s) from the knowledge base?").arg(paths.size()));
+    if (answer != QMessageBox::Yes) {
+        return;
+    }
+
+    emit removeKnowledgeAssetsRequested(paths);
+}
+
+void MainWindow::onClearKnowledgeBaseClicked()
+{
+    const auto answer = QMessageBox::warning(this,
+                                             QStringLiteral("Clear knowledge base"),
+                                             QStringLiteral("Remove all imported assets from the knowledge base? This cannot be undone."),
+                                             QMessageBox::Yes | QMessageBox::No,
+                                             QMessageBox::No);
+    if (answer != QMessageBox::Yes) {
+        return;
+    }
+
+    emit clearKnowledgeBaseRequested();
+}
+
+void MainWindow::onTranscriptAnchorClicked(const QUrl &url)
+{
+    if (url.scheme() == QStringLiteral("copycode")) {
+        bool ok = false;
+        const int index = url.path().isEmpty() ? url.host().toInt(&ok) : url.path().mid(1).toInt(&ok);
+        if (!ok || index < 0 || index >= m_transcriptCodeBlocks.size()) {
+            return;
+        }
+        QApplication::clipboard()->setText(m_transcriptCodeBlocks.at(index));
+        m_statusLabel->setText(QStringLiteral("Code block copied to clipboard."));
+        return;
+    }
+
+    if (url.isValid()) {
+        QDesktopServices::openUrl(url);
+    }
 }
 
 void MainWindow::setAvailableModels(const QStringList &models, const QString &currentModel)
