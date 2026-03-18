@@ -1,86 +1,88 @@
 # Amelia Qt6 v6.69
 
-Amelia is a local offline Qt6/C++ coding and cloud assistant. It talks to a local Ollama server, keeps state on disk under `~/.amelia_qt6`, and can optionally use sanitized external search.
+Amelia is a local-first Qt6/C++ coding and cloud assistant. It talks to a local Ollama server, stores state under `~/.amelia_qt6`, uses a local knowledge base, and can optionally enrich answers with sanitized external search.
 
-This v6.5 build keeps the anti-hallucination work from v6.1, preserves the Prompt Lab workflow, and adds asynchronous PDF-aware indexing progress in the UI.
+This build preserves the Prompt Lab / KB-aware workflow and carries forward the transcript-widget upgrade line that started after v6.2.
 
-## What changed in v6.2
+## What changed since v6.2
 
-### Colored diagnostics
+### v6.5 transcript and Prompt Lab upgrade
 
-Amelia now emits category-colored diagnostics in two places:
+The main transcript is no longer treated like a raw text dump.
 
-- terminal / console output with ANSI colors
-- the in-app **Diagnostics** tab with per-category colors
+It now provides:
 
-Diagnostic categories include:
+- richer visual separation between `USER`, `ASSISTANT`, `SYSTEM`, and `STATUS`
+- fenced code blocks rendered in dedicated code panels
+- markdown-style rendering for headings, lists, quotes, and inline code inside answers
+- more robust transcript restore behavior for multiline answers and code-heavy replies
+- a copy-friendly answer surface for patch, runbook, and KB workflows
 
-- `backend`
-- `search`
-- `rag`
-- `memory`
-- `planner`
-- `guardrail`
-- `ingest`
-- `startup`
-- `budget`
-- `chat`
+Transcript copy helpers now include:
 
-To disable terminal colors, set:
+- **Copy answer** for the last assistant response
+- **Copy transcript** for the whole visible conversation
+- **Copy code block** using a selector populated from fenced blocks detected in the last assistant response
+- transcript context-menu actions for the same copy operations
 
-```bash
-export NO_COLOR=1
-```
+### Prompt Lab improvements carried forward
 
-### Colored transcript
+Prompt Lab is aimed at real KB and patch workflows, not just toy prompt composition.
 
-The main conversation transcript is now rendered as rich text with distinct colors for:
+It includes:
 
-- user messages
-- assistant messages
-- system notices
+- multiple grounded presets
+- a local asset field for files and folders that still need importing
+- browse helpers for files and folders
+- a KB asset/reference field for assets that are already indexed
+- notes/constraints for style, schema, or operational guidance
+- recipe generation, copy, and “use in input” helpers
 
-This makes long local sessions much easier to scan while testing prompts, grounding, and retrieval behavior.
+### Grounding and retrieval fixes
 
-### Prompt Lab training helper tab
+The grounding path was updated so Amelia is less likely to over-refuse when there is partial but usable KB context.
 
-A new **Prompt Lab** tab was added to the right-side panel. It is not a full model trainer, but it does make training-style preparation much easier.
+The current behavior is:
 
-Prompt Lab lets you:
+- prefer grounded KB / retrieved external context
+- avoid inventing unsupported project facts
+- use the hard fallback only when there is genuinely no usable retrieved context
+- summarize supported themes first when the KB is only partially relevant
 
-- choose a preset such as `Code patch`, `Runbook / docs`, `Incident investigation`, or `Dataset from assets`
-- describe a concrete goal
-- list asset paths to import into the knowledge base
-- add extra notes, schema hints, style constraints, or supervision hints
-- generate a reusable grounded prompt recipe
-- preview a compact JSONL-style training example
-- copy that recipe straight into the main input box
-- import the listed assets into Amelia knowledge storage
+External-search policy was broadened so prompts such as:
 
-### Memory manager fixes merged
+- `search the internet`
+- `look up`
+- `who is`
+- `what is`
+- `latest`
+- `current`
+- `recent`
 
-This build also merges the recent memory fixes:
+can trigger external retrieval when allowed.
 
-- fixed regex escaping for platform/release extraction
-- restored `scoreMemory(...)` so linking succeeds again
+### Async indexing and large-PDF usability
 
-## Grounding and safety behavior
+Local reindexing is asynchronous so `pdftotext` does not freeze the main UI during KB refresh.
 
-Amelia still follows the v6.1 grounding rules.
+The UI now shows progress for:
 
-For project-scoped prompts such as questions about:
+- local file scanning
+- PDF extraction
+- embedding / cache rebuild phases
 
-- repository structure
-- files, classes, functions, modules
-- current app capabilities
-- current indexed documentation
-- local filesystem or configuration state
+### v6.69 default-config update
 
-Amelia refuses to guess when no supporting context is present and returns:
+The shipped defaults now favor a more usable KB-first experience out of the box.
 
-```text
-I don't know based on the provided context.
-```
+Default values are now:
+
+- `enableSemanticRetrieval: true`
+- `enableExternalSearch: true`
+- `autoSuggestExternalSearch: true`
+- `ollamaResponseHeadersTimeoutMs: 1800000`
+
+These defaults apply both to the in-code defaults and to `config/config.example.json`.
 
 ## Runtime layout
 
@@ -100,9 +102,9 @@ Typical content:
 
 On first run, Amelia creates `~/.amelia_qt6`, `~/.amelia_qt6/knowledge`, and seeds `~/.amelia_qt6/config.json` from the installed example config when available.
 
-## Example config
+## Config
 
-The packaged example config is:
+Packaged example config:
 
 - `config/config.example.json`
 
@@ -110,12 +112,17 @@ Preferred user config path:
 
 - `~/.amelia_qt6/config.json`
 
+Important note:
+
+- once `~/.amelia_qt6/config.json` already exists, user-config values override newly shipped defaults until that file is edited or recreated.
+
 ## Recommended local models
 
 For dependable coding and cloud work:
 
-- `qwen2.5-coder:14b` — recommended default
+- `qwen2.5-coder:14b` — balanced default
 - `qwen2.5-coder:7b` — lighter fallback
+- `qwen3-coder:30b` — heavier option if your hardware supports it
 
 Example:
 
@@ -145,14 +152,11 @@ cmake --install .
 ## Notes
 
 - Amelia is intentionally local-first.
-- External search is disabled by default.
-- Prompt Lab helps prepare grounded prompt and JSONL-style samples, but it does not fine-tune models by itself.
-- Sample docs may still exist in `docs/sample/`; remove or replace them as needed for your own knowledge base.
+- External search is enabled by default in the shipped config/defaults, but user config still wins if it already exists.
+- Prompt Lab prepares grounded prompts and dataset-style examples; it does not fine-tune models by itself.
 - PDF ingestion still depends on `pdftotext` being available on the system.
+- If you want old configs to inherit the new defaults, update or recreate `~/.amelia_qt6/config.json`.
 
+## About
 
-## What's new in v6.5
-
-- Asynchronous local document reindexing so `pdftotext` does not block the main UI thread.
-- Status-bar progress indicator for local indexing and PDF extraction.
-- Preserves the current Prompt Lab asset helpers and existing UI enhancements.
+A local-first AI assistant built in C++ and Qt6 using Ollama, with persistent KB, prompt budgeting, diagnostics, Prompt Lab, and copy-friendly transcript formatting.

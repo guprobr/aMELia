@@ -25,11 +25,9 @@ struct AppConfig {
     bool autoSaveSessionSummary = true;
     bool seedDocsIntoKnowledge = true;
 
-    // Semantic retrieval via hash-embedding.
-    // NOTE: The built-in embedder (local-hash-semantic-v1) is a random-projection
-    // approximation -- useful for token-overlap boosting but NOT a real semantic model.
-    // Keep false until you wire a real embedding model (e.g. nomic-embed-text via Ollama).
-    bool enableSemanticRetrieval = false;
+    // Semantic retrieval is enabled by default for broader KB discovery.
+    // If your local embedding backend is too noisy, you can still disable it in config.
+    bool enableSemanticRetrieval = true;
 
     bool preferOutlinePlanning = true;
     bool requireGroundingForProjectQuestions = true;
@@ -51,7 +49,7 @@ struct AppConfig {
     int maxRelevantMemories = 6;
     int externalSearchTimeoutMs = 15000;
     int ollamaProbeTimeoutMs = 10000;
-    int ollamaResponseHeadersTimeoutMs = 180000;
+    int ollamaResponseHeadersTimeoutMs = 1800000;
     int ollamaFirstTokenTimeoutMs = 600000;
     int ollamaInactivityTimeoutMs = 300000;
     int ollamaTotalTimeoutMs = 0;

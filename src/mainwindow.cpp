@@ -18,6 +18,7 @@
 #include <QListWidget>
 #include <QListWidgetItem>
 #include <QMenu>
+#include <memory>
 #include <QMenuBar>
 #include <QMessageBox>
 #include <QPlainTextEdit>
@@ -142,6 +143,140 @@ struct TranscriptSegment {
     QString text;
 };
 
+struct CodeBlockChoice {
+    QString label;
+    QString content;
+};
+
+void insertInlineFormattedText(QTextCursor &cursor,
+                               const QString &text,
+                               const QTextCharFormat &bodyFormat,
+                               const QTextCharFormat &inlineCodeFormat)
+{
+    int pos = 0;
+    while (pos < text.size()) {
+        const int tickStart = text.indexOf(QLatin1Char('`'), pos);
+        if (tickStart < 0) {
+            cursor.insertText(text.mid(pos), bodyFormat);
+            break;
+        }
+        if (tickStart > pos) {
+            cursor.insertText(text.mid(pos, tickStart - pos), bodyFormat);
+        }
+        const int tickEnd = text.indexOf(QLatin1Char('`'), tickStart + 1);
+        if (tickEnd < 0) {
+            cursor.insertText(text.mid(tickStart), bodyFormat);
+            break;
+        }
+        const QString code = text.mid(tickStart + 1, tickEnd - tickStart - 1);
+        cursor.insertText(code, inlineCodeFormat);
+        pos = tickEnd + 1;
+    }
+}
+
+void insertMarkdownishText(QTextCursor &cursor,
+                           const QString &text,
+                           const QTextCharFormat &bodyFormat,
+                           const QTextCharFormat &inlineCodeFormat,
+                           const QColor &accentColor)
+{
+    const QStringList lines = text.split(QLatin1Char('\n'), Qt::KeepEmptyParts);
+    bool firstLine = true;
+
+    for (const QString &rawLine : lines) {
+        const QString trimmed = rawLine.trimmed();
+        if (!firstLine) {
+            cursor.insertBlock();
+        }
+        firstLine = false;
+
+        if (trimmed.isEmpty()) {
+            continue;
+        }
+
+        QTextBlockFormat blockFormat;
+        blockFormat.setTopMargin(1.0);
+        blockFormat.setBottomMargin(1.0);
+        cursor.setBlockFormat(blockFormat);
+
+        QTextCharFormat lineFormat = bodyFormat;
+        QTextCharFormat prefixFormat = bodyFormat;
+        prefixFormat.setForeground(accentColor.lighter(120));
+        prefixFormat.setFontWeight(QFont::Bold);
+
+        const QRegularExpression headingRe(QStringLiteral(R"(^(#{1,4})\s+(.*)$)"));
+        const QRegularExpression bulletRe(QStringLiteral(R"(^([-*+])\s+(.*)$)"));
+        const QRegularExpression numberRe(QStringLiteral(R"(^(\d+[\.)])\s+(.*)$)"));
+        const QRegularExpression quoteRe(QStringLiteral(R"(^>\s?(.*)$)"));
+
+        if (const auto match = headingRe.match(trimmed); match.hasMatch()) {
+            const int level = match.captured(1).size();
+            const QString content = match.captured(2).trimmed();
+            lineFormat.setFontWeight(QFont::Bold);
+            const double size = level == 1 ? 16.0 : level == 2 ? 14.5 : level == 3 ? 13.5 : 12.5;
+            lineFormat.setFontPointSize(size);
+            lineFormat.setForeground(accentColor.lighter(level <= 2 ? 140 : 125));
+            insertInlineFormattedText(cursor, content, lineFormat, inlineCodeFormat);
+            continue;
+        }
+
+        if (const auto match = bulletRe.match(trimmed); match.hasMatch()) {
+            blockFormat.setLeftMargin(18.0);
+            cursor.setBlockFormat(blockFormat);
+            cursor.insertText(QStringLiteral("• "), prefixFormat);
+            insertInlineFormattedText(cursor, match.captured(2).trimmed(), lineFormat, inlineCodeFormat);
+            continue;
+        }
+
+        if (const auto match = numberRe.match(trimmed); match.hasMatch()) {
+            blockFormat.setLeftMargin(18.0);
+            cursor.setBlockFormat(blockFormat);
+            cursor.insertText(match.captured(1) + QStringLiteral(" "), prefixFormat);
+            insertInlineFormattedText(cursor, match.captured(2).trimmed(), lineFormat, inlineCodeFormat);
+            continue;
+        }
+
+        if (const auto match = quoteRe.match(trimmed); match.hasMatch()) {
+            blockFormat.setLeftMargin(16.0);
+            blockFormat.setBackground(QColor(QStringLiteral("#111827")));
+            cursor.setBlockFormat(blockFormat);
+            cursor.insertText(QStringLiteral("│ "), prefixFormat);
+            insertInlineFormattedText(cursor, match.captured(1).trimmed(), lineFormat, inlineCodeFormat);
+            continue;
+        }
+
+        insertInlineFormattedText(cursor, rawLine, lineFormat, inlineCodeFormat);
+    }
+}
+
+bool parseTranscriptRoleLine(const QString &line, QString *role, QString *content)
+{
+    const struct PrefixInfo {
+        const char *prefix;
+        const char *role;
+        int len;
+    } prefixes[] = {
+        {"USER> ", "user", 6},
+        {"ASSISTANT> ", "assistant", 11},
+        {"[system] ", "system", 9},
+        {"[status] ", "status", 9},
+    };
+
+    for (const PrefixInfo &info : prefixes) {
+        const QString prefix = QString::fromLatin1(info.prefix);
+        if (line.startsWith(prefix)) {
+            if (role != nullptr) {
+                *role = QString::fromLatin1(info.role);
+            }
+            if (content != nullptr) {
+                *content = line.mid(info.len);
+            }
+            return true;
+        }
+    }
+    return false;
+}
+
 QVector<TranscriptSegment> splitTranscriptSegments(const QString &text)
 {
     QVector<TranscriptSegment> segments;
@@ -188,14 +323,33 @@ QVector<TranscriptSegment> splitTranscriptSegments(const QString &text)
     return segments;
 }
 
+QVector<CodeBlockChoice> extractCodeBlockChoices(const QString &text)
+{
+    QVector<CodeBlockChoice> blocks;
+    const QVector<TranscriptSegment> segments = splitTranscriptSegments(text);
+    int counter = 1;
+    for (const TranscriptSegment &segment : segments) {
+        if (!segment.isCode || segment.text.trimmed().isEmpty()) {
+            continue;
+        }
+        CodeBlockChoice choice;
+        const QString language = segment.language.trimmed();
+        choice.label = language.isEmpty()
+                ? QStringLiteral("Code block %1").arg(counter)
+                : QStringLiteral("Code block %1 (%2)").arg(counter).arg(language);
+        choice.content = segment.text.trimmed();
+        blocks.push_back(choice);
+        ++counter;
+    }
+    return blocks;
+}
+
 QString extractCodeBlocks(const QString &text)
 {
     QStringList blocks;
-    const QVector<TranscriptSegment> segments = splitTranscriptSegments(text);
-    for (const TranscriptSegment &segment : segments) {
-        if (segment.isCode && !segment.text.trimmed().isEmpty()) {
-            blocks << segment.text.trimmed();
-        }
+    const QVector<CodeBlockChoice> choices = extractCodeBlockChoices(text);
+    for (const CodeBlockChoice &choice : choices) {
+        blocks << choice.content;
     }
     return blocks.join(QStringLiteral("\n\n---\n\n"));
 }
@@ -276,6 +430,7 @@ MainWindow::MainWindow(QWidget *parent)
     m_transcript = new QTextEdit(chatPane);
     m_transcript->setReadOnly(true);
     m_transcript->setPlaceholderText(QStringLiteral("Conversation transcript..."));
+    m_transcript->setContextMenuPolicy(Qt::CustomContextMenu);
     m_transcript->setStyleSheet(QStringLiteral("QTextEdit { background: #0f172a; color: #e5e7eb; }"));
 
     m_input = new QPlainTextEdit(chatPane);
@@ -304,7 +459,11 @@ MainWindow::MainWindow(QWidget *parent)
     m_refreshModelsButton = new QPushButton(QStringLiteral("List models"), chatPane);
     m_rememberButton = new QPushButton(QStringLiteral("Remember input"), chatPane);
     m_copyLastAnswerButton = new QPushButton(QStringLiteral("Copy answer"), chatPane);
-    m_copyCodeBlocksButton = new QPushButton(QStringLiteral("Copy code"), chatPane);
+    m_copyTranscriptButton = new QPushButton(QStringLiteral("Copy transcript"), chatPane);
+    m_copyCodeBlocksButton = new QPushButton(QStringLiteral("Copy code block"), chatPane);
+    m_codeBlockSelector = new QComboBox(chatPane);
+    m_codeBlockSelector->setMinimumWidth(200);
+    m_codeBlockSelector->setEnabled(false);
     m_importFilesButton = new QPushButton(QStringLiteral("Import files"), chatPane);
     m_importFolderButton = new QPushButton(QStringLiteral("Import folder"), chatPane);
     m_statusLabel = new QLabel(QStringLiteral("Ready."), chatPane);
@@ -322,6 +481,8 @@ MainWindow::MainWindow(QWidget *parent)
     controlsLayout->addWidget(m_importFolderButton);
     controlsLayout->addWidget(m_rememberButton);
     controlsLayout->addWidget(m_copyLastAnswerButton);
+    controlsLayout->addWidget(m_copyTranscriptButton);
+    controlsLayout->addWidget(m_codeBlockSelector);
     controlsLayout->addWidget(m_copyCodeBlocksButton);
     controlsLayout->addStretch(1);
     controlsLayout->addWidget(m_testBackendButton);
@@ -489,7 +650,9 @@ MainWindow::MainWindow(QWidget *parent)
     connect(m_promptLabBrowseFolderButton, &QPushButton::clicked, this, &MainWindow::onPromptLabBrowseFolderClicked);
     connect(m_promptLabCopyRecipeButton, &QPushButton::clicked, this, &MainWindow::onPromptLabCopyRecipeClicked);
     connect(m_copyLastAnswerButton, &QPushButton::clicked, this, &MainWindow::onCopyLastAnswerClicked);
+    connect(m_copyTranscriptButton, &QPushButton::clicked, this, &MainWindow::onCopyTranscriptClicked);
     connect(m_copyCodeBlocksButton, &QPushButton::clicked, this, &MainWindow::onCopyCodeBlocksClicked);
+    connect(m_transcript, &QWidget::customContextMenuRequested, this, &MainWindow::onTranscriptContextMenuRequested);
 
     if (m_promptLabPreview != nullptr) {
         m_promptLabPreview->setPlainText(buildPromptLabRecipe());
@@ -521,45 +684,60 @@ void MainWindow::insertTranscriptMessage(const QString &role, const QString &tex
     QTextCharFormat bodyFormat;
     bodyFormat.setForeground(transcriptBodyColor(role));
 
-    QTextCharFormat codeFormat;
-    codeFormat.setForeground(QColor(QStringLiteral("#dbeafe")));
-    codeFormat.setBackground(QColor(QStringLiteral("#111827")));
-    codeFormat.setFontFamilies({QStringLiteral("Monospace"), QStringLiteral("Courier New"), QStringLiteral("DejaVu Sans Mono")});
+    QTextCharFormat inlineCodeFormat = bodyFormat;
+    inlineCodeFormat.setForeground(QColor(QStringLiteral("#dbeafe")));
+    inlineCodeFormat.setBackground(QColor(QStringLiteral("#111827")));
+    inlineCodeFormat.setFontFamilies({QStringLiteral("Monospace"), QStringLiteral("Courier New"), QStringLiteral("DejaVu Sans Mono")});
+
+    QTextCharFormat codeFormat = inlineCodeFormat;
 
     QTextCharFormat codeHeaderFormat;
     codeHeaderFormat.setForeground(QColor(QStringLiteral("#93c5fd")));
     codeHeaderFormat.setFontWeight(QFont::Bold);
 
+    QTextBlockFormat headerBlockFormat;
+    headerBlockFormat.setTopMargin(6.0);
+    headerBlockFormat.setBottomMargin(2.0);
+    headerBlockFormat.setLeftMargin(4.0);
+
+    QTextBlockFormat bodyBlockFormat;
+    bodyBlockFormat.setTopMargin(1.0);
+    bodyBlockFormat.setBottomMargin(1.0);
+    bodyBlockFormat.setLeftMargin(16.0);
+    bodyBlockFormat.setRightMargin(8.0);
+
     QTextBlockFormat codeBlockFormat;
     codeBlockFormat.setBackground(QColor(QStringLiteral("#0b1220")));
     codeBlockFormat.setTopMargin(4.0);
     codeBlockFormat.setBottomMargin(4.0);
-    codeBlockFormat.setLeftMargin(12.0);
+    codeBlockFormat.setLeftMargin(24.0);
     codeBlockFormat.setRightMargin(8.0);
 
+    cursor.setBlockFormat(headerBlockFormat);
     cursor.insertText(transcriptPrefix(role), prefixFormat);
+    cursor.insertBlock(bodyBlockFormat, bodyFormat);
 
     const QVector<TranscriptSegment> segments = splitTranscriptSegments(text);
     if (segments.isEmpty()) {
-        cursor.insertText(text, bodyFormat);
+        insertMarkdownishText(cursor, text, bodyFormat, inlineCodeFormat, transcriptPrefixColor(role));
         cursor.insertBlock();
         m_transcript->setTextCursor(cursor);
         m_transcript->ensureCursorVisible();
         return;
     }
 
-    bool insertedCode = false;
+    bool wroteVisibleContent = false;
     for (const TranscriptSegment &segment : segments) {
         if (!segment.isCode) {
             if (!segment.text.isEmpty()) {
-                cursor.insertText(segment.text, bodyFormat);
+                insertMarkdownishText(cursor, segment.text, bodyFormat, inlineCodeFormat, transcriptPrefixColor(role));
+                wroteVisibleContent = true;
             }
             continue;
         }
 
-        if (!insertedCode) {
-            cursor.insertBlock();
-            insertedCode = true;
+        if (wroteVisibleContent) {
+            cursor.insertBlock(bodyBlockFormat, bodyFormat);
         }
         cursor.insertBlock(codeBlockFormat, codeFormat);
         const QString label = segment.language.trimmed().isEmpty()
@@ -567,7 +745,8 @@ void MainWindow::insertTranscriptMessage(const QString &role, const QString &tex
                 : QStringLiteral("[code: %1]").arg(segment.language.trimmed());
         cursor.insertText(label + QStringLiteral("\n"), codeHeaderFormat);
         cursor.insertText(segment.text.trimmed() + QStringLiteral("\n"), codeFormat);
-        cursor.insertBlock();
+        cursor.insertBlock(bodyBlockFormat, bodyFormat);
+        wroteVisibleContent = true;
     }
 
     cursor.insertBlock();
@@ -641,6 +820,7 @@ void MainWindow::appendAssistantChunk(const QString &text)
 void MainWindow::finalizeAssistantMessage(const QString &text)
 {
     m_lastAssistantMessage = text;
+    updateCodeBlockSelector();
 
     if (m_streamingAssistant && m_streamingAssistantStartPosition >= 0) {
         QTextCursor cursor(m_transcript->document());
@@ -699,21 +879,46 @@ void MainWindow::rebuildTranscriptFromPlainText(const QString &text)
     m_streamingAssistantStartPosition = -1;
     m_lastAssistantMessage.clear();
 
-    const QStringList blocks = text.split(QRegularExpression(QStringLiteral("\n\\s*\n")), Qt::SkipEmptyParts);
-    for (const QString &block : blocks) {
-        const QString trimmed = block.trimmed();
-        if (trimmed.startsWith(QStringLiteral("USER> "))) {
-            appendTranscriptEntry(QStringLiteral("user"), trimmed.mid(6));
-        } else if (trimmed.startsWith(QStringLiteral("ASSISTANT> "))) {
-            const QString message = trimmed.mid(11);
-            m_lastAssistantMessage = message;
-            appendTranscriptEntry(QStringLiteral("assistant"), message);
-        } else if (trimmed.startsWith(QStringLiteral("[system] "))) {
-            appendTranscriptEntry(QStringLiteral("system"), trimmed.mid(9));
-        } else if (!trimmed.isEmpty()) {
-            appendTranscriptEntry(QStringLiteral("system"), trimmed);
+    QString currentRole;
+    QString currentContent;
+
+    const auto flushCurrent = [this, &currentRole, &currentContent]() {
+        if (currentRole.isEmpty()) {
+            return;
         }
+        if (currentRole == QStringLiteral("assistant")) {
+            m_lastAssistantMessage = currentContent;
+        }
+        appendTranscriptEntry(currentRole, currentContent);
+        currentRole.clear();
+        currentContent.clear();
+    };
+
+    const QStringList lines = text.split(QLatin1Char('\n'), Qt::KeepEmptyParts);
+    for (const QString &line : lines) {
+        QString parsedRole;
+        QString parsedContent;
+        if (parseTranscriptRoleLine(line, &parsedRole, &parsedContent)) {
+            flushCurrent();
+            currentRole = parsedRole;
+            currentContent = parsedContent;
+            continue;
+        }
+
+        if (currentRole.isEmpty()) {
+            if (line.trimmed().isEmpty()) {
+                continue;
+            }
+            currentRole = QStringLiteral("system");
+            currentContent = line;
+            continue;
+        }
+
+        currentContent += QStringLiteral("\n") + line;
     }
+
+    flushCurrent();
+    updateCodeBlockSelector();
 }
 
 void MainWindow::setTranscript(const QString &text)
@@ -757,6 +962,9 @@ void MainWindow::setBusy(bool busy)
     m_promptLabGenerateButton->setEnabled(!busy);
     m_promptLabUseButton->setEnabled(!busy);
     m_promptLabImportButton->setEnabled(!busy && !m_indexingActive);
+    if (m_copyTranscriptButton != nullptr) m_copyTranscriptButton->setEnabled(!busy || !m_transcript->toPlainText().trimmed().isEmpty());
+    if (m_codeBlockSelector != nullptr) m_codeBlockSelector->setEnabled(m_codeBlockSelector->count() > 0);
+    if (m_copyCodeBlocksButton != nullptr) m_copyCodeBlocksButton->setEnabled(m_codeBlockSelector != nullptr && m_codeBlockSelector->count() > 0);
     if (m_promptLabBrowseFilesButton != nullptr) m_promptLabBrowseFilesButton->setEnabled(!busy && !m_indexingActive);
     if (m_promptLabBrowseFolderButton != nullptr) m_promptLabBrowseFolderButton->setEnabled(!busy && !m_indexingActive);
     if (m_promptLabCopyRecipeButton != nullptr) m_promptLabCopyRecipeButton->setEnabled(!busy);
@@ -885,6 +1093,37 @@ void MainWindow::setAvailableModels(const QStringList &models, const QString &cu
 void MainWindow::setExternalSearchEnabledDefault(bool enabled)
 {
     m_externalSearchCheck->setChecked(enabled);
+}
+
+void MainWindow::updateCodeBlockSelector()
+{
+    if (m_codeBlockSelector == nullptr) {
+        return;
+    }
+
+    m_codeBlockSelector->clear();
+    const QVector<CodeBlockChoice> choices = extractCodeBlockChoices(m_lastAssistantMessage);
+    for (const CodeBlockChoice &choice : choices) {
+        m_codeBlockSelector->addItem(choice.label, choice.content);
+    }
+    const bool hasChoices = !choices.isEmpty();
+    m_codeBlockSelector->setEnabled(hasChoices);
+    if (!hasChoices) {
+        m_codeBlockSelector->setToolTip(QStringLiteral("No fenced code blocks in the last assistant answer."));
+    } else {
+        m_codeBlockSelector->setToolTip(QStringLiteral("Choose a detected fenced code block from the last assistant answer."));
+    }
+    if (m_copyCodeBlocksButton != nullptr) {
+        m_copyCodeBlocksButton->setEnabled(hasChoices);
+    }
+}
+
+QString MainWindow::selectedCodeBlockContent() const
+{
+    if (m_codeBlockSelector == nullptr || m_codeBlockSelector->count() <= 0) {
+        return QString();
+    }
+    return m_codeBlockSelector->currentData().toString();
 }
 
 void MainWindow::onSendClicked()
@@ -1127,26 +1366,64 @@ void MainWindow::onCopyLastAnswerClicked()
     m_statusLabel->setText(QStringLiteral("Last assistant answer copied to clipboard."));
 }
 
+void MainWindow::onCopyTranscriptClicked()
+{
+    const QString transcriptText = m_transcript != nullptr ? m_transcript->toPlainText().trimmed() : QString();
+    if (transcriptText.isEmpty()) {
+        QMessageBox::information(this, QStringLiteral("Copy transcript"), QStringLiteral("The transcript is empty."));
+        return;
+    }
+    QApplication::clipboard()->setText(transcriptText);
+    m_statusLabel->setText(QStringLiteral("Transcript copied to clipboard."));
+}
+
 void MainWindow::onCopyCodeBlocksClicked()
 {
     if (m_lastAssistantMessage.trimmed().isEmpty()) {
         QMessageBox::information(this, QStringLiteral("Copy code"), QStringLiteral("There is no completed assistant answer to inspect yet."));
         return;
     }
-    const QString codeOnly = extractCodeBlocks(m_lastAssistantMessage);
-    if (codeOnly.trimmed().isEmpty()) {
+
+    const QString selectedCode = selectedCodeBlockContent();
+    if (selectedCode.trimmed().isEmpty()) {
         QMessageBox::information(this, QStringLiteral("Copy code"), QStringLiteral("The last assistant answer does not contain fenced code blocks."));
         return;
     }
-    QApplication::clipboard()->setText(codeOnly);
-    m_statusLabel->setText(QStringLiteral("Code blocks from the last assistant answer copied to clipboard."));
+
+    QApplication::clipboard()->setText(selectedCode);
+    m_statusLabel->setText(QStringLiteral("Selected code block copied to clipboard."));
+}
+
+void MainWindow::onTranscriptContextMenuRequested(const QPoint &pos)
+{
+    if (m_transcript == nullptr) {
+        return;
+    }
+
+    std::unique_ptr<QMenu> menu(m_transcript->createStandardContextMenu());
+    menu->addSeparator();
+    QAction *copyAnswerAction = menu->addAction(QStringLiteral("Copy last answer"));
+    QAction *copyTranscriptAction = menu->addAction(QStringLiteral("Copy transcript"));
+    QAction *copyCodeAction = menu->addAction(QStringLiteral("Copy selected code block"));
+    copyAnswerAction->setEnabled(!m_lastAssistantMessage.trimmed().isEmpty());
+    copyTranscriptAction->setEnabled(!m_transcript->toPlainText().trimmed().isEmpty());
+    copyCodeAction->setEnabled(!selectedCodeBlockContent().trimmed().isEmpty());
+
+    QAction *chosen = menu->exec(m_transcript->mapToGlobal(pos));
+    if (chosen == copyAnswerAction) {
+        onCopyLastAnswerClicked();
+    } else if (chosen == copyTranscriptAction) {
+        onCopyTranscriptClicked();
+    } else if (chosen == copyCodeAction) {
+        onCopyCodeBlocksClicked();
+    }
 }
 
 void MainWindow::showAboutAmelia()
 {
     QMessageBox::about(this,
                        QStringLiteral("About Amelia"),
-                       QStringLiteral("<b>Amelia Qt6 v%1</b><br><br>A local offline coding tool and assistant built with C++ and Qt6.<br><br>This build includes copy-friendly colored transcript/diagnostic views, fenced-code formatting, last-answer/code copy helpers, local Ollama inference, persistent knowledge, richer Prompt Lab KB-aware asset helpers, prompt budgeting, outline-first document generation, asynchronous PDF indexing, and operational diagnostics.")
+                       QStringLiteral("<b>Amelia Qt6 v%1</b><br><br>A local offline coding tool and assistant built with C++ and Qt6.<br><br>This build includes a structured rich transcript with markdown-style formatting, fenced-code panels, transcript/answer/code copy helpers, code-block selection, local Ollama inference, persistent knowledge, richer Prompt Lab KB-aware asset helpers, prompt budgeting, outline-first document generation, asynchronous PDF indexing, and operational diagnostics.")
                            .arg(QLatin1StringView(AmeliaVersion::kDisplayVersion)));
 }
 

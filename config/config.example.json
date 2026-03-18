@@ -5,16 +5,16 @@
   "dataRoot": "${HOME}/.amelia_qt6",
   "knowledgeRoot": "${HOME}/.amelia_qt6/knowledge",
 
-  "enableExternalSearch": false,
-  "autoSuggestExternalSearch": false,
+  "enableExternalSearch": true,
+  "autoSuggestExternalSearch": true,
   "probeOllamaOnStartup": true,
   "restoreLastConversationOnStartup": true,
   "autoPersistMemories": true,
   "autoSaveSessionSummary": true,
   "seedDocsIntoKnowledge": true,
 
-  "_comment_semanticRetrieval": "Keep false — the built-in hash embedder is NOT a real semantic model. Enable only after wiring nomic-embed-text or similar via Ollama.",
-  "enableSemanticRetrieval": false,
+  "_comment_semanticRetrieval": "Enabled by default for broader KB discovery. Disable it if your local embedding backend proves too noisy for your corpus.",
+  "enableSemanticRetrieval": true,
 
   "preferOutlinePlanning": true,
   "requireGroundingForProjectQuestions": true,

@@ -6,6 +6,7 @@
 
 class QAction;
 class QCheckBox;
+class QPoint;
 class QComboBox;
 class QLabel;
 class QLineEdit;
@@ -77,7 +78,9 @@ private slots:
     void onPromptLabBrowseFolderClicked();
     void onPromptLabCopyRecipeClicked();
     void onCopyLastAnswerClicked();
+    void onCopyTranscriptClicked();
     void onCopyCodeBlocksClicked();
+    void onTranscriptContextMenuRequested(const QPoint &pos);
 
 private:
     void appendTranscriptEntry(const QString &role, const QString &text);
@@ -86,6 +89,8 @@ private:
     void rebuildDiagnosticsFromPlainText(const QString &text);
     QString buildPromptLabRecipe() const;
     void insertTranscriptMessage(const QString &role, const QString &text);
+    void updateCodeBlockSelector();
+    QString selectedCodeBlockContent() const;
 
     QTextEdit *m_transcript = nullptr;
     QPlainTextEdit *m_input = nullptr;
@@ -123,7 +128,9 @@ private:
     QPushButton *m_promptLabBrowseFolderButton = nullptr;
     QPushButton *m_promptLabCopyRecipeButton = nullptr;
     QPushButton *m_copyLastAnswerButton = nullptr;
+    QPushButton *m_copyTranscriptButton = nullptr;
     QPushButton *m_copyCodeBlocksButton = nullptr;
+    QComboBox *m_codeBlockSelector = nullptr;
     QLabel *m_statusLabel = nullptr;
     QProgressBar *m_taskProgressBar = nullptr;
     QLabel *m_busyIndicatorLabel = nullptr;
