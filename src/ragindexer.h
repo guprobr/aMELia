@@ -3,6 +3,7 @@
 #include <QString>
 #include <QStringList>
 #include <functional>
+#include <atomic>
 #include <QFileInfo>
 #include <QVector>
 
@@ -29,6 +30,9 @@ public:
     void setSemanticEnabled(bool enabled);
 
     int reindex(const std::function<void(int, int, const QString &)> &progressCallback = {});
+    void requestCancel();
+    void resetCancel();
+    bool isCancelRequested() const;
     bool loadCache();
     bool saveCache() const;
     bool cacheNeedsRefresh() const;
@@ -78,4 +82,5 @@ private:
     QVector<Chunk> m_chunks;
     QVector<SourceInfo> m_sources;
     bool m_semanticEnabled = true;
+    std::atomic_bool m_cancelRequested = false;
 };

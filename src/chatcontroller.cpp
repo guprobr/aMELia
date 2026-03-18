@@ -118,17 +118,22 @@ ChatController::ChatController(const AppConfig &config, QObject *parent)
 
     m_reindexWatcher = new QFutureWatcher<int>(this);
     connect(m_reindexWatcher, &QFutureWatcher<int>::finished, this, [this]() {
+        if (m_shuttingDown) {
+            return;
+        }
         const int chunks = m_reindexWatcher->result();
         m_startupChunkCount = chunks;
         m_indexing = false;
 
         emit indexingProgressChanged(qMax(1, chunks), qMax(1, chunks), QStringLiteral("Index complete."));
         emit indexingStateChanged(false);
-        emit systemNotice(QStringLiteral("Local docs indexed: %1 chunks across %2 sources.").arg(chunks).arg(m_rag->sourceCount()));
+        const QString reindexMessage = QStringLiteral("Local docs indexed: %1 chunks across %2 sources.").arg(chunks).arg(m_rag->sourceCount());
+        emit systemNotice(reindexMessage);
         addDiagnostic(QStringLiteral("rag"),
                       QStringLiteral("Reindex finished: %1 chunks across %2 source(s)")
                           .arg(chunks)
                           .arg(m_rag->sourceCount()));
+        notifyTaskSucceeded(QStringLiteral("Knowledge indexing complete"), reindexMessage);
         refreshSourceInventory();
         emit statusChanged(QStringLiteral("Ready."));
         emit backendSummaryReady(buildBackendSummary());
@@ -136,6 +141,9 @@ ChatController::ChatController(const AppConfig &config, QObject *parent)
 
     m_promptPreparationWatcher = new QFutureWatcher<PromptPreparationResult>(this);
     connect(m_promptPreparationWatcher, &QFutureWatcher<PromptPreparationResult>::finished, this, [this]() {
+        if (m_shuttingDown) {
+            return;
+        }
         const PromptPreparationResult result = m_promptPreparationWatcher->result();
         if (result.serial != m_promptPreparationSerial || !m_busy) {
             return;
@@ -182,7 +190,9 @@ ChatController::ChatController(const AppConfig &config, QObject *parent)
         m_startupChunkCount = m_rag->chunkCount();
         if (m_rag->cacheNeedsRefresh()) {
             QTimer::singleShot(0, this, [this]() {
-                emit systemNotice(QStringLiteral("Knowledge cache is stale. Scheduling an incremental refresh in the background..."));
+                const QString staleMessage = QStringLiteral("Knowledge cache is stale. Scheduling an incremental refresh in the background...");
+                emit systemNotice(staleMessage);
+                notifyTaskStarted(QStringLiteral("Knowledge refresh"), staleMessage);
                 reindexDocs();
             });
         }
@@ -224,11 +234,14 @@ ChatController::ChatController(const AppConfig &config, QObject *parent)
 
 ChatController::~ChatController()
 {
-    if (m_reindexWatcher != nullptr && m_reindexWatcher->isRunning()) {
-        m_reindexWatcher->waitForFinished();
-    }
-    if (m_promptPreparationWatcher != nullptr && m_promptPreparationWatcher->isRunning()) {
-        m_promptPreparationWatcher->waitForFinished();
+    if (!m_shuttingDown) {
+        if (m_reindexWatcher != nullptr && m_reindexWatcher->isRunning()) {
+            m_rag->requestCancel();
+            m_reindexWatcher->waitForFinished();
+        }
+        if (m_promptPreparationWatcher != nullptr && m_promptPreparationWatcher->isRunning()) {
+            m_promptPreparationWatcher->waitForFinished();
+        }
     }
 
     delete m_outlinePlanner;
@@ -240,6 +253,42 @@ ChatController::~ChatController()
     delete m_memoryManager;
     delete m_sessionSummarizer;
     delete m_storage;
+}
+
+void ChatController::prepareForShutdown()
+{
+    if (m_shuttingDown) {
+        return;
+    }
+
+    m_shuttingDown = true;
+    m_promptPreparationSerial += 1;
+    m_busy = false;
+    m_indexing = false;
+
+    if (m_rag != nullptr) {
+        m_rag->requestCancel();
+    }
+    if (m_llmClient != nullptr) {
+        m_llmClient->stop();
+    }
+
+    disconnect(this, nullptr, nullptr, nullptr);
+}
+
+void ChatController::notifyTaskStarted(const QString &title, const QString &message)
+{
+    emit desktopNotificationRequested(title, message, 0);
+}
+
+void ChatController::notifyTaskSucceeded(const QString &title, const QString &message)
+{
+    emit desktopNotificationRequested(title, message, 1);
+}
+
+void ChatController::notifyTaskFailed(const QString &title, const QString &message)
+{
+    emit desktopNotificationRequested(title, message, 3);
 }
 
 void ChatController::sendUserPrompt(const QString &prompt, bool allowExternalSearch)
@@ -272,6 +321,7 @@ void ChatController::sendUserPrompt(const QString &prompt, bool allowExternalSea
     m_requestStartedMs = nowMs();
     emit busyChanged(true);
     emit statusChanged(QStringLiteral("Analyzing knowledge base and preparing grounded context..."));
+    notifyTaskStarted(QStringLiteral("Prompt started"), QStringLiteral("Preparing grounded context for a new request."));
 
     m_history.push_back({QStringLiteral("user"), trimmed});
     persistMessage(QStringLiteral("user"), trimmed);
@@ -386,6 +436,13 @@ void ChatController::sendUserPrompt(const QString &prompt, bool allowExternalSea
 
 void ChatController::stopGeneration()
 {
+    if (m_shuttingDown) {
+        if (m_llmClient != nullptr) {
+            m_llmClient->stop();
+        }
+        return;
+    }
+
     if (!m_busy) {
         return;
     }
@@ -401,17 +458,22 @@ void ChatController::stopGeneration()
     emit statusChanged(QStringLiteral("Stopped."));
     emit systemNotice(QStringLiteral("Generation stopped by user."));
     addDiagnostic(QStringLiteral("chat"), QStringLiteral("Generation stopped by user after %1 ms").arg(nowMs() - m_requestStartedMs));
+    notifyTaskFailed(QStringLiteral("Prompt stopped"), QStringLiteral("The current request was stopped before completion."));
 }
 
 void ChatController::reindexDocs()
 {
     if (m_busy) {
-        emit systemNotice(QStringLiteral("Stop the current generation before reindexing local docs."));
+        const QString message = QStringLiteral("Stop the current generation before reindexing local docs.");
+        emit systemNotice(message);
+        notifyTaskFailed(QStringLiteral("Knowledge indexing blocked"), message);
         return;
     }
 
     if (m_indexing) {
-        emit systemNotice(QStringLiteral("A document reindex is already running."));
+        const QString message = QStringLiteral("A document reindex is already running.");
+        emit systemNotice(message);
+        notifyTaskStarted(QStringLiteral("Knowledge indexing already running"), message);
         return;
     }
 
@@ -422,6 +484,7 @@ void ChatController::reindexDocs()
     emit indexingProgressChanged(0, 0, QStringLiteral("Preparing local docs..."));
     emit statusChanged(QStringLiteral("Reindexing local docs..."));
     addDiagnostic(QStringLiteral("rag"), QStringLiteral("Reindex started for %1").arg(m_storage->knowledgeRoot()));
+    notifyTaskStarted(QStringLiteral("Knowledge indexing started"), QStringLiteral("Refreshing Amelia's knowledge cache in the background."));
 
     m_reindexWatcher->setFuture(QtConcurrent::run([this]() -> int {
         return m_rag->reindex([this](int value, int maximum, const QString &label) {
@@ -441,6 +504,7 @@ void ChatController::probeBackend()
 {
     emit statusChanged(QStringLiteral("Checking Ollama connectivity..."));
     addDiagnostic(QStringLiteral("backend"), QStringLiteral("Probe requested for %1").arg(m_config.ollamaBaseUrl));
+    notifyTaskStarted(QStringLiteral("Ollama probe started"), QStringLiteral("Checking connectivity to %1.").arg(m_config.ollamaBaseUrl));
     m_llmClient->probe(m_config.ollamaBaseUrl, m_config.ollamaModel);
 }
 
@@ -448,13 +512,16 @@ void ChatController::refreshBackendModels()
 {
     emit statusChanged(QStringLiteral("Listing Ollama models..."));
     addDiagnostic(QStringLiteral("backend"), QStringLiteral("Listing models from %1").arg(m_config.ollamaBaseUrl));
+    notifyTaskStarted(QStringLiteral("Model refresh started"), QStringLiteral("Requesting the current model list from Ollama."));
     m_llmClient->listModels(m_config.ollamaBaseUrl);
 }
 
 void ChatController::newConversation()
 {
     if (m_busy) {
-        emit systemNotice(QStringLiteral("Stop the current generation before starting a new conversation."));
+        const QString message = QStringLiteral("Stop the current generation before starting a new conversation.");
+        emit systemNotice(message);
+        notifyTaskFailed(QStringLiteral("New conversation blocked"), message);
         return;
     }
 
@@ -474,6 +541,7 @@ void ChatController::newConversation()
     refreshConversationList();
     refreshSummaryPanel();
     emit statusChanged(QStringLiteral("New conversation ready."));
+    notifyTaskSucceeded(QStringLiteral("Conversation created"), QStringLiteral("A new conversation is ready."));
 }
 
 void ChatController::loadConversationById(const QString &conversationId)
@@ -485,7 +553,9 @@ void ChatController::loadConversationById(const QString &conversationId)
     QString error;
     const ConversationRecord record = m_storage->loadConversation(conversationId, &error);
     if (record.id.isEmpty()) {
-        emit systemNotice(error.isEmpty() ? QStringLiteral("Failed to load conversation.") : error);
+        const QString message = error.isEmpty() ? QStringLiteral("Failed to load conversation.") : error;
+        emit systemNotice(message);
+        notifyTaskFailed(QStringLiteral("Conversation restore failed"), message);
         return;
     }
 
@@ -506,6 +576,7 @@ void ChatController::loadConversationById(const QString &conversationId)
     refreshMemoryPanel();
     refreshSummaryPanel();
     emit statusChanged(QStringLiteral("Conversation restored."));
+    notifyTaskSucceeded(QStringLiteral("Conversation restored"), QStringLiteral("Loaded conversation %1.").arg(record.title));
     Q_UNUSED(stateError)
 }
 
@@ -514,26 +585,32 @@ void ChatController::rememberNote(const QString &text)
     QString savedDescription;
     QString error;
     if (!m_memoryManager->saveExplicitNote(text, &savedDescription, &error)) {
-        emit systemNotice(error.isEmpty() ? QStringLiteral("Failed to save memory note.") : error);
+        const QString message = error.isEmpty() ? QStringLiteral("Failed to save memory note.") : error;
+        emit systemNotice(message);
+        notifyTaskFailed(QStringLiteral("Memory save failed"), message);
         return;
     }
 
     emit systemNotice(savedDescription);
     addDiagnostic(QStringLiteral("memory"), savedDescription);
     refreshMemoryPanel();
+    notifyTaskSucceeded(QStringLiteral("Memory saved"), savedDescription);
 }
 
 void ChatController::clearMemories()
 {
     QString error;
     if (!m_memoryManager->clearAll(&error)) {
-        emit systemNotice(error.isEmpty() ? QStringLiteral("Failed to clear memories.") : error);
+        const QString message = error.isEmpty() ? QStringLiteral("Failed to clear memories.") : error;
+        emit systemNotice(message);
+        notifyTaskFailed(QStringLiteral("Memory clear failed"), message);
         return;
     }
 
     emit systemNotice(QStringLiteral("All stored memories were cleared."));
     addDiagnostic(QStringLiteral("memory"), QStringLiteral("All stored memories were cleared by the user."));
     refreshMemoryPanel();
+    notifyTaskSucceeded(QStringLiteral("Memories cleared"), QStringLiteral("All stored memories were cleared."));
 }
 
 void ChatController::setBackendModel(const QString &model)
@@ -549,6 +626,7 @@ void ChatController::setBackendModel(const QString &model)
     addDiagnostic(QStringLiteral("backend"), QStringLiteral("Active model changed to %1").arg(m_config.ollamaModel));
     emit backendSummaryReady(buildBackendSummary());
     emit backendModelsReady(m_availableModels, m_config.ollamaModel);
+    notifyTaskSucceeded(QStringLiteral("Model changed"), QStringLiteral("Active model set to %1.").arg(m_config.ollamaModel));
 }
 
 void ChatController::importKnowledgePaths(const QStringList &paths)
@@ -557,12 +635,17 @@ void ChatController::importKnowledgePaths(const QStringList &paths)
         return;
     }
 
+    notifyTaskStarted(QStringLiteral("Knowledge import started"), QStringLiteral("Importing %1 path(s) into the knowledge base.").arg(paths.size()));
+
     QString message;
     const int imported = m_rag->importPaths(paths, m_storage->knowledgeRoot(), &message);
     emit systemNotice(message);
     addDiagnostic(QStringLiteral("ingest"), message);
     if (imported > 0) {
+        notifyTaskSucceeded(QStringLiteral("Knowledge import complete"), message);
         reindexDocs();
+    } else {
+        notifyTaskFailed(QStringLiteral("Knowledge import failed"), message.isEmpty() ? QStringLiteral("No files were imported into the knowledge base.") : message);
     }
 }
 
@@ -570,6 +653,7 @@ void ChatController::onSearchStarted(const QString &query, const QString &reques
 {
     Q_UNUSED(query)
     addDiagnostic(QStringLiteral("search"), QStringLiteral("Calling %1").arg(requestUrl));
+    notifyTaskStarted(QStringLiteral("External search started"), QStringLiteral("Querying %1").arg(requestUrl));
 }
 
 void ChatController::onSearchFinished(const QString &query,
@@ -580,6 +664,7 @@ void ChatController::onSearchFinished(const QString &query,
     emit externalSourcesReady(formattedSources.isEmpty() ? QStringLiteral("<none>") : formattedSources);
     emit statusChanged(QStringLiteral("External search finished. Generating answer locally..."));
     addDiagnostic(QStringLiteral("search"), QStringLiteral("External search finished"));
+    notifyTaskSucceeded(QStringLiteral("External search complete"), QStringLiteral("Retrieved external context for the current request."));
     startGeneration(m_pendingPrompt, m_pendingLocalContext, formattedContext, m_pendingMemoryContext);
     m_pendingPrompt.clear();
     m_pendingLocalContext.clear();
@@ -592,6 +677,7 @@ void ChatController::onSearchError(const QString &query, const QString &message)
     emit externalSourcesReady(QStringLiteral("<search error>"));
     emit systemNotice(message);
     addDiagnostic(QStringLiteral("search"), message);
+    notifyTaskFailed(QStringLiteral("External search failed"), message);
     startGeneration(m_pendingPrompt, m_pendingLocalContext, QString(), m_pendingMemoryContext);
     m_pendingPrompt.clear();
     m_pendingLocalContext.clear();
@@ -602,6 +688,7 @@ void ChatController::onModelStarted()
 {
     emit statusChanged(QStringLiteral("Awaiting first local tokens..."));
     addDiagnostic(QStringLiteral("backend"), QStringLiteral("Generation request accepted by backend"));
+    notifyTaskStarted(QStringLiteral("Generation running"), QStringLiteral("The local model accepted the request and is preparing the response."));
 }
 
 void ChatController::onModelDelta(const QString &text)
@@ -629,6 +716,7 @@ void ChatController::onModelFinished(const QString &fullText)
     emit statusChanged(QStringLiteral("Ready."));
     addDiagnostic(QStringLiteral("backend"), QStringLiteral("Generation finished in %1 ms with %2 streamed chunk(s) and %3 chars")
                   .arg(nowMs() - m_requestStartedMs).arg(m_streamChunkCount).arg(cleaned.size()));
+    notifyTaskSucceeded(QStringLiteral("Prompt complete"), QStringLiteral("Amelia finished generating the answer."));
 }
 
 void ChatController::onModelError(const QString &message)
@@ -638,6 +726,7 @@ void ChatController::onModelError(const QString &message)
     emit systemNotice(message);
     emit statusChanged(QStringLiteral("Error."));
     addDiagnostic(QStringLiteral("backend"), message);
+    notifyTaskFailed(QStringLiteral("Generation failed"), message);
 }
 
 void ChatController::onBackendProbeFinished(bool ok, const QString &message)
@@ -646,6 +735,11 @@ void ChatController::onBackendProbeFinished(bool ok, const QString &message)
     emit backendSummaryReady(buildBackendSummary());
     emit statusChanged(ok ? QStringLiteral("Ollama reachable.") : QStringLiteral("Ollama unavailable."));
     addDiagnostic(QStringLiteral("backend"), message);
+    if (ok) {
+        notifyTaskSucceeded(QStringLiteral("Ollama probe complete"), message);
+    } else {
+        notifyTaskFailed(QStringLiteral("Ollama probe failed"), message);
+    }
 }
 
 void ChatController::onModelsListed(const QStringList &models, const QString &message)
@@ -656,6 +750,7 @@ void ChatController::onModelsListed(const QStringList &models, const QString &me
     emit backendModelsReady(m_availableModels, m_config.ollamaModel);
     emit statusChanged(QStringLiteral("Ready."));
     addDiagnostic(QStringLiteral("backend"), message);
+    notifyTaskSucceeded(QStringLiteral("Model refresh complete"), message);
 }
 
 void ChatController::emitStartupNotices()
@@ -684,6 +779,7 @@ void ChatController::emitStartupNotices()
     refreshSourceInventory();
     emit outlinePlanReady(QStringLiteral("<none>"));
     emit backendSummaryReady(buildBackendSummary());
+    notifyTaskSucceeded(QStringLiteral("Startup complete"), QStringLiteral("Amelia loaded %1 knowledge source(s).").arg(m_rag->sourceCount()));
 }
 
 void ChatController::restoreStartupState()
@@ -710,6 +806,7 @@ void ChatController::startGeneration(const QString &prompt,
     if (m_config.requireGroundingForProjectQuestions && needsGrounding && !hasAnyContext) {
         const QString refusal = buildGroundingRefusal(prompt);
         addDiagnostic(QStringLiteral("guardrail"), QStringLiteral("Refused ungrounded answer for project-scoped prompt (no context)"));
+        notifyTaskFailed(QStringLiteral("Grounding required"), QStringLiteral("The request could not be answered because no grounded context was retrieved."));
         onModelFinished(refusal);
         return;
     }
@@ -1002,6 +1099,10 @@ QString ChatController::buildBackendSummary() const
     lines << QStringLiteral("Outline planning: %1").arg(m_config.preferOutlinePlanning ? QStringLiteral("enabled") : QStringLiteral("disabled"));
     lines << QStringLiteral("Embedding backend: %1").arg(m_embeddingClient->backendName());
     lines << QStringLiteral("External search default: %1").arg(m_config.enableExternalSearch ? QStringLiteral("enabled") : QStringLiteral("disabled"));
+    lines << QStringLiteral("Desktop notifications: %1").arg(m_config.enableDesktopNotifications ? QStringLiteral("enabled") : QStringLiteral("disabled"));
+    lines << QStringLiteral("Notify on task start/success/failure: %1/%2/%3").arg(m_config.notifyOnTaskStart ? QStringLiteral("yes") : QStringLiteral("no"),
+                                                                                          m_config.notifyOnTaskSuccess ? QStringLiteral("yes") : QStringLiteral("no"),
+                                                                                          m_config.notifyOnTaskFailure ? QStringLiteral("yes") : QStringLiteral("no"));
     lines << QStringLiteral("Domain allowlist: %1").arg(m_config.externalSearchDomainAllowlist.isEmpty() ? QStringLiteral("<all domains>") : m_config.externalSearchDomainAllowlist.join(QStringLiteral(", ")));
     lines << QStringLiteral("Available models: %1").arg(m_availableModels.isEmpty() ? QStringLiteral("<unknown>") : m_availableModels.join(QStringLiteral(", ")));
     lines << QStringLiteral("Config search path tip: ~/.amelia_qt6 is both the data root and the preferred config location (config.json).");

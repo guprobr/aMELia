@@ -115,6 +115,20 @@ void applyDoubleEnvOverride(const char *name,
     target = boundedDouble(value, target, minimum);
 }
 
+void applyBoolEnvOverride(const char *name, bool &target)
+{
+    if (!qEnvironmentVariableIsSet(name)) {
+        return;
+    }
+
+    const QString value = qEnvironmentVariable(name).trimmed().toLower();
+    if (value == QStringLiteral("1") || value == QStringLiteral("true") || value == QStringLiteral("yes") || value == QStringLiteral("on")) {
+        target = true;
+    } else if (value == QStringLiteral("0") || value == QStringLiteral("false") || value == QStringLiteral("no") || value == QStringLiteral("off")) {
+        target = false;
+    }
+}
+
 void applyEnvOverrides(AppConfig &config)
 {
     applyStringEnvOverride("AMELIA_OLLAMA_BASE_URL", config.ollamaBaseUrl);
@@ -125,6 +139,7 @@ void applyEnvOverrides(AppConfig &config)
     applyIntEnvOverride("AMELIA_OLLAMA_FIRST_TOKEN_TIMEOUT_MS", config.ollamaFirstTokenTimeoutMs, 5000);
     applyIntEnvOverride("AMELIA_OLLAMA_INACTIVITY_TIMEOUT_MS", config.ollamaInactivityTimeoutMs, 5000);
     applyIntEnvOverride("AMELIA_OLLAMA_TOTAL_TIMEOUT_MS", config.ollamaTotalTimeoutMs, 5000, true);
+    applyIntEnvOverride("AMELIA_DESKTOP_NOTIFICATION_TIMEOUT_MS", config.desktopNotificationTimeoutMs, 1000);
     applyIntEnvOverride("AMELIA_OLLAMA_NUM_CTX", config.ollamaNumCtx, 1024);
     applyIntEnvOverride("AMELIA_OLLAMA_TOP_K", config.ollamaTopK, 1);
     applyDoubleEnvOverride("AMELIA_OLLAMA_TEMPERATURE", config.ollamaTemperature, 0.0);
@@ -132,6 +147,10 @@ void applyEnvOverrides(AppConfig &config)
     applyDoubleEnvOverride("AMELIA_OLLAMA_REPEAT_PENALTY", config.ollamaRepeatPenalty, 0.0);
     applyDoubleEnvOverride("AMELIA_OLLAMA_PRESENCE_PENALTY", config.ollamaPresencePenalty, 0.0);
     applyDoubleEnvOverride("AMELIA_OLLAMA_FREQUENCY_PENALTY", config.ollamaFrequencyPenalty, 0.0);
+    applyBoolEnvOverride("AMELIA_ENABLE_DESKTOP_NOTIFICATIONS", config.enableDesktopNotifications);
+    applyBoolEnvOverride("AMELIA_NOTIFY_ON_TASK_START", config.notifyOnTaskStart);
+    applyBoolEnvOverride("AMELIA_NOTIFY_ON_TASK_SUCCESS", config.notifyOnTaskSuccess);
+    applyBoolEnvOverride("AMELIA_NOTIFY_ON_TASK_FAILURE", config.notifyOnTaskFailure);
 }
 }
 
@@ -187,6 +206,10 @@ AppConfig AppConfigLoader::load(const QString &path, QString *errorMessage)
     config.autoPersistMemories = obj.value(QStringLiteral("autoPersistMemories")).toBool(config.autoPersistMemories);
     config.autoSaveSessionSummary = obj.value(QStringLiteral("autoSaveSessionSummary")).toBool(config.autoSaveSessionSummary);
     config.seedDocsIntoKnowledge = obj.value(QStringLiteral("seedDocsIntoKnowledge")).toBool(config.seedDocsIntoKnowledge);
+    config.enableDesktopNotifications = obj.value(QStringLiteral("enableDesktopNotifications")).toBool(config.enableDesktopNotifications);
+    config.notifyOnTaskStart = obj.value(QStringLiteral("notifyOnTaskStart")).toBool(config.notifyOnTaskStart);
+    config.notifyOnTaskSuccess = obj.value(QStringLiteral("notifyOnTaskSuccess")).toBool(config.notifyOnTaskSuccess);
+    config.notifyOnTaskFailure = obj.value(QStringLiteral("notifyOnTaskFailure")).toBool(config.notifyOnTaskFailure);
     config.enableSemanticRetrieval = obj.value(QStringLiteral("enableSemanticRetrieval")).toBool(config.enableSemanticRetrieval);
     config.preferOutlinePlanning = obj.value(QStringLiteral("preferOutlinePlanning")).toBool(config.preferOutlinePlanning);
     config.requireGroundingForProjectQuestions = obj.value(QStringLiteral("requireGroundingForProjectQuestions")).toBool(config.requireGroundingForProjectQuestions);
@@ -204,6 +227,7 @@ AppConfig AppConfigLoader::load(const QString &path, QString *errorMessage)
     config.ollamaFirstTokenTimeoutMs = readTimeoutValue(obj, QStringLiteral("ollamaFirstTokenTimeoutMs"), config.ollamaFirstTokenTimeoutMs, 5000);
     config.ollamaInactivityTimeoutMs = readTimeoutValue(obj, QStringLiteral("ollamaInactivityTimeoutMs"), config.ollamaInactivityTimeoutMs, 5000);
     config.ollamaTotalTimeoutMs = readTimeoutValue(obj, QStringLiteral("ollamaTotalTimeoutMs"), config.ollamaTotalTimeoutMs, 5000, true);
+    config.desktopNotificationTimeoutMs = readTimeoutValue(obj, QStringLiteral("desktopNotificationTimeoutMs"), config.desktopNotificationTimeoutMs, 1000);
 
     config.maxDiagnosticLines = obj.value(QStringLiteral("maxDiagnosticLines")).toInt(config.maxDiagnosticLines);
     config.ollamaNumCtx = qMax(1024, obj.value(QStringLiteral("ollamaNumCtx")).toInt(config.ollamaNumCtx));

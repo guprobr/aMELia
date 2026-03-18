@@ -1,46 +1,51 @@
-# Amelia Qt6 v6.96
+# Amelia Qt6 v6.99
 
 Amelia is a local-first Qt6/C++ coding and cloud assistant that talks to a local Ollama server, stores its state under `~/.amelia_qt6`, indexes a local knowledge base, and can optionally use sanitized external web search through SearXNG.
 
-This build focuses on **startup visibility**, **incremental indexing**, and **keeping the UI responsive** as the knowledge base grows.
+This build keeps the earlier **bootstrap visibility**, **incremental indexing**, **responsive prompt preparation**, **transcript formatting**, and **Prompt Lab enhancements**, and adds **native desktop notifications** for meaningful task lifecycle events.
 
-## What's new in v6.96
+## What's new in v6.99
 
-### Bootstrap visibility
+### Native desktop notifications
 
-- Startup now shows a **bootstrap dialog** immediately instead of leaving the screen blank.
-- The bootstrap dialog uses the Amelia logo as a rotating spinner.
-- A live **bootstrap log window** shows config/data-root/bootstrap messages until the main window is displayed.
-- The bootstrap dialog closes automatically once the main window is up.
+Amelia now emits desktop notifications for meaningful task lifecycle events through `QSystemTrayIcon`, with `QApplication::alert()` as a fallback when a native tray popup is unavailable.
 
-### Incremental indexing
+Covered events include:
 
-- Amelia no longer throws away the whole RAG index just because **one file changed** or **one more asset was added**.
-- The indexer now reuses cached chunks for unchanged files and rebuilds only:
-  - new files
-  - changed files
-  - removed-file deltas
-- On startup, Amelia can load the cache and then schedule an **incremental background refresh** only when the KB changed.
+- startup complete
+- prompt start / completion / failure / manual stop
+- knowledge import start / completion / failure
+- knowledge indexing start / completion / blocked state
+- external search start / completion / failure
+- Ollama probe start / completion / failure
+- model refresh start / completion
+- conversation create / restore
+- memory save / clear
+- active model change
 
-### Lower UI freeze risk
+Fresh configs now default to:
 
-- Prompt submission now prepares local context **off the main thread**.
-- Large KB retrieval and outline preparation no longer block the main UI while you wait after pressing **Send**.
-- PDF indexing remains asynchronous, with progress visible in the status bar.
+- `enableDesktopNotifications: true`
+- `notifyOnTaskStart: true`
+- `notifyOnTaskSuccess: true`
+- `notifyOnTaskFailure: true`
+- `desktopNotificationTimeoutMs: 7000`
 
-### Default config changes
+### Earlier v6.96 improvements still present
 
-These defaults are now enabled for fresh configs:
+- bootstrap dialog appears immediately at startup
+- logo spinner + bootstrap log window remain in place until the main window shows
+- incremental KB refresh avoids rebuilding the whole cache for one changed or added asset
+- prompt context preparation remains off the main thread
+- PDF ingestion remains asynchronous with progress visible in the UI
+- Prompt Lab enhancements remain in place
+- transcript formatting / copy helpers remain in place
+- semantic retrieval / external search defaults remain enabled for fresh configs
 
-- `enableSemanticRetrieval: true`
-- `enableExternalSearch: true`
-- `autoSuggestExternalSearch: true`
-- `ollamaResponseHeadersTimeoutMs: 1800000`
+## Versioning
 
-### Versioning
-
-- Version is now `6.96`.
-- The display version comes from a single place:
+- Version is now `6.99`.
+- The display version comes from one place only:
   - `src/appversion.h`
 
 ## Ubuntu packages
@@ -64,10 +69,11 @@ sudo apt install -y \
 
 Why these matter:
 
-- `qt6-base-dev` -> Qt Core / Widgets / Network / Concurrent used by Amelia
+- `qt6-base-dev` -> Qt Core / Widgets / Network / Concurrent / tray integration
 - `qt6-tools-dev` and `qt6-tools-dev-tools` -> standard Qt6 dev tooling on Ubuntu
-- `qt6-svg-dev` / `qt6-imageformats-plugins` -> smoother SVG logo handling at runtime
+- `qt6-svg-dev` / `qt6-imageformats-plugins` -> SVG logo rendering and runtime image support
 - `poppler-utils` -> provides `pdftotext`, which Amelia uses to ingest PDFs
+- `curl` -> convenient for testing Ollama and SearXNG endpoints
 
 ## Build
 
@@ -93,7 +99,7 @@ cmake --install .
 
 ```bash
 curl -fsSL https://ollama.com/install.sh | sh
-sudo systemctl start ollama
+sudo systemctl enable --now ollama
 sudo systemctl status ollama
 ```
 
@@ -182,16 +188,16 @@ then its values still win. Update that file manually if you want the new default
 
 ## Knowledge-base behavior
 
-Amelia now behaves better with large KBs:
+Amelia behaves better with large KBs because:
 
 - cached KB state can load first
 - stale-cache detection uses a lighter source-level comparison
 - incremental refresh rebuilds only changed/new files
-- sending a prompt no longer blocks the UI while retrieval/outline prep happens
+- prompt preparation no longer blocks the UI thread while retrieval/outline prep runs
 
 ## Prompt Lab and transcript helpers still present
 
-This build keeps the existing UI enhancements already merged in your tree, including:
+This build keeps the existing UI enhancements already present in your tree, including:
 
 - richer Prompt Lab presets and KB-asset fields
 - Browse files / Browse folder helpers
@@ -202,6 +208,16 @@ This build keeps the existing UI enhancements already merged in your tree, inclu
 - Copy code block(s)
 
 ## Troubleshooting
+
+### I do not receive desktop notifications
+
+Check:
+
+- `enableDesktopNotifications` in `~/.amelia_qt6/config.json`
+- whether your desktop environment exposes a system tray / notification service
+- whether tray popups are blocked by the shell or Do Not Disturb mode
+
+Amelia falls back to `QApplication::alert()` when native tray popups are not available, but that fallback is less visible than a real notification balloon.
 
 ### PDFs do not index
 

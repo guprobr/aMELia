@@ -98,7 +98,7 @@ QString cleanedText(QString text)
     return text.simplified();
 }
 
-bool readTextFile(const QString &path, QString *text, QString *extractor)
+bool readTextFile(const QString &path, QString *text, QString *extractor, std::atomic_bool *cancelRequested)
 {
     QFileInfo info(path);
     const QString suffix = info.suffix().toLower();
@@ -111,7 +111,16 @@ bool readTextFile(const QString &path, QString *text, QString *extractor)
             }
             return false;
         }
-        process.waitForFinished(30000);
+        while (!process.waitForFinished(200)) {
+            if (cancelRequested != nullptr && cancelRequested->load()) {
+                process.kill();
+                process.waitForFinished(1000);
+                if (extractor != nullptr) {
+                    *extractor = QStringLiteral("pdf:cancelled");
+                }
+                return false;
+            }
+        }
         if (process.exitStatus() != QProcess::NormalExit || process.exitCode() != 0) {
             if (extractor != nullptr) {
                 *extractor = QStringLiteral("pdf:pdftotext-failed");
@@ -536,6 +545,10 @@ int RagIndexer::reindex(const std::function<void(int, int, const QString &)> &pr
         }
         return a.fileName < b.fileName;
     });
+
+    if (m_cancelRequested.load()) {
+        return m_chunks.size();
+    }
 
     if (progressCallback) {
         progressCallback(0, 0, QStringLiteral("Saving cache..."));

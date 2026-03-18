@@ -24,6 +24,10 @@ struct AppConfig {
     bool autoPersistMemories = true;
     bool autoSaveSessionSummary = true;
     bool seedDocsIntoKnowledge = true;
+    bool enableDesktopNotifications = true;
+    bool notifyOnTaskStart = true;
+    bool notifyOnTaskSuccess = true;
+    bool notifyOnTaskFailure = true;
 
     // Semantic retrieval via the lightweight local hash embedder.
     // Enabled by default so large KBs get better relevance scoring without
@@ -55,6 +59,7 @@ struct AppConfig {
     int ollamaInactivityTimeoutMs = 300000;
     int ollamaTotalTimeoutMs = 0;
     int maxDiagnosticLines = 400;
+    int desktopNotificationTimeoutMs = 7000;
     int ollamaNumCtx = 32768;
     int ollamaTopK = 40;
 

@@ -39,6 +39,7 @@ public:
     void clearMemories();
     void setBackendModel(const QString &model);
     void importKnowledgePaths(const QStringList &paths);
+    void prepareForShutdown();
 
 signals:
     void assistantStreamChunk(const QString &chunk);
@@ -62,6 +63,7 @@ signals:
     void diagnosticsReady(const QString &text);
     void sourceInventoryReady(const QString &text);
     void backendModelsReady(const QStringList &models, const QString &currentModel);
+    void desktopNotificationRequested(const QString &title, const QString &message, int severity);
 
 private slots:
     void onSearchStarted(const QString &query, const QString &requestUrl);
@@ -115,6 +117,10 @@ private:
     void emitDiagnostics();
     void seedInitialKnowledge();
 
+    void notifyTaskStarted(const QString &title, const QString &message);
+    void notifyTaskSucceeded(const QString &title, const QString &message);
+    void notifyTaskFailed(const QString &title, const QString &message);
+
     struct PromptPreparationResult {
         quint64 serial = 0;
         QString prompt;
@@ -166,4 +172,5 @@ private:
     bool m_busy = false;
     bool m_indexing = false;
     bool m_outlineOnlyFirstPass = false;
+    bool m_shuttingDown = false;
 };
