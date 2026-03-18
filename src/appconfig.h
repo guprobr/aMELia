@@ -17,19 +17,18 @@ struct AppConfig {
     QString knowledgeRoot;
 
     // --- RAG / retrieval ---
-    bool enableExternalSearch = false;
-    bool autoSuggestExternalSearch = false;
+    bool enableExternalSearch = true;
+    bool autoSuggestExternalSearch = true;
     bool probeOllamaOnStartup = true;
     bool restoreLastConversationOnStartup = true;
     bool autoPersistMemories = true;
     bool autoSaveSessionSummary = true;
     bool seedDocsIntoKnowledge = true;
 
-    // Semantic retrieval via hash-embedding.
-    // NOTE: The built-in embedder (local-hash-semantic-v1) is a random-projection
-    // approximation -- useful for token-overlap boosting but NOT a real semantic model.
-    // Keep false until you wire a real embedding model (e.g. nomic-embed-text via Ollama).
-    bool enableSemanticRetrieval = false;
+    // Semantic retrieval via the lightweight local hash embedder.
+    // Enabled by default so large KBs get better relevance scoring without
+    // blocking the UI; Amelia can refresh vectors incrementally in the background.
+    bool enableSemanticRetrieval = true;
 
     bool preferOutlinePlanning = true;
     bool requireGroundingForProjectQuestions = true;
@@ -51,7 +50,7 @@ struct AppConfig {
     int maxRelevantMemories = 6;
     int externalSearchTimeoutMs = 15000;
     int ollamaProbeTimeoutMs = 10000;
-    int ollamaResponseHeadersTimeoutMs = 180000;
+    int ollamaResponseHeadersTimeoutMs = 1800000;
     int ollamaFirstTokenTimeoutMs = 600000;
     int ollamaInactivityTimeoutMs = 300000;
     int ollamaTotalTimeoutMs = 0;
@@ -81,7 +80,7 @@ struct AppConfig {
     // context "confident enough" to answer a grounded question.
     // Raise this if the model still hallucinates from weak hits; lower if
     // too many valid prompts are refused.
-    double ragConfidenceThreshold = 1.2;
+    double ragConfidenceThreshold = 0.95;
 };
 
 class AppConfigLoader {

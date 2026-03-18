@@ -15,9 +15,9 @@
 #include <QDir>
 #include <QFileInfo>
 #include <QSet>
+#include <QTimer>
 #include <QMetaObject>
 #include <QtConcurrent/QtConcurrentRun>
-#include <QTimer>
 
 #include <cstdio>
 
@@ -134,10 +134,60 @@ ChatController::ChatController(const AppConfig &config, QObject *parent)
         emit backendSummaryReady(buildBackendSummary());
     });
 
-    if (!m_rag->loadCache()) {
-        QTimer::singleShot(0, this, &ChatController::reindexDocs);
-    } else {
+    m_promptPreparationWatcher = new QFutureWatcher<PromptPreparationResult>(this);
+    connect(m_promptPreparationWatcher, &QFutureWatcher<PromptPreparationResult>::finished, this, [this]() {
+        const PromptPreparationResult result = m_promptPreparationWatcher->result();
+        if (result.serial != m_promptPreparationSerial || !m_busy) {
+            return;
+        }
+
+        emit privacyPreviewReady(result.sanitizedPreview);
+        refreshMemoryPanel();
+
+        m_currentOutlinePlanPrompt = result.outlinePlan.formatForPrompt();
+        emit outlinePlanReady(result.outlinePlan.formatForUi());
+        m_outlineOnlyFirstPass = result.outlineOnlyFirstPass;
+        if (m_outlineOnlyFirstPass) {
+            emit systemNotice(QStringLiteral("Structured document request detected. Amelia will use an outline-only first pass to keep the local prompt grounded and compact."));
+            addDiagnostic(QStringLiteral("planner"), QStringLiteral("Outline-only first pass enabled for this request"));
+        }
+        if (result.outlinePlan.enabled) {
+            addDiagnostic(QStringLiteral("planner"), QStringLiteral("Outline planner activated for %1 section(s)").arg(result.outlinePlan.sections.size()));
+        }
+
+        emit localSourcesReady(result.localUi.isEmpty() ? QStringLiteral("<none>") : result.localUi);
+        addDiagnostic(QStringLiteral("rag"),
+                      QStringLiteral("Retrieved %1 local hit(s) from %2 source(s); best rerank score=%3")
+                          .arg(result.retrievedHits)
+                          .arg(m_rag->sourceCount())
+                          .arg(QString::number(result.bestHitScore, 'f', 2)));
+        m_lastBestHitScore = result.bestHitScore;
+
+        if (result.shouldSearch) {
+            m_pendingPrompt = result.prompt;
+            m_pendingLocalContext = result.localContext;
+            m_pendingMemoryContext = result.memoryContext;
+            emit statusChanged(QStringLiteral("Searching external sources with sanitized query..."));
+            addDiagnostic(QStringLiteral("search"), QStringLiteral("External search approved with sanitized query: %1").arg(result.sanitizedSearchQuery));
+            m_searchBroker->search(result.sanitizedSearchQuery);
+            return;
+        }
+
+        emit externalSourcesReady(QStringLiteral("<none>"));
+        startGeneration(result.prompt, result.localContext, QString(), result.memoryContext);
+    });
+
+    const bool cacheLoaded = m_rag->loadCache();
+    if (cacheLoaded) {
         m_startupChunkCount = m_rag->chunkCount();
+        if (m_rag->cacheNeedsRefresh()) {
+            QTimer::singleShot(0, this, [this]() {
+                emit systemNotice(QStringLiteral("Knowledge cache is stale. Scheduling an incremental refresh in the background..."));
+                reindexDocs();
+            });
+        }
+    } else {
+        QTimer::singleShot(0, this, &ChatController::reindexDocs);
     }
 
     m_searchBroker->setEnabled(m_config.enableExternalSearch);
@@ -177,6 +227,9 @@ ChatController::~ChatController()
     if (m_reindexWatcher != nullptr && m_reindexWatcher->isRunning()) {
         m_reindexWatcher->waitForFinished();
     }
+    if (m_promptPreparationWatcher != nullptr && m_promptPreparationWatcher->isRunning()) {
+        m_promptPreparationWatcher->waitForFinished();
+    }
 
     delete m_outlinePlanner;
     delete m_policy;
@@ -201,6 +254,11 @@ void ChatController::sendUserPrompt(const QString &prompt, bool allowExternalSea
         return;
     }
 
+    if (m_promptPreparationWatcher != nullptr && m_promptPreparationWatcher->isRunning()) {
+        emit systemNotice(QStringLiteral("Amelia is still finishing the previous context preparation. Please try again in a moment."));
+        return;
+    }
+
     const QString trimmed = prompt.trimmed();
     if (trimmed.isEmpty()) {
         return;
@@ -213,7 +271,7 @@ void ChatController::sendUserPrompt(const QString &prompt, bool allowExternalSea
     m_streamChunkCount = 0;
     m_requestStartedMs = nowMs();
     emit busyChanged(true);
-    emit statusChanged(QStringLiteral("Retrieving local context..."));
+    emit statusChanged(QStringLiteral("Analyzing knowledge base and preparing grounded context..."));
 
     m_history.push_back({QStringLiteral("user"), trimmed});
     persistMessage(QStringLiteral("user"), trimmed);
@@ -229,130 +287,101 @@ void ChatController::sendUserPrompt(const QString &prompt, bool allowExternalSea
         }
     }
 
-    const QString sanitizedPreview = m_policy->redactSensitiveText(trimmed);
-    emit privacyPreviewReady(sanitizedPreview);
+    const quint64 serial = ++m_promptPreparationSerial;
+    const bool searchEnabled = m_searchBroker->isEnabled();
+    const AppConfig config = m_config;
 
-    const QVector<MemoryRecord> relevantMemories = m_memoryManager->findRelevant(trimmed, m_config.maxRelevantMemories);
-    const QString memoryContext = m_memoryManager->formatForPrompt(relevantMemories);
-    refreshMemoryPanel();
+    m_promptPreparationWatcher->setFuture(QtConcurrent::run([this, trimmed, allowExternalSearch, searchEnabled, config, serial]() -> PromptPreparationResult {
+        PromptPreparationResult result;
+        result.serial = serial;
+        result.prompt = trimmed;
+        result.sanitizedPreview = m_policy->redactSensitiveText(trimmed);
 
-    OutlinePlan outlinePlan;
-    if (m_config.preferOutlinePlanning) {
-        outlinePlan = m_outlinePlanner->planForPrompt(trimmed);
-    }
-    m_currentOutlinePlanPrompt = outlinePlan.formatForPrompt();
-    emit outlinePlanReady(outlinePlan.formatForUi());
-    m_outlineOnlyFirstPass = outlinePlan.enabled && isStructuredDocumentRequest(trimmed);
-    if (m_outlineOnlyFirstPass) {
-        emit systemNotice(QStringLiteral("Structured document request detected. Amelia will use an outline-only first pass to keep the local prompt grounded and compact."));
-        addDiagnostic(QStringLiteral("planner"), QStringLiteral("Outline-only first pass enabled for this request"));
-    }
-    if (outlinePlan.enabled) {
-        addDiagnostic(QStringLiteral("planner"), QStringLiteral("Outline planner activated for %1 section(s)").arg(outlinePlan.sections.size()));
-        emit statusChanged(QStringLiteral("Planning outline and retrieving section evidence..."));
-    }
+        const QVector<MemoryRecord> relevantMemories = m_memoryManager->findRelevant(trimmed, config.maxRelevantMemories);
+        result.memoryContext = m_memoryManager->formatForPrompt(relevantMemories);
 
-    QString localContext;
-    QString localUi;
-    int retrievedHits = 0;
-    double bestHitScore = 0.0;
+        if (config.preferOutlinePlanning) {
+            result.outlinePlan = m_outlinePlanner->planForPrompt(trimmed);
+        }
+        result.outlineOnlyFirstPass = result.outlinePlan.enabled && isStructuredDocumentRequest(trimmed);
 
-    if (outlinePlan.enabled && !outlinePlan.sections.isEmpty()) {
-        QStringList promptSections;
-        QStringList uiSections;
-        QSet<QString> seen;
-        for (const OutlineSectionPlan &section : outlinePlan.sections) {
-            const int perSectionLimit = m_outlineOnlyFirstPass ? 1 : qMax(1, m_config.maxLocalHits / 2);
-            const QVector<RagHit> sectionHits = m_rag->searchHits(section.query,
-                                                                  perSectionLimit,
-                                                                  outlinePlan.intent,
-                                                                  section.preferredRoles);
-            QVector<RagHit> uniqueHits;
-            for (const RagHit &hit : sectionHits) {
-                const QString key = hit.filePath + QLatin1Char('#') + QString::number(hit.chunkIndex);
-                if (seen.contains(key)) {
+        if (result.outlinePlan.enabled && !result.outlinePlan.sections.isEmpty()) {
+            QStringList promptSections;
+            QStringList uiSections;
+            QSet<QString> seen;
+            for (const OutlineSectionPlan &section : result.outlinePlan.sections) {
+                const int perSectionLimit = result.outlineOnlyFirstPass ? 1 : qMax(1, config.maxLocalHits / 2);
+                const QVector<RagHit> sectionHits = m_rag->searchHits(section.query,
+                                                                      perSectionLimit,
+                                                                      result.outlinePlan.intent,
+                                                                      section.preferredRoles);
+                QVector<RagHit> uniqueHits;
+                for (const RagHit &hit : sectionHits) {
+                    const QString key = hit.filePath + QLatin1Char('#') + QString::number(hit.chunkIndex);
+                    if (seen.contains(key)) {
+                        continue;
+                    }
+                    seen.insert(key);
+                    uniqueHits.push_back(hit);
+                    if (hit.rerankScore > result.bestHitScore) {
+                        result.bestHitScore = hit.rerankScore;
+                    }
+                }
+                result.retrievedHits += uniqueHits.size();
+                if (uniqueHits.isEmpty()) {
                     continue;
                 }
-                seen.insert(key);
-                uniqueHits.push_back(hit);
-                if (hit.rerankScore > bestHitScore) {
-                    bestHitScore = hit.rerankScore;
+
+                const QString sectionPromptContext = trimForBudget(m_rag->formatHitsForPrompt(uniqueHits), result.outlineOnlyFirstPass ? 1400 : 2800);
+                promptSections << QStringLiteral("SECTION: %1\nOBJECTIVE: %2\nSECTION_CONTEXT:\n%3")
+                                      .arg(section.title,
+                                           section.objective,
+                                           sectionPromptContext);
+
+                QString uiBlock = QStringLiteral("Section: %1\nObjective: %2\nQuery: %3")
+                        .arg(section.title, section.objective, section.query);
+                if (!section.preferredRoles.isEmpty()) {
+                    uiBlock += QStringLiteral("\nPreferred roles: %1").arg(section.preferredRoles.join(QStringLiteral(", ")));
                 }
+                uiBlock += QStringLiteral("\n\n%1").arg(m_rag->formatHitsForUi(uniqueHits));
+                uiSections << uiBlock;
             }
-            retrievedHits += uniqueHits.size();
-            if (uniqueHits.isEmpty()) {
-                continue;
+            result.localContext = promptSections.join(QStringLiteral("\n\n"));
+            result.localUi = uiSections.isEmpty() ? QStringLiteral("<none>") : uiSections.join(QStringLiteral("\n\n----------------\n\n"));
+        } else {
+            RetrievalIntent intent = RetrievalIntent::General;
+            if (trimmed.contains(QStringLiteral("error"), Qt::CaseInsensitive)
+                    || trimmed.contains(QStringLiteral("failed"), Qt::CaseInsensitive)
+                    || trimmed.contains(QStringLiteral("alarm"), Qt::CaseInsensitive)) {
+                intent = RetrievalIntent::Troubleshooting;
+            } else if (trimmed.contains(QStringLiteral("architecture"), Qt::CaseInsensitive)
+                       || trimmed.contains(QStringLiteral("topology"), Qt::CaseInsensitive)
+                       || trimmed.contains(QStringLiteral("hld"), Qt::CaseInsensitive)
+                       || trimmed.contains(QStringLiteral("lld"), Qt::CaseInsensitive)) {
+                intent = RetrievalIntent::Architecture;
+            } else if (trimmed.contains(QStringLiteral("deploy"), Qt::CaseInsensitive)
+                       || trimmed.contains(QStringLiteral("install"), Qt::CaseInsensitive)
+                       || trimmed.contains(QStringLiteral("bootstrap"), Qt::CaseInsensitive)) {
+                intent = RetrievalIntent::Implementation;
             }
 
-            // Richer source attribution so the model knows exactly which file each claim comes from.
-            const QString sectionPromptContext = trimForBudget(m_rag->formatHitsForPrompt(uniqueHits), m_outlineOnlyFirstPass ? 1400 : 2800);
-            promptSections << QStringLiteral("SECTION: %1\nOBJECTIVE: %2\nSECTION_CONTEXT:\n%3")
-                              .arg(section.title,
-                                   section.objective,
-                                   sectionPromptContext);
-
-            QString uiBlock = QStringLiteral("Section: %1\nObjective: %2\nQuery: %3")
-                    .arg(section.title, section.objective, section.query);
-            if (!section.preferredRoles.isEmpty()) {
-                uiBlock += QStringLiteral("\nPreferred roles: %1").arg(section.preferredRoles.join(QStringLiteral(", ")));
+            const QVector<RagHit> localHits = m_rag->searchHits(trimmed, config.maxLocalHits, intent);
+            result.retrievedHits = localHits.size();
+            if (!localHits.isEmpty()) {
+                result.bestHitScore = localHits.first().rerankScore;
             }
-            uiBlock += QStringLiteral("\n\n%1").arg(m_rag->formatHitsForUi(uniqueHits));
-            uiSections << uiBlock;
-        }
-        localContext = promptSections.join(QStringLiteral("\n\n"));
-        localUi = uiSections.isEmpty() ? QStringLiteral("<none>") : uiSections.join(QStringLiteral("\n\n----------------\n\n"));
-    } else {
-        RetrievalIntent intent = RetrievalIntent::General;
-        if (trimmed.contains(QStringLiteral("error"), Qt::CaseInsensitive)
-                || trimmed.contains(QStringLiteral("failed"), Qt::CaseInsensitive)
-                || trimmed.contains(QStringLiteral("alarm"), Qt::CaseInsensitive)) {
-            intent = RetrievalIntent::Troubleshooting;
-        } else if (trimmed.contains(QStringLiteral("architecture"), Qt::CaseInsensitive)
-                   || trimmed.contains(QStringLiteral("topology"), Qt::CaseInsensitive)
-                   || trimmed.contains(QStringLiteral("hld"), Qt::CaseInsensitive)
-                   || trimmed.contains(QStringLiteral("lld"), Qt::CaseInsensitive)) {
-            intent = RetrievalIntent::Architecture;
-        } else if (trimmed.contains(QStringLiteral("deploy"), Qt::CaseInsensitive)
-                   || trimmed.contains(QStringLiteral("install"), Qt::CaseInsensitive)
-                   || trimmed.contains(QStringLiteral("bootstrap"), Qt::CaseInsensitive)) {
-            intent = RetrievalIntent::Implementation;
+            result.localContext = trimForBudget(m_rag->formatHitsForPrompt(localHits), result.outlineOnlyFirstPass ? 4800 : 9600);
+            result.localUi = m_rag->formatHitsForUi(localHits);
         }
 
-        const QVector<RagHit> localHits = m_rag->searchHits(trimmed, m_config.maxLocalHits, intent);
-        retrievedHits = localHits.size();
-        if (!localHits.isEmpty()) {
-            bestHitScore = localHits.first().rerankScore;
+        result.shouldSearch = allowExternalSearch
+                && searchEnabled
+                && (m_policy->shouldUseExternalSearch(trimmed) || config.autoSuggestExternalSearch);
+        if (result.shouldSearch) {
+            result.sanitizedSearchQuery = m_policy->buildSanitizedSearchQuery(trimmed);
         }
-        // Raised local budget: more grounded text = fewer hallucinations.
-        localContext = trimForBudget(m_rag->formatHitsForPrompt(localHits), m_outlineOnlyFirstPass ? 4800 : 9600);
-        localUi = m_rag->formatHitsForUi(localHits);
-    }
-
-    emit localSourcesReady(localUi.isEmpty() ? QStringLiteral("<none>") : localUi);
-    addDiagnostic(QStringLiteral("rag"), QStringLiteral("Retrieved %1 local hit(s) from %2 source(s); best rerank score=%3")
-                  .arg(retrievedHits).arg(m_rag->sourceCount())
-                  .arg(QString::number(bestHitScore, 'f', 2)));
-
-    // Store best score so startGeneration() can inject a low-confidence warning.
-    m_lastBestHitScore = bestHitScore;
-
-    const bool shouldSearch = allowExternalSearch
-            && m_searchBroker->isEnabled()
-            && (m_policy->shouldUseExternalSearch(trimmed) || m_config.autoSuggestExternalSearch);
-
-    if (shouldSearch) {
-        const QString sanitizedQuery = m_policy->buildSanitizedSearchQuery(trimmed);
-        m_pendingPrompt = trimmed;
-        m_pendingLocalContext = localContext;
-        m_pendingMemoryContext = memoryContext;
-        emit statusChanged(QStringLiteral("Searching external sources with sanitized query..."));
-        addDiagnostic(QStringLiteral("search"), QStringLiteral("External search approved with sanitized query: %1").arg(sanitizedQuery));
-        m_searchBroker->search(sanitizedQuery);
-        return;
-    }
-
-    emit externalSourcesReady(QStringLiteral("<none>"));
-    startGeneration(trimmed, localContext, QString(), memoryContext);
+        return result;
+    }));
 }
 
 void ChatController::stopGeneration()
@@ -361,7 +390,12 @@ void ChatController::stopGeneration()
         return;
     }
 
-    m_llmClient->stop();
+    const bool promptPreparationRunning = m_promptPreparationWatcher != nullptr && m_promptPreparationWatcher->isRunning();
+    if (promptPreparationRunning) {
+        m_promptPreparationSerial += 1;
+    } else {
+        m_llmClient->stop();
+    }
     m_busy = false;
     emit busyChanged(false);
     emit statusChanged(QStringLiteral("Stopped."));
@@ -720,8 +754,6 @@ QVector<LlmChatMessage> ChatController::buildPromptMessages(const QString &userP
                                                             const QString &sessionSummary,
                                                             bool contextIsWeak) const
 {
-    // Raised budgets: feeding more grounded text reduces the chance the model
-    // fills gaps with training priors.
     const int localBudget    = m_outlineOnlyFirstPass ? 4800  : 9600;
     const int externalBudget = m_outlineOnlyFirstPass ? 1400  : 2400;
     const int memoryBudget   = 900;
@@ -732,54 +764,65 @@ QVector<LlmChatMessage> ChatController::buildPromptMessages(const QString &userP
     QVector<LlmChatMessage> messages;
     messages.reserve(4);
 
-    // -----------------------------------------------------------------------
-    // System message — strict grounding contract
-    // -----------------------------------------------------------------------
     messages.push_back({
         QStringLiteral("system"),
         QStringLiteral(
-            "You are Amelia, a local offline coding and cloud operations assistant.\n"
+            "You are Amelia, a local coding and cloud operations assistant.\n"
             "\n"
-            "STRICT GROUNDING RULE: Your answer must be derived ONLY from the LOCAL_CONTEXT "
-            "and EXTERNAL_CONTEXT sections that follow. Those sections are your sole "
-            "authoritative sources.\n"
+            "GROUNDING RULE: Your answer must be grounded in the supplied LOCAL_CONTEXT "
+            "and EXTERNAL_CONTEXT sections.\n"
             "\n"
-            "If the context does not contain sufficient information to answer, respond with "
+            "LOCAL_CONTEXT contains project-local knowledge, indexed files, notes, logs, "
+            "or other private material retrieved by Amelia.\n"
+            "\n"
+            "EXTERNAL_CONTEXT contains web results or external references retrieved by "
+            "Amelia at runtime. If EXTERNAL_CONTEXT is present, you may use it as valid "
+            "evidence.\n"
+            "\n"
+            "Do NOT claim that you cannot search the internet or access external sources "
+            "if EXTERNAL_CONTEXT has been provided. Instead, refer to it naturally as "
+            "retrieved external context or retrieved web context.\n"
+            "\n"
+            "If the supplied context does not contain enough information to answer, respond "
             "exactly: 'I don't know based on the provided context.'\n"
             "\n"
-            "Do NOT use your training knowledge to fill gaps in the context.\n"
+            "Do NOT use built-in model knowledge to fill gaps in the supplied context.\n"
             "Do NOT invent file names, class names, commands, API calls, YAML keys, "
-            "configuration values, or any project-specific detail.\n"
-            "If you catch yourself about to write something not explicitly in the context, "
+            "configuration values, URLs, or project-specific details.\n"
+            "If you are about to write something not supported by the supplied context, "
             "stop and use the fallback sentence instead.\n"
             "\n"
             "Prefer short, factual, direct answers. When you cite a fact, name the source "
-            "file from the context header (e.g. 'per config.yaml:').")
+            "file or section when possible (for example: 'per config.json:' or "
+            "'from retrieved external context:').")
     });
 
-    // -----------------------------------------------------------------------
-    // Developer message — runtime rules + optional mode flags
-    // -----------------------------------------------------------------------
     QStringList developerSections;
     developerSections << QStringLiteral(
         "RUNTIME_RULES:\n"
-        "- Before writing each sentence, silently verify: is every claim directly supported "
-        "by LOCAL_CONTEXT or EXTERNAL_CONTEXT?\n"
+        "- Before writing each sentence, silently verify that every factual claim is "
+        "supported by LOCAL_CONTEXT or EXTERNAL_CONTEXT.\n"
         "- If a claim is not supported, do not write it. Use the fallback sentence.\n"
-        "- Never supplement missing context with training knowledge.\n"
-        "- Treat any claim about file paths, class names, commands, or config keys as "
-        "grounded only if the exact string appears verbatim in the context.\n"
+        "- Never supplement missing context with built-in model knowledge.\n"
+        "- Treat project-specific claims about file paths, class names, commands, config "
+        "keys, versions, or behaviors as grounded only if they appear explicitly in the "
+        "supplied context.\n"
+        "- If EXTERNAL_CONTEXT is present, you may summarize it and answer from it.\n"
+        "- Do not say you are unable to browse the internet when EXTERNAL_CONTEXT exists; "
+        "the application may already have fetched external information for you.\n"
+        "- When context is broad but relevant, summarize the strongest supported themes "
+        "instead of reflexively refusing. Use the fallback sentence only when the supplied "
+        "context is truly insufficient.\n"
         "- Do not role-play, continue hidden reasoning, or break character.\n"
         "- End every response with <END>.");
 
-    // If the best RAG hit scored below the confidence threshold, warn the model
-    // explicitly so it is primed to apply extra caution.
     if (contextIsWeak) {
         developerSections << QStringLiteral(
             "CONTEXT_QUALITY_WARNING:\n"
             "The retrieved context has a low relevance score for this query. "
-            "Be extra conservative: only state what is unambiguously present in the context. "
-            "If in doubt, use the fallback sentence.");
+            "Be conservative, but still try to summarize the best-supported facts or themes "
+            "that are clearly present in the supplied context before refusing. "
+            "Use the fallback sentence only if the supplied context is genuinely insufficient.");
     }
 
     if (m_outlineOnlyFirstPass) {
@@ -811,9 +854,6 @@ QVector<LlmChatMessage> ChatController::buildPromptMessages(const QString &userP
 
     messages.push_back({QStringLiteral("developer"), developerSections.join(QStringLiteral("\n\n"))});
 
-    // -----------------------------------------------------------------------
-    // User message — context + optional history + the actual request
-    // -----------------------------------------------------------------------
     QStringList userSections;
     const QString localTrimmed = trimForBudget(localContext, localBudget);
     if (!localTrimmed.trimmed().isEmpty()) {
@@ -825,7 +865,6 @@ QVector<LlmChatMessage> ChatController::buildPromptMessages(const QString &userP
         userSections << QStringLiteral("EXTERNAL_CONTEXT:\n%1").arg(externalTrimmed);
     }
 
-    // History — walk newest-first to fill the budget, then reverse.
     QStringList historyLines;
     int historyChars = 0;
     const QVector<Message> history = trimmedHistory();
@@ -837,7 +876,8 @@ QVector<LlmChatMessage> ChatController::buildPromptMessages(const QString &userP
         if (message.role == QStringLiteral("user") && message.content == userPrompt) {
             continue;
         }
-        const QString line = QStringLiteral("%1: %2").arg(message.role.toUpper(), message.content.simplified());
+        const QString line = QStringLiteral("%1: %2")
+                                 .arg(message.role.toUpper(), message.content.simplified());
         const int cost = line.size() + 2;
         if (!historyLines.isEmpty() && historyChars + cost > historyBudget) {
             break;
@@ -845,8 +885,10 @@ QVector<LlmChatMessage> ChatController::buildPromptMessages(const QString &userP
         historyLines.prepend(line);
         historyChars += cost;
     }
+
     if (!historyLines.isEmpty()) {
-        userSections << QStringLiteral("RECENT_CONVERSATION:\n%1").arg(historyLines.join(QStringLiteral("\n\n")));
+        userSections << QStringLiteral("RECENT_CONVERSATION:\n%1")
+                            .arg(historyLines.join(QStringLiteral("\n\n")));
     }
 
     userSections << QStringLiteral("USER_REQUEST:\n%1").arg(userPrompt);
@@ -858,7 +900,7 @@ QVector<LlmChatMessage> ChatController::buildPromptMessages(const QString &userP
 QString ChatController::buildGroundingRefusal(const QString &prompt) const
 {
     Q_UNUSED(prompt)
-    return QStringLiteral("I don't know based on the provided context. Please index the relevant files, docs, or logs and try again.");
+    return QStringLiteral("I don't know based on the provided context. Please index the relevant files, docs, or logs, or enable External Search and try again.");
 }
 
 bool ChatController::promptRequiresGrounding(const QString &prompt) const

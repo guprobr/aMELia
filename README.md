@@ -1,135 +1,73 @@
-# Amelia Qt6 v6.5
+# Amelia Qt6 v6.96
 
-Amelia is a local offline Qt6/C++ coding and cloud assistant. It talks to a local Ollama server, keeps state on disk under `~/.amelia_qt6`, and can optionally use sanitized external search.
+Amelia is a local-first Qt6/C++ coding and cloud assistant that talks to a local Ollama server, stores its state under `~/.amelia_qt6`, indexes a local knowledge base, and can optionally use sanitized external web search through SearXNG.
 
-This v6.5 build upgrades the main answer surface and Prompt Lab instead of treating them like raw text boxes.
+This build focuses on **startup visibility**, **incremental indexing**, and **keeping the UI responsive** as the knowledge base grows.
 
-## What changed in v6.5
+## What's new in v6.96
 
-### Richer formatted transcript output
+### Bootstrap visibility
 
-The main transcript is now rendered as structured rich text cards instead of a plain colored stream.
+- Startup now shows a **bootstrap dialog** immediately instead of leaving the screen blank.
+- The bootstrap dialog uses the Amelia logo as a rotating spinner.
+- A live **bootstrap log window** shows config/data-root/bootstrap messages until the main window is displayed.
+- The bootstrap dialog closes automatically once the main window is up.
 
-It now gives you:
+### Incremental indexing
 
-- better spacing and readability for long answers
-- markdown-style paragraphs, lists, headings, and inline code rendered more cleanly
-- fenced code blocks rendered in dedicated code panels
-- clearer separation between `USER`, `ASSISTANT`, and `SYSTEM`
-- improved transcript restore behavior for multiline answers and code-heavy replies
+- Amelia no longer throws away the whole RAG index just because **one file changed** or **one more asset was added**.
+- The indexer now reuses cached chunks for unchanged files and rebuilds only:
+  - new files
+  - changed files
+  - removed-file deltas
+- On startup, Amelia can load the cache and then schedule an **incremental background refresh** only when the KB changed.
 
-### Copy helpers for answers and code blocks
+### Lower UI freeze risk
 
-The transcript toolbar now includes:
+- Prompt submission now prepares local context **off the main thread**.
+- Large KB retrieval and outline preparation no longer block the main UI while you wait after pressing **Send**.
+- PDF indexing remains asynchronous, with progress visible in the status bar.
 
-- **Copy last answer**
-- **Copy transcript**
-- **Copy code block** from a selector populated with the detected fenced blocks in the conversation output
+### Default config changes
 
-There is also a transcript context menu with the same copy actions.
+These defaults are now enabled for fresh configs:
 
-This makes it much easier to:
+- `enableSemanticRetrieval: true`
+- `enableExternalSearch: true`
+- `autoSuggestExternalSearch: true`
+- `ollamaResponseHeadersTimeoutMs: 1800000`
 
-- grab the whole assistant answer quickly
-- copy only one generated code block without manual selection
-- preserve formatting while reviewing long technical replies
+### Versioning
 
-### Prompt Lab improvements
+- Version is now `6.96`.
+- The display version comes from a single place:
+  - `src/appversion.h`
 
-Prompt Lab in v6.5 is more practical for real KB and patch workflows.
+## Ubuntu packages
 
-It now adds:
-
-- more presets:
-  - `General grounding`
-  - `Code patch`
-  - `Runbook / docs`
-  - `Incident investigation`
-  - `Dataset from assets`
-  - `Executive summary`
-  - `Knowledge extraction`
-  - `KB-only analysis`
-  - `Migration / refactor plan`
-- a dedicated multiline area for **filesystem assets to import**
-- **Select files** and **Select folder** helpers
-- a filterable list of **already indexed knowledge-base assets**
-- the ability to add selected KB assets directly into the recipe
-- a dedicated field for **manual KB references** that are already in the knowledge base
-- a **Copy recipe** action in addition to **Use in input**
-
-This means Prompt Lab can now work with both:
-
-- assets that still need importing
-- assets that already exist in Amelia's indexed knowledge base
-
-### Versioning visible in the UI
-
-Version `6.5` now appears in:
-
-- the main window title bar
-- the main header label
-- the **About Amelia** dialog
-- the CMake project version and application version metadata
-
-## Grounding and safety behavior
-
-Amelia still follows the grounding-first behavior from earlier builds.
-
-For project-scoped prompts such as questions about:
-
-- repository structure
-- files, classes, functions, modules
-- current app capabilities
-- current indexed documentation
-- local filesystem or configuration state
-
-Amelia refuses to guess when no supporting context is present and returns:
-
-```text
-I don't know based on the provided context.
-```
-
-## Runtime layout
-
-Amelia stores runtime data in:
-
-- `~/.amelia_qt6`
-
-Typical content:
-
-- `~/.amelia_qt6/config.json`
-- `~/.amelia_qt6/conversations/`
-- `~/.amelia_qt6/conversations_index.json`
-- `~/.amelia_qt6/memories.json`
-- `~/.amelia_qt6/state.json`
-- `~/.amelia_qt6/rag_cache.json`
-- `~/.amelia_qt6/knowledge/`
-
-On first run, Amelia creates `~/.amelia_qt6`, `~/.amelia_qt6/knowledge`, and seeds `~/.amelia_qt6/config.json` from the installed example config when available.
-
-## Example config
-
-The packaged example config is:
-
-- `config/config.example.json`
-
-Preferred user config path:
-
-- `~/.amelia_qt6/config.json`
-
-## Recommended local models
-
-For dependable coding and cloud work:
-
-- `qwen2.5-coder:14b` — recommended default
-- `qwen2.5-coder:7b` — lighter fallback
-
-Example:
+### Required to build Amelia
 
 ```bash
-ollama pull qwen2.5-coder:14b
-curl http://127.0.0.1:11434/api/tags
+sudo apt update
+sudo apt install -y \
+  build-essential \
+  cmake \
+  qt6-base-dev \
+  qt6-tools-dev \
+  qt6-tools-dev-tools \
+  qt6-svg-dev \
+  qt6-imageformats-plugins \
+  poppler-utils \
+  curl \
+  git
 ```
+
+Why these matter:
+
+- `qt6-base-dev` -> Qt Core / Widgets / Network / Concurrent used by Amelia
+- `qt6-tools-dev` and `qt6-tools-dev-tools` -> standard Qt6 dev tooling on Ubuntu
+- `qt6-svg-dev` / `qt6-imageformats-plugins` -> smoother SVG logo handling at runtime
+- `poppler-utils` -> provides `pdftotext`, which Amelia uses to ingest PDFs
 
 ## Build
 
@@ -137,7 +75,7 @@ curl http://127.0.0.1:11434/api/tags
 mkdir -p build
 cd build
 cmake ..
-cmake --build . -j
+cmake --build . -j$(nproc)
 cmake --install .
 ```
 
@@ -149,10 +87,150 @@ cmake --install .
 - icon: `${CMAKE_INSTALL_PREFIX}/share/icons/hicolor/scalable/apps/amelia_qt6.svg`
 - example config: `${CMAKE_INSTALL_PREFIX}/share/amelia_qt6/config/config.example.json`
 
-## Notes
+## Starting Ollama
 
-- Amelia is intentionally local-first.
-- External search is disabled by default.
-- Prompt Lab helps prepare grounded prompt and JSONL-style samples, but it does not fine-tune models by itself.
-- PDF ingestion still depends on `pdftotext` being available on the system.
-- This build is aimed at making long technical answers easier to read and easier to copy back into real patch workflows.
+### Native install on Ubuntu/Linux
+
+```bash
+curl -fsSL https://ollama.com/install.sh | sh
+sudo systemctl start ollama
+sudo systemctl status ollama
+```
+
+Pull at least one model, for example:
+
+```bash
+ollama pull qwen2.5-coder:14b
+```
+
+Quick API test:
+
+```bash
+curl http://127.0.0.1:11434/api/generate -d '{
+  "model": "qwen2.5-coder:14b",
+  "prompt": "hello"
+}'
+```
+
+### Ollama in Docker
+
+CPU-only quick start:
+
+```bash
+docker run -d \
+  -v ollama:/root/.ollama \
+  -p 11434:11434 \
+  --name ollama \
+  ollama/ollama
+```
+
+Then pull a model inside the container:
+
+```bash
+docker exec -it ollama ollama pull qwen2.5-coder:14b
+```
+
+## Starting SearXNG search container
+
+Quick container setup:
+
+```bash
+mkdir -p ./searxng/config ./searxng/data
+
+docker pull docker.io/searxng/searxng:latest
+
+docker run --name searxng -d \
+  -p 8080:8080 \
+  -v "$(pwd)/searxng/config:/etc/searxng" \
+  -v "$(pwd)/searxng/data:/var/cache/searxng" \
+  docker.io/searxng/searxng:latest
+```
+
+Amelia expects, by default:
+
+```json
+"searxngUrl": "http://127.0.0.1:8080/search"
+```
+
+If you prefer another host port, update Amelia's config accordingly.
+
+## Runtime layout
+
+Amelia stores runtime data in:
+
+- `~/.amelia_qt6/config.json`
+- `~/.amelia_qt6/conversations/`
+- `~/.amelia_qt6/conversations_index.json`
+- `~/.amelia_qt6/memories.json`
+- `~/.amelia_qt6/state.json`
+- `~/.amelia_qt6/rag_cache.json`
+- `~/.amelia_qt6/knowledge/`
+
+Preferred user config path:
+
+- `~/.amelia_qt6/config.json`
+
+## Notes about existing configs
+
+Changing defaults in source files does **not** overwrite an existing user config.
+
+If you already have:
+
+- `~/.amelia_qt6/config.json`
+
+then its values still win. Update that file manually if you want the new defaults on an existing installation.
+
+## Knowledge-base behavior
+
+Amelia now behaves better with large KBs:
+
+- cached KB state can load first
+- stale-cache detection uses a lighter source-level comparison
+- incremental refresh rebuilds only changed/new files
+- sending a prompt no longer blocks the UI while retrieval/outline prep happens
+
+## Prompt Lab and transcript helpers still present
+
+This build keeps the existing UI enhancements already merged in your tree, including:
+
+- richer Prompt Lab presets and KB-asset fields
+- Browse files / Browse folder helpers
+- Copy recipe
+- colored transcript rendering
+- fenced code formatting
+- Copy answer
+- Copy code block(s)
+
+## Troubleshooting
+
+### PDFs do not index
+
+Make sure `pdftotext` exists:
+
+```bash
+which pdftotext
+```
+
+If not:
+
+```bash
+sudo apt install poppler-utils
+```
+
+### New defaults did not take effect
+
+Your existing user config is overriding the source defaults. Edit:
+
+```bash
+~/.amelia_qt6/config.json
+```
+
+### Amelia still feels slow with a huge KB
+
+Main things to check:
+
+- model size in Ollama
+- number of indexed files and chunk count
+- whether the KB is currently refreshing in the background
+- whether your local disk is slow
+- whether Ollama is CPU-only instead of GPU-backed

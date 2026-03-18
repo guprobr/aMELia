@@ -1,8 +1,9 @@
 #pragma once
 
 #include <QString>
-#include <functional>
 #include <QStringList>
+#include <functional>
+#include <QFileInfo>
 #include <QVector>
 
 #include "outlineplanner.h"
@@ -30,6 +31,7 @@ public:
     int reindex(const std::function<void(int, int, const QString &)> &progressCallback = {});
     bool loadCache();
     bool saveCache() const;
+    bool cacheNeedsRefresh() const;
 
     QVector<RagHit> searchHits(const QString &query,
                                int limit = 4,
@@ -68,6 +70,8 @@ private:
     };
 
     void rebuildEmbeddings();
+    void ensureEmbeddingsForChunks(QVector<Chunk> &chunks) const;
+    static bool sourceMatchesFile(const SourceInfo &source, const QFileInfo &info);
 
     QString m_docsRoot;
     QString m_cachePath;

@@ -1,6 +1,7 @@
 #include "appconfig.h"
 #include "chatcontroller.h"
 #include "mainwindow.h"
+#include "bootstrapdialog.h"
 
 #include <QApplication>
 #include <QCoreApplication>
@@ -26,8 +27,8 @@ R"JSON({
   "docsRoot": "./docs/sample",
   "dataRoot": "${HOME}/.amelia_qt6",
   "knowledgeRoot": "${HOME}/.amelia_qt6/knowledge",
-  "enableExternalSearch": false,
-  "autoSuggestExternalSearch": false,
+  "enableExternalSearch": true,
+  "autoSuggestExternalSearch": true,
   "probeOllamaOnStartup": true,
   "restoreLastConversationOnStartup": true,
   "autoPersistMemories": true,
@@ -36,10 +37,10 @@ R"JSON({
   "enableSemanticRetrieval": true,
   "preferOutlinePlanning": true,
   "requireGroundingForProjectQuestions": true,
-  "includeAssistantHistoryInPrompt": false,
+  "includeAssistantHistoryInPrompt": true,
   "searxngUrl": "http://127.0.0.1:8080/search",
-  "maxHistoryTurns": 4,
-  "maxLocalHits": 3,
+  "maxHistoryTurns": 8,
+  "maxLocalHits": 8,
   "maxExternalHits": 2,
   "maxRelevantMemories": 6,
   "externalSearchTimeoutMs": 15000,
@@ -50,13 +51,13 @@ R"JSON({
   "ollamaTotalTimeoutMs": 0,
   "maxDiagnosticLines": 400,
   "ollamaNumCtx": 32768,
-  "ollamaTemperature": 0.15,
-  "ollamaTopP": 0.95,
-  "ollamaTopK": 50,
-  "ollamaRepeatPenalty": 1.12,
+  "ollamaTemperature": 0.05,
+  "ollamaTopP": 0.90,
+  "ollamaTopK": 40,
+  "ollamaRepeatPenalty": 1.10,
   "ollamaPresencePenalty": 0.0,
   "ollamaFrequencyPenalty": 0.0,
-  "ollamaStopSequences": ["<END>"],
+  "ollamaStopSequences": ["<END>", "<|im_end|>", "<|endoftext|>"],
   "externalSearchDomainAllowlist": []
 })JSON");
 }
@@ -179,18 +180,45 @@ int main(int argc, char *argv[])
     QApplication::setApplicationName(QStringLiteral("amelia_qt6"));
     QApplication::setOrganizationName(QStringLiteral("guprobr"));
 
+    BootstrapDialog bootstrap;
+    bootstrap.show();
+    bootstrap.setStatusText(QStringLiteral("Preparing Amelia runtime..."));
+    app.processEvents();
+
     QStringList bootstrapMessages;
     ensureUserDataRoot(bootstrapMessages);
     ensureUserConfigSeeded(bootstrapMessages);
+    for (const QString &message : bootstrapMessages) {
+        bootstrap.appendLog(message);
+    }
+    app.processEvents();
 
     QString configPathMessage;
     const QString configPath = resolveConfigPath(&configPathMessage);
+    if (!configPathMessage.isEmpty()) {
+        bootstrap.appendLog(configPathMessage);
+    }
 
     QString configLoadMessage;
     const AppConfig config = AppConfigLoader::load(configPath, &configLoadMessage);
+    if (!configLoadMessage.isEmpty()) {
+        bootstrap.appendLog(configLoadMessage);
+    }
+    bootstrap.setStatusText(QStringLiteral("Building Amelia interface..."));
+    app.processEvents();
 
     MainWindow window;
+    bootstrap.appendLog(QStringLiteral("Main window created."));
+    bootstrap.setStatusText(QStringLiteral("Loading controller and cached knowledge..."));
+    app.processEvents();
+
     ChatController controller(config);
+    bootstrap.appendLog(QStringLiteral("Controller initialized."));
+
+    QObject::connect(&controller, &ChatController::statusChanged,
+                     &bootstrap, &BootstrapDialog::setStatusText);
+    QObject::connect(&controller, &ChatController::systemNotice,
+                     &bootstrap, &BootstrapDialog::appendLog);
 
     QObject::connect(&window, &MainWindow::promptSubmitted,
                      &controller, &ChatController::sendUserPrompt);
@@ -268,6 +296,8 @@ int main(int argc, char *argv[])
         window.appendSystemMessage(configLoadMessage);
     }
 
+    bootstrap.appendLog(QStringLiteral("Showing main window..."));
     window.show();
+    bootstrap.close();
     return app.exec();
 }

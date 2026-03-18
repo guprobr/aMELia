@@ -2,7 +2,7 @@
 Type=Application
 Name=Amelia Qt6
 GenericName=Local coding and cloud assistant
-Comment=Local offline coding and cloud assistant (v6.5)
+Comment=Local offline coding and cloud assistant
 Exec=amelia_qt6
 Icon=amelia_qt6
 Terminal=false

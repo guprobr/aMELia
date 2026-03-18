@@ -1,20 +1,20 @@
 {
   "ollamaBaseUrl": "http://127.0.0.1:11434",
-  "ollamaModel": "qwen3-coder:30b",
+  "ollamaModel": "qwen2.5-coder:14b",
   "docsRoot": "./docs/sample",
   "dataRoot": "${HOME}/.amelia_qt6",
   "knowledgeRoot": "${HOME}/.amelia_qt6/knowledge",
 
-  "enableExternalSearch": false,
-  "autoSuggestExternalSearch": false,
+  "enableExternalSearch": true,
+  "autoSuggestExternalSearch": true,
   "probeOllamaOnStartup": true,
   "restoreLastConversationOnStartup": true,
   "autoPersistMemories": true,
   "autoSaveSessionSummary": true,
   "seedDocsIntoKnowledge": true,
 
-  "_comment_semanticRetrieval": "Keep false — the built-in hash embedder is NOT a real semantic model. Enable only after wiring nomic-embed-text or similar via Ollama.",
-  "enableSemanticRetrieval": false,
+  "_comment_semanticRetrieval": "Enabled by default. Amelia uses its built-in local hash embedder for lightweight semantic boosting and incremental cache refresh.",
+  "enableSemanticRetrieval": true,
 
   "preferOutlinePlanning": true,
   "requireGroundingForProjectQuestions": true,
@@ -34,7 +34,7 @@
   "maxRelevantMemories": 6,
 
   "_comment_ragThreshold": "Raise if the model still hallucinates from weak hits. Lower if too many valid prompts are refused.",
-  "ragConfidenceThreshold": 1.2,
+  "ragConfidenceThreshold": 0.95,
 
   "externalSearchTimeoutMs": 15000,
   "ollamaProbeTimeoutMs": 10000,

@@ -25,6 +25,8 @@ qt_add_executable(amelia_qt6
     src/ollamaclient.cpp
     src/mainwindow.h
     src/mainwindow.cpp
+    src/bootstrapdialog.h
+    src/bootstrapdialog.cpp
     src/policyengine.h
     src/policyengine.cpp
     src/ragindexer.h

@@ -1,8 +1,10 @@
 #include "mainwindow.h"
+#include "appversion.h"
 
 #include <QAbstractItemView>
 #include <QAction>
 #include <QApplication>
+#include <QClipboard>
 #include <QCheckBox>
 #include <QColor>
 #include <QComboBox>
@@ -19,12 +21,13 @@
 #include <QMenuBar>
 #include <QMessageBox>
 #include <QPlainTextEdit>
+#include <QPushButton>
 #include <QProgressBar>
 #include <QStatusBar>
-#include <QPushButton>
 #include <QRegularExpression>
 #include <QSplitter>
 #include <QTabWidget>
+#include <QTextBlockFormat>
 #include <QTextCharFormat>
 #include <QTextCursor>
 #include <QTextEdit>
@@ -131,13 +134,92 @@ QStringList splitAssetPaths(const QString &raw)
     }
     return paths;
 }
+
+
+struct TranscriptSegment {
+    bool isCode = false;
+    QString language;
+    QString text;
+};
+
+QVector<TranscriptSegment> splitTranscriptSegments(const QString &text)
+{
+    QVector<TranscriptSegment> segments;
+    const QString fence = QStringLiteral("```");
+    int pos = 0;
+    bool inCode = false;
+    QString currentLanguage;
+    while (pos < text.size()) {
+        const int fencePos = text.indexOf(fence, pos);
+        if (fencePos < 0) {
+            TranscriptSegment seg;
+            seg.isCode = inCode;
+            seg.language = currentLanguage;
+            seg.text = text.mid(pos);
+            if (!seg.text.isEmpty()) {
+                segments.push_back(seg);
+            }
+            break;
+        }
+        if (fencePos > pos) {
+            TranscriptSegment seg;
+            seg.isCode = inCode;
+            seg.language = currentLanguage;
+            seg.text = text.mid(pos, fencePos - pos);
+            if (!seg.text.isEmpty()) {
+                segments.push_back(seg);
+            }
+        }
+        const int afterFence = fencePos + fence.size();
+        const int lineEnd = text.indexOf(QLatin1Char('\n'), afterFence);
+        if (!inCode) {
+            if (lineEnd < 0) {
+                break;
+            }
+            currentLanguage = text.mid(afterFence, lineEnd - afterFence).trimmed();
+            inCode = true;
+            pos = lineEnd + 1;
+        } else {
+            inCode = false;
+            currentLanguage.clear();
+            pos = lineEnd < 0 ? afterFence : lineEnd + 1;
+        }
+    }
+    return segments;
+}
+
+QString extractCodeBlocks(const QString &text)
+{
+    QStringList blocks;
+    const QVector<TranscriptSegment> segments = splitTranscriptSegments(text);
+    for (const TranscriptSegment &segment : segments) {
+        if (segment.isCode && !segment.text.trimmed().isEmpty()) {
+            blocks << segment.text.trimmed();
+        }
+    }
+    return blocks.join(QStringLiteral("\n\n---\n\n"));
+}
+
+void appendPathsToLineEdit(QLineEdit *lineEdit, const QStringList &paths)
+{
+    if (lineEdit == nullptr || paths.isEmpty()) {
+        return;
+    }
+    QStringList merged = splitAssetPaths(lineEdit->text());
+    for (const QString &path : paths) {
+        if (!merged.contains(path)) {
+            merged << path;
+        }
+    }
+    lineEdit->setText(merged.join(QStringLiteral("; ")));
+}
 }
 
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
     , m_busyFrames({QStringLiteral("◐"), QStringLiteral("◓"), QStringLiteral("◑"), QStringLiteral("◒")})
 {
-    setWindowTitle(QStringLiteral("Amelia Qt6"));
+    setWindowTitle(QStringLiteral("Amelia Qt6 v%1").arg(QLatin1StringView(AmeliaVersion::kDisplayVersion)));
     setMinimumSize(1280, 820);
 
     auto *fileMenu = menuBar()->addMenu(QStringLiteral("&File"));
@@ -181,7 +263,7 @@ MainWindow::MainWindow(QWidget *parent)
     auto *chatLayout = new QVBoxLayout(chatPane);
 
     auto *titleRow = new QHBoxLayout();
-    auto *title = new QLabel(QStringLiteral("aMELia Qt6 "), chatPane);
+    auto *title = new QLabel(QStringLiteral("aMELia Qt6 v%1 ").arg(QLatin1StringView(AmeliaVersion::kDisplayVersion)), chatPane);
     title->setStyleSheet(QStringLiteral("font-weight: 700; font-size: 18px;"));
     auto *logoLabel = new QLabel(chatPane);
     const QPixmap logoPixmap(QStringLiteral(":/branding/amelia_logo.svg"));
@@ -221,6 +303,8 @@ MainWindow::MainWindow(QWidget *parent)
     m_testBackendButton = new QPushButton(QStringLiteral("Test Ollama"), chatPane);
     m_refreshModelsButton = new QPushButton(QStringLiteral("List models"), chatPane);
     m_rememberButton = new QPushButton(QStringLiteral("Remember input"), chatPane);
+    m_copyLastAnswerButton = new QPushButton(QStringLiteral("Copy answer"), chatPane);
+    m_copyCodeBlocksButton = new QPushButton(QStringLiteral("Copy code"), chatPane);
     m_importFilesButton = new QPushButton(QStringLiteral("Import files"), chatPane);
     m_importFolderButton = new QPushButton(QStringLiteral("Import folder"), chatPane);
     m_statusLabel = new QLabel(QStringLiteral("Ready."), chatPane);
@@ -237,6 +321,8 @@ MainWindow::MainWindow(QWidget *parent)
     controlsLayout->addWidget(m_importFilesButton);
     controlsLayout->addWidget(m_importFolderButton);
     controlsLayout->addWidget(m_rememberButton);
+    controlsLayout->addWidget(m_copyLastAnswerButton);
+    controlsLayout->addWidget(m_copyCodeBlocksButton);
     controlsLayout->addStretch(1);
     controlsLayout->addWidget(m_testBackendButton);
     controlsLayout->addWidget(m_refreshModelsButton);
@@ -308,26 +394,46 @@ MainWindow::MainWindow(QWidget *parent)
         QStringLiteral("Code patch"),
         QStringLiteral("Runbook / docs"),
         QStringLiteral("Incident investigation"),
-        QStringLiteral("Dataset from assets")
+        QStringLiteral("Dataset from assets"),
+        QStringLiteral("KB-only tutoring"),
+        QStringLiteral("Summarize new KB assets"),
+        QStringLiteral("Compare assets / revisions"),
+        QStringLiteral("Flashcards / Q&A")
     });
     m_promptLabGoal = new QLineEdit(promptLabTab);
-    m_promptLabGoal->setPlaceholderText(QStringLiteral("What should Amelia learn or generate from these assets?"));
+    m_promptLabGoal->setPlaceholderText(QStringLiteral("What should Amelia learn, generate, compare, or teach?"));
+
     m_promptLabAssets = new QLineEdit(promptLabTab);
-    m_promptLabAssets->setPlaceholderText(QStringLiteral("/path/a;/path/b;~/notes.txt"));
+    m_promptLabAssets->setPlaceholderText(QStringLiteral("/path/a; /path/b; ~/notes.txt"));
+    m_promptLabBrowseFilesButton = new QPushButton(QStringLiteral("Browse files"), promptLabTab);
+    m_promptLabBrowseFolderButton = new QPushButton(QStringLiteral("Browse folder"), promptLabTab);
+    auto *localAssetsRow = new QWidget(promptLabTab);
+    auto *localAssetsLayout = new QHBoxLayout(localAssetsRow);
+    localAssetsLayout->setContentsMargins(0, 0, 0, 0);
+    localAssetsLayout->addWidget(m_promptLabAssets, 1);
+    localAssetsLayout->addWidget(m_promptLabBrowseFilesButton);
+    localAssetsLayout->addWidget(m_promptLabBrowseFolderButton);
+
+    m_promptLabKbAssets = new QLineEdit(promptLabTab);
+    m_promptLabKbAssets->setPlaceholderText(QStringLiteral("Already in KB: file names, paths, tags, topics, PDFs, manuals..."));
+
     promptLabForm->addRow(QStringLiteral("Preset:"), m_promptLabPresetCombo);
     promptLabForm->addRow(QStringLiteral("Goal:"), m_promptLabGoal);
-    promptLabForm->addRow(QStringLiteral("Assets:"), m_promptLabAssets);
+    promptLabForm->addRow(QStringLiteral("Local assets:"), localAssetsRow);
+    promptLabForm->addRow(QStringLiteral("KB assets:"), m_promptLabKbAssets);
 
     m_promptLabNotes = new QTextEdit(promptLabTab);
-    m_promptLabNotes->setPlaceholderText(QStringLiteral("Optional notes, style constraints, schema hints, prompt fragments, expected labels, etc."));
-    m_promptLabNotes->setMaximumHeight(130);
+    m_promptLabNotes->setPlaceholderText(QStringLiteral("Optional notes, style constraints, schema hints, expected output shape, audience, etc."));
+    m_promptLabNotes->setMaximumHeight(140);
 
     auto *promptLabButtons = new QHBoxLayout();
     m_promptLabGenerateButton = new QPushButton(QStringLiteral("Compose recipe"), promptLabTab);
     m_promptLabUseButton = new QPushButton(QStringLiteral("Use in input"), promptLabTab);
-    m_promptLabImportButton = new QPushButton(QStringLiteral("Import listed assets"), promptLabTab);
+    m_promptLabCopyRecipeButton = new QPushButton(QStringLiteral("Copy recipe"), promptLabTab);
+    m_promptLabImportButton = new QPushButton(QStringLiteral("Import local assets"), promptLabTab);
     promptLabButtons->addWidget(m_promptLabGenerateButton);
     promptLabButtons->addWidget(m_promptLabUseButton);
+    promptLabButtons->addWidget(m_promptLabCopyRecipeButton);
     promptLabButtons->addWidget(m_promptLabImportButton);
 
     m_promptLabPreview = new QTextEdit(promptLabTab);
@@ -379,6 +485,11 @@ MainWindow::MainWindow(QWidget *parent)
     connect(m_promptLabGenerateButton, &QPushButton::clicked, this, &MainWindow::onPromptLabGenerateClicked);
     connect(m_promptLabUseButton, &QPushButton::clicked, this, &MainWindow::onPromptLabUseClicked);
     connect(m_promptLabImportButton, &QPushButton::clicked, this, &MainWindow::onPromptLabImportAssetsClicked);
+    connect(m_promptLabBrowseFilesButton, &QPushButton::clicked, this, &MainWindow::onPromptLabBrowseFilesClicked);
+    connect(m_promptLabBrowseFolderButton, &QPushButton::clicked, this, &MainWindow::onPromptLabBrowseFolderClicked);
+    connect(m_promptLabCopyRecipeButton, &QPushButton::clicked, this, &MainWindow::onPromptLabCopyRecipeClicked);
+    connect(m_copyLastAnswerButton, &QPushButton::clicked, this, &MainWindow::onCopyLastAnswerClicked);
+    connect(m_copyCodeBlocksButton, &QPushButton::clicked, this, &MainWindow::onCopyCodeBlocksClicked);
 
     if (m_promptLabPreview != nullptr) {
         m_promptLabPreview->setPlainText(buildPromptLabRecipe());
@@ -387,6 +498,11 @@ MainWindow::MainWindow(QWidget *parent)
 
 
 void MainWindow::appendTranscriptEntry(const QString &role, const QString &text)
+{
+    insertTranscriptMessage(role, text);
+}
+
+void MainWindow::insertTranscriptMessage(const QString &role, const QString &text)
 {
     if (m_transcript == nullptr) {
         return;
@@ -405,10 +521,56 @@ void MainWindow::appendTranscriptEntry(const QString &role, const QString &text)
     QTextCharFormat bodyFormat;
     bodyFormat.setForeground(transcriptBodyColor(role));
 
-    cursor.insertText(transcriptPrefix(role), prefixFormat);
-    cursor.insertText(text, bodyFormat);
-    cursor.insertBlock();
+    QTextCharFormat codeFormat;
+    codeFormat.setForeground(QColor(QStringLiteral("#dbeafe")));
+    codeFormat.setBackground(QColor(QStringLiteral("#111827")));
+    codeFormat.setFontFamilies({QStringLiteral("Monospace"), QStringLiteral("Courier New"), QStringLiteral("DejaVu Sans Mono")});
 
+    QTextCharFormat codeHeaderFormat;
+    codeHeaderFormat.setForeground(QColor(QStringLiteral("#93c5fd")));
+    codeHeaderFormat.setFontWeight(QFont::Bold);
+
+    QTextBlockFormat codeBlockFormat;
+    codeBlockFormat.setBackground(QColor(QStringLiteral("#0b1220")));
+    codeBlockFormat.setTopMargin(4.0);
+    codeBlockFormat.setBottomMargin(4.0);
+    codeBlockFormat.setLeftMargin(12.0);
+    codeBlockFormat.setRightMargin(8.0);
+
+    cursor.insertText(transcriptPrefix(role), prefixFormat);
+
+    const QVector<TranscriptSegment> segments = splitTranscriptSegments(text);
+    if (segments.isEmpty()) {
+        cursor.insertText(text, bodyFormat);
+        cursor.insertBlock();
+        m_transcript->setTextCursor(cursor);
+        m_transcript->ensureCursorVisible();
+        return;
+    }
+
+    bool insertedCode = false;
+    for (const TranscriptSegment &segment : segments) {
+        if (!segment.isCode) {
+            if (!segment.text.isEmpty()) {
+                cursor.insertText(segment.text, bodyFormat);
+            }
+            continue;
+        }
+
+        if (!insertedCode) {
+            cursor.insertBlock();
+            insertedCode = true;
+        }
+        cursor.insertBlock(codeBlockFormat, codeFormat);
+        const QString label = segment.language.trimmed().isEmpty()
+                ? QStringLiteral("[code]")
+                : QStringLiteral("[code: %1]").arg(segment.language.trimmed());
+        cursor.insertText(label + QStringLiteral("\n"), codeHeaderFormat);
+        cursor.insertText(segment.text.trimmed() + QStringLiteral("\n"), codeFormat);
+        cursor.insertBlock();
+    }
+
+    cursor.insertBlock();
     m_transcript->setTextCursor(cursor);
     m_transcript->ensureCursorVisible();
 }
@@ -446,6 +608,7 @@ void MainWindow::appendDiagnosticEntry(const QString &timestamp, const QString &
 void MainWindow::appendUserMessage(const QString &text)
 {
     m_streamingAssistant = false;
+    m_streamingAssistantStartPosition = -1;
     appendTranscriptEntry(QStringLiteral("user"), text);
 }
 
@@ -465,6 +628,7 @@ void MainWindow::appendAssistantChunk(const QString &text)
         if (!m_transcript->document()->isEmpty()) {
             cursor.insertBlock();
         }
+        m_streamingAssistantStartPosition = cursor.position();
         cursor.insertText(transcriptPrefix(QStringLiteral("assistant")), prefixFormat);
         m_streamingAssistant = true;
     }
@@ -476,19 +640,25 @@ void MainWindow::appendAssistantChunk(const QString &text)
 
 void MainWindow::finalizeAssistantMessage(const QString &text)
 {
-    Q_UNUSED(text)
-    if (m_streamingAssistant) {
-        QTextCursor cursor = m_transcript->textCursor();
-        cursor.movePosition(QTextCursor::End);
-        cursor.insertBlock();
+    m_lastAssistantMessage = text;
+
+    if (m_streamingAssistant && m_streamingAssistantStartPosition >= 0) {
+        QTextCursor cursor(m_transcript->document());
+        cursor.setPosition(m_streamingAssistantStartPosition);
+        cursor.movePosition(QTextCursor::End, QTextCursor::KeepAnchor);
+        cursor.removeSelectedText();
         m_transcript->setTextCursor(cursor);
+        insertTranscriptMessage(QStringLiteral("assistant"), text);
     }
+
     m_streamingAssistant = false;
+    m_streamingAssistantStartPosition = -1;
 }
 
 void MainWindow::appendSystemMessage(const QString &text)
 {
     m_streamingAssistant = false;
+    m_streamingAssistantStartPosition = -1;
     appendTranscriptEntry(QStringLiteral("system"), text);
 }
 
@@ -526,14 +696,18 @@ void MainWindow::rebuildTranscriptFromPlainText(const QString &text)
 {
     m_transcript->clear();
     m_streamingAssistant = false;
+    m_streamingAssistantStartPosition = -1;
+    m_lastAssistantMessage.clear();
 
-    const QStringList blocks = text.split(QRegularExpression(QStringLiteral("\\n\\s*\\n")), Qt::SkipEmptyParts);
+    const QStringList blocks = text.split(QRegularExpression(QStringLiteral("\n\\s*\n")), Qt::SkipEmptyParts);
     for (const QString &block : blocks) {
         const QString trimmed = block.trimmed();
         if (trimmed.startsWith(QStringLiteral("USER> "))) {
             appendTranscriptEntry(QStringLiteral("user"), trimmed.mid(6));
         } else if (trimmed.startsWith(QStringLiteral("ASSISTANT> "))) {
-            appendTranscriptEntry(QStringLiteral("assistant"), trimmed.mid(11));
+            const QString message = trimmed.mid(11);
+            m_lastAssistantMessage = message;
+            appendTranscriptEntry(QStringLiteral("assistant"), message);
         } else if (trimmed.startsWith(QStringLiteral("[system] "))) {
             appendTranscriptEntry(QStringLiteral("system"), trimmed.mid(9));
         } else if (!trimmed.isEmpty()) {
@@ -583,6 +757,9 @@ void MainWindow::setBusy(bool busy)
     m_promptLabGenerateButton->setEnabled(!busy);
     m_promptLabUseButton->setEnabled(!busy);
     m_promptLabImportButton->setEnabled(!busy && !m_indexingActive);
+    if (m_promptLabBrowseFilesButton != nullptr) m_promptLabBrowseFilesButton->setEnabled(!busy && !m_indexingActive);
+    if (m_promptLabBrowseFolderButton != nullptr) m_promptLabBrowseFolderButton->setEnabled(!busy && !m_indexingActive);
+    if (m_promptLabCopyRecipeButton != nullptr) m_promptLabCopyRecipeButton->setEnabled(!busy);
 
     if (busy) {
         m_busyFrameIndex = 0;
@@ -606,6 +783,8 @@ void MainWindow::setIndexingActive(bool active)
     m_importFilesButton->setEnabled(!active && !m_stopButton->isEnabled());
     m_importFolderButton->setEnabled(!active && !m_stopButton->isEnabled());
     m_promptLabImportButton->setEnabled(!active && !m_stopButton->isEnabled());
+    if (m_promptLabBrowseFilesButton != nullptr) m_promptLabBrowseFilesButton->setEnabled(!active && !m_stopButton->isEnabled());
+    if (m_promptLabBrowseFolderButton != nullptr) m_promptLabBrowseFolderButton->setEnabled(!active && !m_stopButton->isEnabled());
 
     if (m_taskProgressBar == nullptr) {
         return;
@@ -783,47 +962,69 @@ QString MainWindow::buildPromptLabRecipe() const
     const QString preset = m_promptLabPresetCombo != nullptr ? m_promptLabPresetCombo->currentText() : QStringLiteral("General grounding");
     const QString goal = m_promptLabGoal != nullptr ? m_promptLabGoal->text().trimmed() : QString();
     const QString notes = m_promptLabNotes != nullptr ? m_promptLabNotes->toPlainText().trimmed() : QString();
-    const QStringList assets = m_promptLabAssets != nullptr ? splitAssetPaths(m_promptLabAssets->text()) : QStringList();
+    const QStringList localAssets = m_promptLabAssets != nullptr ? splitAssetPaths(m_promptLabAssets->text()) : QStringList();
+    const QStringList kbAssets = m_promptLabKbAssets != nullptr ? splitAssetPaths(m_promptLabKbAssets->text()) : QStringList();
 
     QStringList directives;
     if (preset == QStringLiteral("Code patch")) {
-        directives << QStringLiteral("Study the imported assets before suggesting code changes.")
-                   << QStringLiteral("Preserve existing naming and architecture.")
+        directives << QStringLiteral("Study the selected assets before suggesting code changes.")
+                   << QStringLiteral("Preserve existing naming, architecture, and coding style.")
                    << QStringLiteral("Output paste-ready functions or files only when asked.");
     } else if (preset == QStringLiteral("Runbook / docs")) {
-        directives << QStringLiteral("Extract grounded operational steps from the imported assets.")
-                   << QStringLiteral("Prefer concise procedures, prerequisites, rollback, and validation.")
-                   << QStringLiteral("Do not invent commands or environment details.");
+        directives << QStringLiteral("Extract grounded operational steps from the selected assets.")
+                   << QStringLiteral("Prefer prerequisites, procedure, validation, rollback, and caveats.")
+                   << QStringLiteral("Do not invent commands, versions, or environment-specific details.");
     } else if (preset == QStringLiteral("Incident investigation")) {
-        directives << QStringLiteral("Correlate clues from logs, configs, and notes in the imported assets.")
-                   << QStringLiteral("Separate evidence, hypotheses, and proposed checks.")
-                   << QStringLiteral("Highlight the smallest next diagnostic step.");
+        directives << QStringLiteral("Correlate clues from logs, configs, and notes in the selected assets.")
+                   << QStringLiteral("Separate evidence, hypotheses, risks, and next checks.")
+                   << QStringLiteral("Prefer the smallest high-signal next diagnostic step.");
     } else if (preset == QStringLiteral("Dataset from assets")) {
-        directives << QStringLiteral("Transform the imported assets into reusable supervision examples.")
-                   << QStringLiteral("Produce compact input/output training pairs grounded in those assets.")
+        directives << QStringLiteral("Transform the selected assets into reusable supervision examples.")
+                   << QStringLiteral("Produce compact input/output pairs grounded in those assets.")
                    << QStringLiteral("Reject unsupported labels or invented metadata.");
+    } else if (preset == QStringLiteral("KB-only tutoring")) {
+        directives << QStringLiteral("Teach only from the KB material referenced here.")
+                   << QStringLiteral("Start with a concise table of contents when the topic is broad.")
+                   << QStringLiteral("State when the KB does not support a claim.");
+    } else if (preset == QStringLiteral("Summarize new KB assets")) {
+        directives << QStringLiteral("Summarize what appears to be new or newly imported KB material.")
+                   << QStringLiteral("Highlight themes, domains, and what Amelia can now answer better.")
+                   << QStringLiteral("Do not claim anything that is not supported by retrieved KB context.");
+    } else if (preset == QStringLiteral("Compare assets / revisions")) {
+        directives << QStringLiteral("Compare the selected local assets and KB references carefully.")
+                   << QStringLiteral("Call out additions, removals, operational impacts, and unresolved gaps.")
+                   << QStringLiteral("Prefer a structured diff-style answer.");
+    } else if (preset == QStringLiteral("Flashcards / Q&A")) {
+        directives << QStringLiteral("Generate concise grounded questions and answers from the selected assets.")
+                   << QStringLiteral("Prefer teachable chunks and avoid invented facts.")
+                   << QStringLiteral("Group related cards by topic when possible.");
     } else {
-        directives << QStringLiteral("Ground every answer in the imported assets and the user request.")
-                   << QStringLiteral("Prefer explicit citations to file names or sections when possible.")
+        directives << QStringLiteral("Ground every answer in the selected assets and the user request.")
+                   << QStringLiteral("Prefer explicit references to file names, sections, or KB hints when possible.")
                    << QStringLiteral("Say when information is missing instead of guessing.");
     }
 
     const QString displayGoal = goal.isEmpty() ? QStringLiteral("<describe the target outcome>") : goal;
-    const QString displayAssets = assets.isEmpty() ? QStringLiteral("<none listed>") : assets.join(QStringLiteral("; "));
-    QString escapedGoal = goal.isEmpty() ? QStringLiteral("<goal>") : goal;
-    QString escapedAssets = assets.isEmpty() ? QStringLiteral("<none>") : assets.join(QStringLiteral("; "));
+    const QString displayLocalAssets = localAssets.isEmpty() ? QStringLiteral("<none listed>") : localAssets.join(QStringLiteral("; "));
+    const QString displayKbAssets = kbAssets.isEmpty() ? QStringLiteral("<none listed>") : kbAssets.join(QStringLiteral("; "));
+
+    QString escapedGoal = displayGoal;
+    QString escapedLocalAssets = displayLocalAssets;
+    QString escapedKbAssets = displayKbAssets;
     escapedGoal.replace(QStringLiteral("\""), QStringLiteral("\\\""));
-    escapedAssets.replace(QStringLiteral("\""), QStringLiteral("\\\""));
+    escapedLocalAssets.replace(QStringLiteral("\""), QStringLiteral("\\\""));
+    escapedKbAssets.replace(QStringLiteral("\""), QStringLiteral("\\\""));
 
     QStringList lines;
     lines << QStringLiteral("Prompt Lab recipe");
     lines << QStringLiteral("=================");
     lines << QStringLiteral("Preset: %1").arg(preset);
     lines << QStringLiteral("Goal: %1").arg(displayGoal);
-    lines << QStringLiteral("Assets: %1").arg(displayAssets);
+    lines << QStringLiteral("Local assets: %1").arg(displayLocalAssets);
+    lines << QStringLiteral("KB assets: %1").arg(displayKbAssets);
     lines << QString();
     lines << QStringLiteral("Use this with Amelia:");
-    lines << QStringLiteral("You will study the imported assets and answer only from them.");
+    lines << QStringLiteral("You will answer only from the selected local assets and/or KB references.");
     for (const QString &directive : directives) {
         lines << QStringLiteral("- %1").arg(directive);
     }
@@ -832,12 +1033,12 @@ QString MainWindow::buildPromptLabRecipe() const
     }
     lines << QString();
     lines << QStringLiteral("Suggested working prompt:");
-    lines << QStringLiteral("Analyze the imported assets and help with this goal: %1").arg(escapedGoal);
-    lines << QStringLiteral("Return a grounded answer and identify which imported materials were used.");
+    lines << QStringLiteral("Analyze the selected assets and help with this goal: %1").arg(displayGoal);
+    lines << QStringLiteral("Use only the imported local assets and the referenced KB materials. Identify which materials were used.");
     lines << QString();
     lines << QStringLiteral("JSONL training sample preview:");
-    lines << QStringLiteral("{\"messages\":[{\"role\":\"system\",\"content\":\"You are Amelia. Answer only from the imported assets.\"},{\"role\":\"user\",\"content\":\"Goal: %1\\nAssets: %2\"},{\"role\":\"assistant\",\"content\":\"Grounded response based on the imported assets.\"}]}")
-                .arg(escapedGoal, escapedAssets);
+    lines << QStringLiteral("{\"messages\":[{\"role\":\"system\",\"content\":\"You are Amelia. Answer only from the selected local assets and KB references.\"},{\"role\":\"user\",\"content\":\"Goal: %1\nLocal assets: %2\nKB assets: %3\"},{\"role\":\"assistant\",\"content\":\"Grounded response based on the selected assets and KB references.\"}]}")
+                .arg(escapedGoal, escapedLocalAssets, escapedKbAssets);
 
     return lines.join(QStringLiteral("\n"));
 }
@@ -861,25 +1062,92 @@ void MainWindow::onPromptLabUseClicked()
 
 void MainWindow::onPromptLabImportAssetsClicked()
 {
-    const QStringList paths = splitAssetPaths(m_promptLabAssets != nullptr ? m_promptLabAssets->text() : QString());
-    if (paths.isEmpty()) {
+    const QStringList localPaths = splitAssetPaths(m_promptLabAssets != nullptr ? m_promptLabAssets->text() : QString());
+    const QStringList kbRefs = splitAssetPaths(m_promptLabKbAssets != nullptr ? m_promptLabKbAssets->text() : QString());
+    if (localPaths.isEmpty()) {
+        if (!kbRefs.isEmpty()) {
+            QMessageBox::information(this,
+                                     QStringLiteral("Prompt Lab"),
+                                     QStringLiteral("KB asset references do not need importing. Generate or use the recipe directly."));
+            m_statusLabel->setText(QStringLiteral("Prompt Lab is using KB asset references only."));
+            return;
+        }
         QMessageBox::information(this,
                                  QStringLiteral("Prompt Lab"),
-                                 QStringLiteral("Add one or more asset paths first. Separate them with ';' or ','."));
+                                 QStringLiteral("Add one or more local asset paths first, or populate KB assets if they are already indexed."));
         return;
     }
 
-    emit importPathsRequested(paths);
-    m_statusLabel->setText(QStringLiteral("Prompt Lab requested asset import for %1 path(s).").arg(paths.size()));
+    emit importPathsRequested(localPaths);
+    m_statusLabel->setText(QStringLiteral("Prompt Lab requested local asset import for %1 path(s).%2")
+                           .arg(localPaths.size())
+                           .arg(kbRefs.isEmpty() ? QString() : QStringLiteral(" KB references will be used as-is.")));
+}
+
+void MainWindow::onPromptLabBrowseFilesClicked()
+{
+    const QStringList files = QFileDialog::getOpenFileNames(this,
+                                                            QStringLiteral("Select Prompt Lab assets"),
+                                                            QString(),
+                                                            QStringLiteral("All files (*.*)"));
+    appendPathsToLineEdit(m_promptLabAssets, files);
+    if (!files.isEmpty()) {
+        m_statusLabel->setText(QStringLiteral("Prompt Lab added %1 file asset(s).").arg(files.size()));
+    }
+}
+
+void MainWindow::onPromptLabBrowseFolderClicked()
+{
+    const QString folder = QFileDialog::getExistingDirectory(this,
+                                                             QStringLiteral("Select Prompt Lab asset folder"),
+                                                             QString());
+    if (!folder.trimmed().isEmpty()) {
+        appendPathsToLineEdit(m_promptLabAssets, {folder});
+        m_statusLabel->setText(QStringLiteral("Prompt Lab added folder asset: %1").arg(folder));
+    }
+}
+
+void MainWindow::onPromptLabCopyRecipeClicked()
+{
+    const QString recipe = buildPromptLabRecipe();
+    if (m_promptLabPreview != nullptr) {
+        m_promptLabPreview->setPlainText(recipe);
+    }
+    QApplication::clipboard()->setText(recipe);
+    m_statusLabel->setText(QStringLiteral("Prompt Lab recipe copied to clipboard."));
+}
+
+void MainWindow::onCopyLastAnswerClicked()
+{
+    if (m_lastAssistantMessage.trimmed().isEmpty()) {
+        QMessageBox::information(this, QStringLiteral("Copy answer"), QStringLiteral("There is no completed assistant answer to copy yet."));
+        return;
+    }
+    QApplication::clipboard()->setText(m_lastAssistantMessage);
+    m_statusLabel->setText(QStringLiteral("Last assistant answer copied to clipboard."));
+}
+
+void MainWindow::onCopyCodeBlocksClicked()
+{
+    if (m_lastAssistantMessage.trimmed().isEmpty()) {
+        QMessageBox::information(this, QStringLiteral("Copy code"), QStringLiteral("There is no completed assistant answer to inspect yet."));
+        return;
+    }
+    const QString codeOnly = extractCodeBlocks(m_lastAssistantMessage);
+    if (codeOnly.trimmed().isEmpty()) {
+        QMessageBox::information(this, QStringLiteral("Copy code"), QStringLiteral("The last assistant answer does not contain fenced code blocks."));
+        return;
+    }
+    QApplication::clipboard()->setText(codeOnly);
+    m_statusLabel->setText(QStringLiteral("Code blocks from the last assistant answer copied to clipboard."));
 }
 
 void MainWindow::showAboutAmelia()
 {
     QMessageBox::about(this,
                        QStringLiteral("About Amelia"),
-                       QStringLiteral("<b>Amelia Qt6</b><br><br>"
-                                      "A local offline coding tool and assistant built with C++ and Qt6.<br><br>"
-                                      "This build includes colored transcript/diagnostic views, local Ollama inference, persistent knowledge, prompt budgeting, outline-first document generation, Prompt Lab asset training helpers, and operational diagnostics."));
+                       QStringLiteral("<b>Amelia Qt6 v%1</b><br><br>A local offline coding tool and assistant built with C++ and Qt6.<br><br>This build includes copy-friendly colored transcript/diagnostic views, fenced-code formatting, last-answer/code copy helpers, local Ollama inference, persistent knowledge, richer Prompt Lab KB-aware asset helpers, prompt budgeting, outline-first document generation, asynchronous PDF indexing, and operational diagnostics.")
+                           .arg(QLatin1StringView(AmeliaVersion::kDisplayVersion)));
 }
 
 void MainWindow::showAboutQtDialog()

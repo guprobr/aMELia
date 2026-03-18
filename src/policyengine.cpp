@@ -52,7 +52,6 @@ bool PolicyEngine::shouldUseExternalSearch(const QString &prompt) const
         return false;
     };
 
-    // Strong explicit user intent to use the web/internet.
     static const QRegularExpression explicitInternetIntent(
         QStringLiteral("\\b(?:search(?:\\s+the)?\\s+(?:internet|web|online)|"
                        "search\\s+online|web\\s+search|internet\\s+search|"
@@ -63,7 +62,6 @@ bool PolicyEngine::shouldUseExternalSearch(const QString &prompt) const
         return true;
     }
 
-    // Signals that usually indicate public / fresh / upstream information.
     const QStringList publicInfoSignals = {
         QStringLiteral("who is"),
         QStringLiteral("what is"),
@@ -83,8 +81,6 @@ bool PolicyEngine::shouldUseExternalSearch(const QString &prompt) const
         QStringLiteral("cve")
     };
 
-    // Strongly local / repo-oriented signals. These should stay grounded in
-    // Amelia's KB unless the user explicitly asked to search the internet.
     const QStringList localOnlySignals = {
         QStringLiteral("my project"),
         QStringLiteral("our project"),
@@ -114,8 +110,6 @@ bool PolicyEngine::shouldUseExternalSearch(const QString &prompt) const
         return true;
     }
 
-    // A direct "who is X" style query should usually go external unless the
-    // user clearly framed it as a KB-only question.
     static const QRegularExpression identityQuestion(
         QStringLiteral("^\\s*(?:who\\s+is|what\\s+is)\\b"),
         QRegularExpression::CaseInsensitiveOption);
