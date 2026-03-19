@@ -18,6 +18,7 @@
 #include <QSet>
 #include <QTimer>
 #include <QMetaObject>
+#include <QRegularExpression>
 #include <QtConcurrent/QtConcurrentRun>
 
 #include <cstdio>
@@ -77,6 +78,7 @@ QString ansiColorForCategory(const QString &category)
     if (lower == QStringLiteral("startup"))   return QStringLiteral("\x1b[38;5;213m");
     if (lower == QStringLiteral("budget"))    return QStringLiteral("\x1b[38;5;51m");
     if (lower == QStringLiteral("chat"))      return QStringLiteral("\x1b[38;5;177m");
+    if (lower == QStringLiteral("reasoning")) return QStringLiteral("\x1b[38;5;197m");
     return QStringLiteral("\x1b[0m");
 }
 
@@ -90,6 +92,53 @@ void printDiagnosticToConsole(const QString &category, const QString &line)
         std::fprintf(stderr, "%s%s\x1b[0m\n", color.constData(), payload.constData());
     }
     std::fflush(stderr);
+}
+
+
+QVector<RagHit> mergePreferredHits(const QVector<RagHit> &preferred,
+                                  const QVector<RagHit> &general,
+                                  int limit,
+                                  double *bestScore,
+                                  QStringList *usedPreferredPaths,
+                                  int *preferredHitCount)
+{
+    QVector<RagHit> merged;
+    if (limit <= 0) {
+        return merged;
+    }
+
+    QSet<QString> seen;
+    auto appendUnique = [&](const RagHit &hit, bool preferredHit) {
+        if (merged.size() >= limit) {
+            return;
+        }
+        const QString key = hit.filePath + QLatin1Char('#') + QString::number(hit.chunkIndex);
+        if (seen.contains(key)) {
+            return;
+        }
+        seen.insert(key);
+        merged.push_back(hit);
+        if (bestScore != nullptr && hit.rerankScore > *bestScore) {
+            *bestScore = hit.rerankScore;
+        }
+        if (preferredHit) {
+            if (preferredHitCount != nullptr) {
+                *preferredHitCount += 1;
+            }
+            if (usedPreferredPaths != nullptr && !usedPreferredPaths->contains(hit.filePath)) {
+                usedPreferredPaths->push_back(hit.filePath);
+            }
+        }
+    };
+
+    for (const RagHit &hit : preferred) {
+        appendUnique(hit, true);
+    }
+    for (const RagHit &hit : general) {
+        appendUnique(hit, false);
+    }
+
+    return merged;
 }
 }
 
@@ -204,6 +253,15 @@ ChatController::ChatController(const AppConfig &config, QObject *parent)
                           .arg(result.retrievedHits)
                           .arg(m_rag->sourceCount())
                           .arg(QString::number(result.bestHitScore, 'f', 2)));
+        if (!result.prioritizedAssetsRequested.isEmpty()) {
+            addDiagnostic(QStringLiteral("rag"),
+                          QStringLiteral("Prioritized KB assets active: requested=%1 | matched_hits=%2 | used_sources=%3")
+                              .arg(result.prioritizedAssetsRequested.size())
+                              .arg(result.prioritizedHits)
+                              .arg(result.prioritizedAssetsUsed.isEmpty()
+                                       ? QStringLiteral("<none>")
+                                       : result.prioritizedAssetsUsed.join(QStringLiteral(", "))));
+        }
         m_lastBestHitScore = result.bestHitScore;
 
         if (result.shouldSearch) {
@@ -232,6 +290,7 @@ ChatController::ChatController(const AppConfig &config, QObject *parent)
     m_llmClient->setInactivityTimeoutMs(m_config.ollamaInactivityTimeoutMs);
     m_llmClient->setTotalTimeoutMs(m_config.ollamaTotalTimeoutMs);
     m_llmClient->setGenerationConfig(m_config);
+    m_llmClient->setReasoningTraceEnabled(false);
 
     connect(m_searchBroker, &SearchBroker::searchStarted, this, &ChatController::onSearchStarted);
     connect(m_searchBroker, &SearchBroker::searchFinished, this, &ChatController::onSearchFinished);
@@ -239,6 +298,7 @@ ChatController::ChatController(const AppConfig &config, QObject *parent)
 
     connect(m_llmClient, &OllamaClient::responseStarted, this, &ChatController::onModelStarted);
     connect(m_llmClient, &OllamaClient::responseDelta, this, &ChatController::onModelDelta);
+    connect(m_llmClient, &OllamaClient::reasoningTrace, this, &ChatController::onModelReasoningTrace);
     connect(m_llmClient, &OllamaClient::responseFinished, this, &ChatController::onModelFinished);
     connect(m_llmClient, &OllamaClient::responseError, this, &ChatController::onModelError);
     connect(m_llmClient, &OllamaClient::backendProbeFinished, this, &ChatController::onBackendProbeFinished);
@@ -290,6 +350,86 @@ void ChatController::prepareForShutdown()
     }
 
     disconnect(this, nullptr, nullptr, nullptr);
+}
+
+void ChatController::setReasoningTraceEnabled(bool enabled)
+{
+    const bool changed = (m_reasoningTraceEnabled != enabled);
+    m_reasoningTraceEnabled = enabled;
+    if (m_llmClient != nullptr) {
+        m_llmClient->setReasoningTraceEnabled(enabled);
+    }
+    if (changed) {
+        addDiagnostic(QStringLiteral("reasoning"),
+                      enabled
+                          ? QStringLiteral("Reasoning capture enabled. Amelia will request Ollama thinking streams when supported and log any explicit reasoning trace output here.")
+                          : QStringLiteral("Reasoning capture disabled."));
+    }
+}
+
+void ChatController::setPrioritizedKnowledgeAssets(const QStringList &paths)
+{
+    QStringList normalized;
+    normalized.reserve(paths.size());
+    for (const QString &path : paths) {
+        const QString cleaned = QDir::cleanPath(path.trimmed());
+        if (!cleaned.isEmpty() && !normalized.contains(cleaned)) {
+            normalized << cleaned;
+        }
+    }
+    m_prioritizedKnowledgeAssets = normalized;
+}
+
+void ChatController::deleteConversationById(const QString &conversationId)
+{
+    const QString trimmedId = conversationId.trimmed();
+    if (trimmedId.isEmpty()) {
+        return;
+    }
+
+    if (m_busy) {
+        const QString message = QStringLiteral("Stop the current generation before deleting a conversation.");
+        emit systemNotice(message);
+        addDiagnostic(QStringLiteral("chat"), message);
+        notifyTaskFailed(QStringLiteral("Conversation delete blocked"), message);
+        return;
+    }
+
+    QString error;
+    if (!m_storage->deleteConversation(trimmedId, &error)) {
+        const QString message = error.isEmpty() ? QStringLiteral("Failed to delete conversation.") : error;
+        emit systemNotice(message);
+        addDiagnostic(QStringLiteral("chat"), message);
+        notifyTaskFailed(QStringLiteral("Conversation delete failed"), message);
+        return;
+    }
+
+    const bool removedCurrent = (trimmedId == m_currentConversationId);
+    if (removedCurrent) {
+        m_currentConversationId.clear();
+        m_currentSummary.clear();
+        m_currentOutlinePlanPrompt.clear();
+        m_history.clear();
+        emit transcriptRestored(QString());
+        emit outlinePlanReady(QStringLiteral("<none>"));
+        refreshSummaryPanel();
+    }
+
+    refreshConversationList();
+
+    if (removedCurrent) {
+        const QVector<ConversationRecord> records = m_storage->listConversations();
+        if (!records.isEmpty()) {
+            loadConversationById(records.first().id);
+        } else {
+            emit statusChanged(QStringLiteral("Conversation deleted."));
+        }
+    }
+
+    const QString message = QStringLiteral("Conversation deleted.");
+    emit systemNotice(message);
+    addDiagnostic(QStringLiteral("chat"), QStringLiteral("Deleted conversation %1").arg(trimmedId));
+    notifyTaskSucceeded(QStringLiteral("Conversation deleted"), message);
 }
 
 void ChatController::startBootstrap()
@@ -399,12 +539,15 @@ void ChatController::sendUserPrompt(const QString &prompt, bool allowExternalSea
     const quint64 serial = ++m_promptPreparationSerial;
     const bool searchEnabled = m_searchBroker->isEnabled();
     const AppConfig config = m_config;
+    const QStringList prioritizedAssets = m_prioritizedKnowledgeAssets;
+    m_currentRequestPrioritizedKnowledgeAssets = prioritizedAssets;
 
-    m_promptPreparationWatcher->setFuture(QtConcurrent::run([this, trimmed, allowExternalSearch, searchEnabled, config, serial]() -> PromptPreparationResult {
+    m_promptPreparationWatcher->setFuture(QtConcurrent::run([this, trimmed, allowExternalSearch, searchEnabled, config, serial, prioritizedAssets]() -> PromptPreparationResult {
         PromptPreparationResult result;
         result.serial = serial;
         result.prompt = trimmed;
         result.sanitizedPreview = m_policy->redactSensitiveText(trimmed);
+        result.prioritizedAssetsRequested = prioritizedAssets;
 
         const QVector<MemoryRecord> relevantMemories = m_memoryManager->findRelevant(trimmed, config.maxRelevantMemories);
         result.memoryContext = m_memoryManager->formatForPrompt(relevantMemories);
@@ -420,22 +563,33 @@ void ChatController::sendUserPrompt(const QString &prompt, bool allowExternalSea
             QSet<QString> seen;
             for (const OutlineSectionPlan &section : result.outlinePlan.sections) {
                 const int perSectionLimit = result.outlineOnlyFirstPass ? 1 : qMax(1, config.maxLocalHits / 2);
+                const QVector<RagHit> prioritizedSectionHits = prioritizedAssets.isEmpty()
+                        ? QVector<RagHit>()
+                        : m_rag->searchHitsInFiles(section.query,
+                                                   prioritizedAssets,
+                                                   perSectionLimit,
+                                                   result.outlinePlan.intent,
+                                                   section.preferredRoles);
                 const QVector<RagHit> sectionHits = m_rag->searchHits(section.query,
                                                                       perSectionLimit,
                                                                       result.outlinePlan.intent,
                                                                       section.preferredRoles);
-                QVector<RagHit> uniqueHits;
-                for (const RagHit &hit : sectionHits) {
+                QVector<RagHit> uniqueHits = mergePreferredHits(prioritizedSectionHits,
+                                                                sectionHits,
+                                                                perSectionLimit,
+                                                                &result.bestHitScore,
+                                                                &result.prioritizedAssetsUsed,
+                                                                &result.prioritizedHits);
+                QVector<RagHit> dedupedHits;
+                for (const RagHit &hit : uniqueHits) {
                     const QString key = hit.filePath + QLatin1Char('#') + QString::number(hit.chunkIndex);
                     if (seen.contains(key)) {
                         continue;
                     }
                     seen.insert(key);
-                    uniqueHits.push_back(hit);
-                    if (hit.rerankScore > result.bestHitScore) {
-                        result.bestHitScore = hit.rerankScore;
-                    }
+                    dedupedHits.push_back(hit);
                 }
+                uniqueHits = dedupedHits;
                 result.retrievedHits += uniqueHits.size();
                 if (uniqueHits.isEmpty()) {
                     continue;
@@ -474,11 +628,19 @@ void ChatController::sendUserPrompt(const QString &prompt, bool allowExternalSea
                 intent = RetrievalIntent::Implementation;
             }
 
-            const QVector<RagHit> localHits = m_rag->searchHits(trimmed, config.maxLocalHits, intent);
+            const QVector<RagHit> prioritizedHits = prioritizedAssets.isEmpty()
+                    ? QVector<RagHit>()
+                    : m_rag->searchHitsInFiles(trimmed,
+                                               prioritizedAssets,
+                                               qMax(1, qMin(config.maxLocalHits, 4)),
+                                               intent);
+            const QVector<RagHit> localHits = mergePreferredHits(prioritizedHits,
+                                                                 m_rag->searchHits(trimmed, config.maxLocalHits, intent),
+                                                                 config.maxLocalHits,
+                                                                 &result.bestHitScore,
+                                                                 &result.prioritizedAssetsUsed,
+                                                                 &result.prioritizedHits);
             result.retrievedHits = localHits.size();
-            if (!localHits.isEmpty()) {
-                result.bestHitScore = localHits.first().rerankScore;
-            }
             result.localContext = trimForBudget(m_rag->formatHitsForPrompt(localHits), result.outlineOnlyFirstPass ? 4800 : 9600);
             result.localUi = m_rag->formatHitsForUi(localHits);
         }
@@ -822,8 +984,12 @@ void ChatController::onSearchError(const QString &query, const QString &message)
 
 void ChatController::onModelStarted()
 {
+    m_reasoningTraceNoteCount = 0;
     emit statusChanged(QStringLiteral("Awaiting first local tokens..."));
     addDiagnostic(QStringLiteral("backend"), QStringLiteral("Generation request accepted by backend"));
+    if (m_reasoningTraceEnabled) {
+        addDiagnostic(QStringLiteral("reasoning"), QStringLiteral("Waiting for Ollama thinking tokens or explicit reasoning trace notes..."));
+    }
     notifyTaskStarted(QStringLiteral("Generation running"), QStringLiteral("The local model accepted the request and is preparing the response."));
 }
 
@@ -835,6 +1001,28 @@ void ChatController::onModelDelta(const QString &text)
     }
     ++m_streamChunkCount;
     emit assistantStreamChunk(text);
+}
+
+void ChatController::onModelReasoningTrace(const QString &text)
+{
+    const QStringList lines = text.split(QRegularExpression(QStringLiteral("[\r\n]+")), Qt::SkipEmptyParts);
+    if (lines.isEmpty()) {
+        const QString trimmed = text.trimmed();
+        if (!trimmed.isEmpty()) {
+            ++m_reasoningTraceNoteCount;
+            addDiagnostic(QStringLiteral("reasoning"), trimmed);
+        }
+        return;
+    }
+
+    for (const QString &line : lines) {
+        const QString trimmed = line.trimmed();
+        if (trimmed.isEmpty()) {
+            continue;
+        }
+        ++m_reasoningTraceNoteCount;
+        addDiagnostic(QStringLiteral("reasoning"), trimmed);
+    }
 }
 
 void ChatController::onModelFinished(const QString &fullText)
@@ -850,6 +1038,9 @@ void ChatController::onModelFinished(const QString &fullText)
     refreshConversationList();
     refreshSummaryPanel();
     emit statusChanged(QStringLiteral("Ready."));
+    if (m_reasoningTraceEnabled && m_reasoningTraceNoteCount == 0) {
+        addDiagnostic(QStringLiteral("reasoning"), QStringLiteral("No thinking or explicit reasoning trace stream was emitted by the model for this turn."));
+    }
     addDiagnostic(QStringLiteral("backend"), QStringLiteral("Generation finished in %1 ms with %2 streamed chunk(s) and %3 chars")
                   .arg(nowMs() - m_requestStartedMs).arg(m_streamChunkCount).arg(cleaned.size()));
     notifyTaskSucceeded(QStringLiteral("Prompt complete"), QStringLiteral("Amelia finished generating the answer."));
@@ -1048,6 +1239,23 @@ QVector<LlmChatMessage> ChatController::buildPromptMessages(const QString &userP
         "context is truly insufficient.\n"
         "- Do not role-play, continue hidden reasoning, or break character.\n"
         "- End every response with <END>.");
+
+    if (m_reasoningTraceEnabled) {
+        developerSections << QStringLiteral(
+            "DIAGNOSTIC_REASONING_TRACE:\n"
+            "- The application may capture a separate thinking stream from the backend.\n"
+            "- If you choose to emit extra visible diagnostic notes, wrap them exactly as <amelia_thinking>...</amelia_thinking>.\n"
+            "- These notes are not hidden chain-of-thought; keep them high-level, factual, and concise.\n"
+            "- Good content: current step, evidence being checked, ambiguity warnings, progress updates.\n"
+            "- Never reveal private chain-of-thought, long internal monologues, or unsupported claims.\n"
+            "- Emit at most 8 extra tagged notes total, each under 160 characters.\n"
+            "- Never wrap the final answer in these tags.");
+    }
+
+    if (!m_currentRequestPrioritizedKnowledgeAssets.isEmpty()) {
+        developerSections << QStringLiteral("USER_PRIORITIZED_KB_ASSETS:\n%1\nPrefer evidence from these assets when it is relevant to the request, while remaining strictly grounded in retrieved context.")
+                                 .arg(m_currentRequestPrioritizedKnowledgeAssets.join(QStringLiteral("\n")));
+    }
 
     if (contextIsWeak) {
         developerSections << QStringLiteral(

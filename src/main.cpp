@@ -246,6 +246,12 @@ int main(int argc, char *argv[])
                          controller, &ChatController::newConversation);
         QObject::connect(window, &MainWindow::conversationSelected,
                          controller, &ChatController::loadConversationById);
+        QObject::connect(window, &MainWindow::deleteConversationRequested,
+                         controller, &ChatController::deleteConversationById);
+        QObject::connect(window, &MainWindow::reasoningTraceCaptureToggled,
+                         controller, &ChatController::setReasoningTraceEnabled);
+        QObject::connect(window, &MainWindow::prioritizedKnowledgeAssetsChanged,
+                         controller, &ChatController::setPrioritizedKnowledgeAssets);
         QObject::connect(window, &MainWindow::rememberRequested,
                          controller, &ChatController::rememberNote);
         QObject::connect(window, &MainWindow::backendModelSelected,

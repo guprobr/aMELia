@@ -819,21 +819,39 @@ QVector<RagHit> RagIndexer::searchHits(const QString &query,
                                        RetrievalIntent intent,
                                        const QStringList &preferredRoles) const
 {
+    return searchHitsInFiles(query, QStringList(), limit, intent, preferredRoles);
+}
+
+QVector<RagHit> RagIndexer::searchHitsInFiles(const QString &query,
+                                              const QStringList &preferredPaths,
+                                              int limit,
+                                              RetrievalIntent intent,
+                                              const QStringList &preferredRoles) const
+{
     const QStringList terms = queryTerms(query);
     const EmbeddingClient embedder;
     const QVector<float> queryEmbedding = m_semanticEnabled ? embedder.embedText(query) : QVector<float>();
+
+    QSet<QString> pathFilter;
+    for (const QString &path : preferredPaths) {
+        const QString trimmed = path.trimmed();
+        if (!trimmed.isEmpty()) {
+            pathFilter.insert(QDir::cleanPath(trimmed));
+        }
+    }
 
     QVector<RagHit> ranked;
     ranked.reserve(m_chunks.size());
 
     for (const Chunk &chunk : m_chunks) {
+        if (!pathFilter.isEmpty() && !pathFilter.contains(QDir::cleanPath(chunk.filePath))) {
+            continue;
+        }
+
         const double lexical = lexicalScoreChunk(chunk.text, chunk.fileName, terms, query);
         const double semantic = m_semanticEnabled ? qMax(0.0f, EmbeddingClient::cosineSimilarity(queryEmbedding, chunk.embedding)) : 0.0;
         const double role = roleBias(intent, chunk.sourceRole, preferredRoles);
         const double finalScore = lexical * 0.55 + semantic * 2.8 + role;
-        // When semantic retrieval is disabled the semantic score is always 0,
-        // so the effective maximum is lexical * 0.55 + role.
-        // Use a tighter threshold in lexical-only mode to reduce noise hits.
         const double threshold = m_semanticEnabled ? 0.45 : 0.90;
         if (finalScore <= threshold) {
             continue;

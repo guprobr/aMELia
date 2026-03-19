@@ -1,6 +1,7 @@
 #include "mainwindow.h"
 #include "appversion.h"
 
+#include <algorithm>
 #include <QAbstractItemView>
 #include <QAction>
 #include <QApplication>
@@ -26,6 +27,7 @@
 #include <QMenuBar>
 #include <QMessageBox>
 #include <QPlainTextEdit>
+#include <QPoint>
 #include <QPushButton>
 #include <QProgressBar>
 #include <QStatusBar>
@@ -119,6 +121,9 @@ QColor diagnosticCategoryColor(const QString &category)
     }
     if (lower == QStringLiteral("chat")) {
         return QColor(QStringLiteral("#c084fc"));
+    }
+    if (lower == QStringLiteral("reasoning")) {
+        return QColor(QStringLiteral("#f43f5e"));
     }
     return QColor(QStringLiteral("#d1d5db"));
 }
@@ -349,9 +354,11 @@ MainWindow::MainWindow(QWidget *parent)
     m_conversationsList = new QListWidget(sessionPane);
     m_conversationsList->setSelectionMode(QAbstractItemView::SingleSelection);
     m_newConversationButton = new QPushButton(QStringLiteral("New conversation"), sessionPane);
+    m_deleteConversationButton = new QPushButton(QStringLiteral("Delete selected"), sessionPane);
     sessionLayout->addWidget(sessionTitle);
     sessionLayout->addWidget(m_conversationsList, 1);
     sessionLayout->addWidget(m_newConversationButton);
+    sessionLayout->addWidget(m_deleteConversationButton);
 
     auto *chatPane = new QWidget(splitter);
     auto *chatLayout = new QVBoxLayout(chatPane);
@@ -379,6 +386,32 @@ MainWindow::MainWindow(QWidget *parent)
     m_input = new QPlainTextEdit(chatPane);
     m_input->setPlaceholderText(QStringLiteral("Type your prompt here..."));
     m_input->setMaximumHeight(120);
+
+    auto *priorityPanel = new QWidget(chatPane);
+    auto *priorityLayout = new QVBoxLayout(priorityPanel);
+    priorityLayout->setContentsMargins(0, 0, 0, 0);
+    priorityLayout->setSpacing(4);
+    auto *priorityHeader = new QHBoxLayout();
+    auto *priorityTitle = new QLabel(QStringLiteral("Prioritized KB assets"), priorityPanel);
+    priorityTitle->setStyleSheet(QStringLiteral("font-weight: 700; color: #cbd5e1;"));
+    m_prioritizedAssetsStatus = new QLabel(QStringLiteral("No prioritized KB assets"), priorityPanel);
+    m_prioritizedAssetsStatus->setStyleSheet(QStringLiteral("color: #94a3b8;"));
+    priorityHeader->addWidget(priorityTitle);
+    priorityHeader->addStretch(1);
+    priorityHeader->addWidget(m_prioritizedAssetsStatus);
+    m_prioritizedAssetsList = new QListWidget(priorityPanel);
+    m_prioritizedAssetsList->setSelectionMode(QAbstractItemView::ExtendedSelection);
+    m_prioritizedAssetsList->setMaximumHeight(100);
+    m_prioritizedAssetsList->setToolTip(QStringLiteral("Assets selected from the Knowledge Base and prioritized for retrieval."));
+    auto *priorityButtons = new QHBoxLayout();
+    m_removePrioritizedAssetButton = new QPushButton(QStringLiteral("Remove selected"), priorityPanel);
+    m_clearPrioritizedAssetsButton = new QPushButton(QStringLiteral("Clear priorities"), priorityPanel);
+    priorityButtons->addWidget(m_removePrioritizedAssetButton);
+    priorityButtons->addWidget(m_clearPrioritizedAssetsButton);
+    priorityButtons->addStretch(1);
+    priorityLayout->addLayout(priorityHeader);
+    priorityLayout->addWidget(m_prioritizedAssetsList);
+    priorityLayout->addLayout(priorityButtons);
 
     auto *toolbarLayout = new QHBoxLayout();
     m_externalSearchCheck = new QCheckBox(QStringLiteral("Allow sanitized external search"), chatPane);
@@ -428,8 +461,9 @@ MainWindow::MainWindow(QWidget *parent)
 
     chatLayout->addLayout(titleRow);
     chatLayout->addWidget(m_transcript, 1);
-    chatLayout->addWidget(m_input);
     chatLayout->addLayout(toolbarLayout);
+    chatLayout->addWidget(priorityPanel);
+    chatLayout->addWidget(m_input);
     chatLayout->addLayout(controlsLayout);
 
     auto *statusLayout = new QHBoxLayout();
@@ -444,10 +478,22 @@ MainWindow::MainWindow(QWidget *parent)
 
     auto *tabs = new QTabWidget(rightPane);
 
-    m_diagnostics = new QTextEdit(tabs);
+    auto *diagnosticsTab = new QWidget(tabs);
+    auto *diagnosticsLayout = new QVBoxLayout(diagnosticsTab);
+    auto *diagnosticsHeader = new QHBoxLayout();
+    m_reasoningTraceToggleButton = new QPushButton(QStringLiteral("Capture reasoning trace: OFF"), diagnosticsTab);
+    m_reasoningTraceToggleButton->setCheckable(true);
+    m_reasoningTraceInfoLabel = new QLabel(QStringLiteral("Off by default. When enabled, Amelia requests backend thinking streams when available and logs them here, along with any explicit model-authored reasoning notes."), diagnosticsTab);
+    m_reasoningTraceInfoLabel->setWordWrap(true);
+    m_reasoningTraceInfoLabel->setStyleSheet(QStringLiteral("color: #94a3b8;"));
+    diagnosticsHeader->addWidget(m_reasoningTraceToggleButton, 0);
+    diagnosticsHeader->addWidget(m_reasoningTraceInfoLabel, 1);
+    m_diagnostics = new QTextEdit(diagnosticsTab);
     m_diagnostics->setReadOnly(true);
     m_diagnostics->setStyleSheet(QStringLiteral("QTextEdit { background: #0b1220; color: #e5e7eb; }"));
-    tabs->addTab(m_diagnostics, QStringLiteral("Diagnostics"));
+    diagnosticsLayout->addLayout(diagnosticsHeader);
+    diagnosticsLayout->addWidget(m_diagnostics, 1);
+    tabs->addTab(diagnosticsTab, QStringLiteral("Diagnostics"));
 
     auto *promptLabTab = new QWidget(tabs);
     auto *promptLabLayout = new QVBoxLayout(promptLabTab);
@@ -533,8 +579,12 @@ MainWindow::MainWindow(QWidget *parent)
     m_sourceInventoryList = new QListWidget(kbTab);
     m_sourceInventoryList->setSelectionMode(QAbstractItemView::ExtendedSelection);
     auto *kbButtons = new QHBoxLayout();
+    m_prioritizeSelectedAssetButton = new QPushButton(QStringLiteral("Use once"), kbTab);
+    m_pinSelectedAssetButton = new QPushButton(QStringLiteral("Pin"), kbTab);
     m_removeSelectedAssetButton = new QPushButton(QStringLiteral("Remove selected"), kbTab);
     m_clearKnowledgeBaseButton = new QPushButton(QStringLiteral("Clear KB"), kbTab);
+    kbButtons->addWidget(m_prioritizeSelectedAssetButton);
+    kbButtons->addWidget(m_pinSelectedAssetButton);
     kbButtons->addWidget(m_removeSelectedAssetButton);
     kbButtons->addWidget(m_clearKnowledgeBaseButton);
     kbButtons->addStretch(1);
@@ -543,10 +593,6 @@ MainWindow::MainWindow(QWidget *parent)
     kbLayout->addWidget(m_sourceInventoryList, 1);
     kbLayout->addLayout(kbButtons);
     tabs->addTab(kbTab, QStringLiteral("Knowledge Base"));
-
-    m_privacyPreview = new QPlainTextEdit(tabs);
-    m_privacyPreview->setReadOnly(true);
-    tabs->addTab(m_privacyPreview, QStringLiteral("Privacy"));
 
     m_outlinePlan = new QPlainTextEdit(tabs);
     m_outlinePlan->setReadOnly(true);
@@ -567,6 +613,10 @@ MainWindow::MainWindow(QWidget *parent)
     m_sessionSummary = new QPlainTextEdit(tabs);
     m_sessionSummary->setReadOnly(true);
     tabs->addTab(m_sessionSummary, QStringLiteral("Session Summary"));
+
+    m_privacyPreview = new QPlainTextEdit(tabs);
+    m_privacyPreview->setReadOnly(true);
+    tabs->addTab(m_privacyPreview, QStringLiteral("Privacy"));
 
     rightLayout->addWidget(contextTitle);
     rightLayout->addWidget(tabs, 1);
@@ -596,6 +646,7 @@ MainWindow::MainWindow(QWidget *parent)
     connect(m_reindexButton, &QPushButton::clicked, this, &MainWindow::reindexRequested);
     connect(m_refreshModelsButton, &QPushButton::clicked, this, &MainWindow::refreshModelsRequested);
     connect(m_newConversationButton, &QPushButton::clicked, this, &MainWindow::newConversationRequested);
+    connect(m_deleteConversationButton, &QPushButton::clicked, this, &MainWindow::onDeleteConversationClicked);
     connect(m_rememberButton, &QPushButton::clicked, this, &MainWindow::onRememberClicked);
     connect(m_importFilesButton, &QPushButton::clicked, this, &MainWindow::onImportFilesClicked);
     connect(m_importFolderButton, &QPushButton::clicked, this, &MainWindow::onImportFolderClicked);
@@ -610,12 +661,18 @@ MainWindow::MainWindow(QWidget *parent)
     connect(m_promptLabCopyRecipeButton, &QPushButton::clicked, this, &MainWindow::onPromptLabCopyRecipeClicked);
     connect(m_copyLastAnswerButton, &QPushButton::clicked, this, &MainWindow::onCopyLastAnswerClicked);
     connect(m_sourceInventoryFilter, &QLineEdit::textChanged, this, &MainWindow::onKnowledgeBaseFilterTextChanged);
+    connect(m_prioritizeSelectedAssetButton, &QPushButton::clicked, this, &MainWindow::onPrioritizeSelectedKnowledgeAssetsClicked);
+    connect(m_pinSelectedAssetButton, &QPushButton::clicked, this, &MainWindow::onPinSelectedKnowledgeAssetsClicked);
     connect(m_removeSelectedAssetButton, &QPushButton::clicked, this, &MainWindow::onRemoveSelectedKnowledgeAssetsClicked);
     connect(m_clearKnowledgeBaseButton, &QPushButton::clicked, this, &MainWindow::onClearKnowledgeBaseClicked);
+    connect(m_removePrioritizedAssetButton, &QPushButton::clicked, this, &MainWindow::onRemoveSelectedPrioritizedAssetsClicked);
+    connect(m_clearPrioritizedAssetsButton, &QPushButton::clicked, this, &MainWindow::onClearPrioritizedAssetsClicked);
+    connect(m_reasoningTraceToggleButton, &QPushButton::toggled, this, &MainWindow::onReasoningTraceToggleToggled);
 
     if (m_promptLabPreview != nullptr) {
         m_promptLabPreview->setPlainText(buildPromptLabRecipe());
     }
+    rebuildPrioritizedKnowledgeAssetsUi();
 }
 
 
@@ -986,6 +1043,7 @@ void MainWindow::setBusy(bool busy)
     m_stopButton->setEnabled(busy);
     m_input->setReadOnly(busy || m_indexingActive);
     m_newConversationButton->setEnabled(!busy);
+    if (m_deleteConversationButton != nullptr) m_deleteConversationButton->setEnabled(!busy);
     m_importFilesButton->setEnabled(!busy && !m_indexingActive);
     m_importFolderButton->setEnabled(!busy && !m_indexingActive);
     m_reindexButton->setEnabled(!busy && !m_indexingActive);
@@ -995,8 +1053,12 @@ void MainWindow::setBusy(bool busy)
     if (m_promptLabBrowseFilesButton != nullptr) m_promptLabBrowseFilesButton->setEnabled(!busy && !m_indexingActive);
     if (m_promptLabBrowseFolderButton != nullptr) m_promptLabBrowseFolderButton->setEnabled(!busy && !m_indexingActive);
     if (m_promptLabCopyRecipeButton != nullptr) m_promptLabCopyRecipeButton->setEnabled(!busy);
+    if (m_prioritizeSelectedAssetButton != nullptr) m_prioritizeSelectedAssetButton->setEnabled(!busy && !m_indexingActive);
+    if (m_pinSelectedAssetButton != nullptr) m_pinSelectedAssetButton->setEnabled(!busy && !m_indexingActive);
     if (m_removeSelectedAssetButton != nullptr) m_removeSelectedAssetButton->setEnabled(!busy && !m_indexingActive);
     if (m_clearKnowledgeBaseButton != nullptr) m_clearKnowledgeBaseButton->setEnabled(!busy && !m_indexingActive);
+    if (m_removePrioritizedAssetButton != nullptr) m_removePrioritizedAssetButton->setEnabled(!busy);
+    if (m_clearPrioritizedAssetsButton != nullptr) m_clearPrioritizedAssetsButton->setEnabled(!busy);
 
     if (busy) {
         beginResponseProgress(QStringLiteral("Preparing prompt..."));
@@ -1016,6 +1078,7 @@ void MainWindow::setIndexingActive(bool active)
     m_indexingActive = active;
 
     m_sendButton->setEnabled(!active && !m_stopButton->isEnabled());
+    if (m_deleteConversationButton != nullptr) m_deleteConversationButton->setEnabled(!active && !m_stopButton->isEnabled());
     m_input->setReadOnly(active || m_stopButton->isEnabled());
     m_reindexButton->setEnabled(!active && !m_stopButton->isEnabled());
     m_importFilesButton->setEnabled(!active && !m_stopButton->isEnabled());
@@ -1023,8 +1086,12 @@ void MainWindow::setIndexingActive(bool active)
     m_promptLabImportButton->setEnabled(!active && !m_stopButton->isEnabled());
     if (m_promptLabBrowseFilesButton != nullptr) m_promptLabBrowseFilesButton->setEnabled(!active && !m_stopButton->isEnabled());
     if (m_promptLabBrowseFolderButton != nullptr) m_promptLabBrowseFolderButton->setEnabled(!active && !m_stopButton->isEnabled());
+    if (m_prioritizeSelectedAssetButton != nullptr) m_prioritizeSelectedAssetButton->setEnabled(!active && !m_stopButton->isEnabled());
+    if (m_pinSelectedAssetButton != nullptr) m_pinSelectedAssetButton->setEnabled(!active && !m_stopButton->isEnabled());
     if (m_removeSelectedAssetButton != nullptr) m_removeSelectedAssetButton->setEnabled(!active && !m_stopButton->isEnabled());
     if (m_clearKnowledgeBaseButton != nullptr) m_clearKnowledgeBaseButton->setEnabled(!active && !m_stopButton->isEnabled());
+    if (m_removePrioritizedAssetButton != nullptr) m_removePrioritizedAssetButton->setEnabled(!active && !m_stopButton->isEnabled());
+    if (m_clearPrioritizedAssetsButton != nullptr) m_clearPrioritizedAssetsButton->setEnabled(!active && !m_stopButton->isEnabled());
 
     if (m_taskProgressBar == nullptr) {
         return;
@@ -1142,6 +1209,33 @@ void MainWindow::setSourceInventory(const QString &text)
         item->setToolTip(details.join(QStringLiteral("\n")));
     }
 
+    QStringList availablePaths;
+    for (int i = 0; i < m_sourceInventoryList->count(); ++i) {
+        QListWidgetItem *item = m_sourceInventoryList->item(i);
+        if (item != nullptr) {
+            const QString path = item->data(Qt::UserRole).toString().trimmed();
+            if (!path.isEmpty()) {
+                availablePaths << path;
+            }
+        }
+    }
+    QStringList filteredOneShot;
+    for (const QString &path : m_oneShotPrioritizedAssets) {
+        if (availablePaths.contains(path)) {
+            filteredOneShot << path;
+        }
+    }
+    m_oneShotPrioritizedAssets = filteredOneShot;
+
+    QStringList filteredPinned;
+    for (const QString &path : m_pinnedKnowledgeAssets) {
+        if (availablePaths.contains(path)) {
+            filteredPinned << path;
+        }
+    }
+    m_pinnedKnowledgeAssets = filteredPinned;
+    rebuildPrioritizedKnowledgeAssetsUi();
+    emitPrioritizedKnowledgeAssetsState();
     applyKnowledgeBaseFilter();
 }
 
@@ -1196,6 +1290,76 @@ void MainWindow::updateKnowledgeBaseFilterStatus()
     m_sourceInventoryFilterStatus->setText(QStringLiteral("%1 / %2 shown").arg(visible).arg(total));
 }
 
+QStringList MainWindow::selectedKnowledgeAssetPaths() const
+{
+    QStringList paths;
+    if (m_sourceInventoryList == nullptr) {
+        return paths;
+    }
+
+    const QList<QListWidgetItem *> items = m_sourceInventoryList->selectedItems();
+    for (QListWidgetItem *item : items) {
+        if (item == nullptr) {
+            continue;
+        }
+        const QString path = item->data(Qt::UserRole).toString().trimmed();
+        if (!path.isEmpty() && !paths.contains(path)) {
+            paths << path;
+        }
+    }
+    return paths;
+}
+
+void MainWindow::rebuildPrioritizedKnowledgeAssetsUi()
+{
+    if (m_prioritizedAssetsList == nullptr || m_prioritizedAssetsStatus == nullptr) {
+        return;
+    }
+
+    m_prioritizedAssetsList->clear();
+
+    auto addItem = [this](const QString &path, bool pinned) {
+        auto *item = new QListWidgetItem(QStringLiteral("%1 %2")
+                                             .arg(pinned ? QStringLiteral("[PIN]") : QStringLiteral("[NEXT]"),
+                                                  QFileInfo(path).fileName()),
+                                         m_prioritizedAssetsList);
+        item->setData(Qt::UserRole, path);
+        item->setData(Qt::UserRole + 1, pinned ? QStringLiteral("pin") : QStringLiteral("next"));
+        item->setToolTip(path);
+        item->setForeground(QColor(pinned ? QStringLiteral("#f59e0b") : QStringLiteral("#38bdf8")));
+    };
+
+    for (const QString &path : m_pinnedKnowledgeAssets) {
+        addItem(path, true);
+    }
+    for (const QString &path : m_oneShotPrioritizedAssets) {
+        if (!m_pinnedKnowledgeAssets.contains(path)) {
+            addItem(path, false);
+        }
+    }
+
+    const int total = m_prioritizedAssetsList->count();
+    if (total == 0) {
+        m_prioritizedAssetsStatus->setText(QStringLiteral("No prioritized KB assets"));
+    } else {
+        m_prioritizedAssetsStatus->setText(QStringLiteral("%1 active | %2 pinned | %3 next")
+                                           .arg(total)
+                                           .arg(m_pinnedKnowledgeAssets.size())
+                                           .arg(m_oneShotPrioritizedAssets.size()));
+    }
+}
+
+void MainWindow::emitPrioritizedKnowledgeAssetsState()
+{
+    QStringList combined = m_pinnedKnowledgeAssets;
+    for (const QString &path : m_oneShotPrioritizedAssets) {
+        if (!combined.contains(path)) {
+            combined << path;
+        }
+    }
+    emit prioritizedKnowledgeAssetsChanged(combined);
+}
+
 void MainWindow::onKnowledgeBaseFilterTextChanged(const QString &text)
 {
     Q_UNUSED(text);
@@ -1208,17 +1372,7 @@ void MainWindow::onRemoveSelectedKnowledgeAssetsClicked()
         return;
     }
 
-    const QList<QListWidgetItem *> items = m_sourceInventoryList->selectedItems();
-    QStringList paths;
-    for (QListWidgetItem *item : items) {
-        if (item == nullptr) {
-            continue;
-        }
-        const QString path = item->data(Qt::UserRole).toString().trimmed();
-        if (!path.isEmpty()) {
-            paths << path;
-        }
-    }
+    const QStringList paths = selectedKnowledgeAssetPaths();
 
     if (paths.isEmpty()) {
         QMessageBox::information(this,
@@ -1237,6 +1391,91 @@ void MainWindow::onRemoveSelectedKnowledgeAssetsClicked()
     emit removeKnowledgeAssetsRequested(paths);
 }
 
+void MainWindow::onPrioritizeSelectedKnowledgeAssetsClicked()
+{
+    const QStringList paths = selectedKnowledgeAssetPaths();
+    if (paths.isEmpty()) {
+        QMessageBox::information(this,
+                                 QStringLiteral("Knowledge Base"),
+                                 QStringLiteral("Select one or more knowledge base assets first."));
+        return;
+    }
+
+    int added = 0;
+    for (const QString &path : paths) {
+        if (m_pinnedKnowledgeAssets.contains(path) || m_oneShotPrioritizedAssets.contains(path)) {
+            continue;
+        }
+        m_oneShotPrioritizedAssets << path;
+        ++added;
+    }
+
+    rebuildPrioritizedKnowledgeAssetsUi();
+    emitPrioritizedKnowledgeAssetsState();
+    m_statusLabel->setText(QStringLiteral("Queued %1 KB asset(s) for the next prompt.").arg(added > 0 ? added : paths.size()));
+}
+
+void MainWindow::onPinSelectedKnowledgeAssetsClicked()
+{
+    const QStringList paths = selectedKnowledgeAssetPaths();
+    if (paths.isEmpty()) {
+        QMessageBox::information(this,
+                                 QStringLiteral("Knowledge Base"),
+                                 QStringLiteral("Select one or more knowledge base assets first."));
+        return;
+    }
+
+    int added = 0;
+    for (const QString &path : paths) {
+        m_oneShotPrioritizedAssets.removeAll(path);
+        if (!m_pinnedKnowledgeAssets.contains(path)) {
+            m_pinnedKnowledgeAssets << path;
+            ++added;
+        }
+    }
+
+    rebuildPrioritizedKnowledgeAssetsUi();
+    emitPrioritizedKnowledgeAssetsState();
+    m_statusLabel->setText(QStringLiteral("Pinned %1 KB asset(s) for retrieval priority.").arg(added > 0 ? added : paths.size()));
+}
+
+void MainWindow::onRemoveSelectedPrioritizedAssetsClicked()
+{
+    if (m_prioritizedAssetsList == nullptr) {
+        return;
+    }
+
+    const QList<QListWidgetItem *> items = m_prioritizedAssetsList->selectedItems();
+    if (items.isEmpty()) {
+        QMessageBox::information(this,
+                                 QStringLiteral("Prioritized KB assets"),
+                                 QStringLiteral("Select one or more prioritized assets to remove."));
+        return;
+    }
+
+    for (QListWidgetItem *item : items) {
+        if (item == nullptr) {
+            continue;
+        }
+        const QString path = item->data(Qt::UserRole).toString().trimmed();
+        m_oneShotPrioritizedAssets.removeAll(path);
+        m_pinnedKnowledgeAssets.removeAll(path);
+    }
+
+    rebuildPrioritizedKnowledgeAssetsUi();
+    emitPrioritizedKnowledgeAssetsState();
+    m_statusLabel->setText(QStringLiteral("Removed selected prioritized KB assets."));
+}
+
+void MainWindow::onClearPrioritizedAssetsClicked()
+{
+    m_oneShotPrioritizedAssets.clear();
+    m_pinnedKnowledgeAssets.clear();
+    rebuildPrioritizedKnowledgeAssetsUi();
+    emitPrioritizedKnowledgeAssetsState();
+    m_statusLabel->setText(QStringLiteral("Cleared prioritized KB assets."));
+}
+
 void MainWindow::onClearKnowledgeBaseClicked()
 {
     const auto answer = QMessageBox::warning(this,
@@ -1249,6 +1488,51 @@ void MainWindow::onClearKnowledgeBaseClicked()
     }
 
     emit clearKnowledgeBaseRequested();
+}
+
+void MainWindow::onDeleteConversationClicked()
+{
+    if (m_conversationsList == nullptr) {
+        return;
+    }
+
+    QListWidgetItem *item = m_conversationsList->currentItem();
+    if (item == nullptr) {
+        QMessageBox::information(this,
+                                 QStringLiteral("Conversations"),
+                                 QStringLiteral("Select a conversation to delete first."));
+        return;
+    }
+
+    const QString conversationId = item->data(Qt::UserRole).toString().trimmed();
+    const QString title = item->text().trimmed().isEmpty() ? QStringLiteral("this conversation") : item->text().trimmed();
+    const auto answer = QMessageBox::warning(this,
+                                             QStringLiteral("Delete conversation"),
+                                             QStringLiteral("Delete '%1'? This removes the saved transcript and summary for that conversation.").arg(title),
+                                             QMessageBox::Yes | QMessageBox::No,
+                                             QMessageBox::No);
+    if (answer != QMessageBox::Yes) {
+        return;
+    }
+
+    emit deleteConversationRequested(conversationId);
+}
+
+void MainWindow::onReasoningTraceToggleToggled(bool checked)
+{
+    if (m_reasoningTraceToggleButton != nullptr) {
+        m_reasoningTraceToggleButton->setText(checked
+                                              ? QStringLiteral("Capture reasoning trace: ON")
+                                              : QStringLiteral("Capture reasoning trace: OFF"));
+    }
+
+    if (m_reasoningTraceInfoLabel != nullptr) {
+        m_reasoningTraceInfoLabel->setText(checked
+                                           ? QStringLiteral("Enabled. Amelia will request backend thinking streams when the model supports them and capture explicit reasoning notes here. This is not hidden internal chain-of-thought.")
+                                           : QStringLiteral("Off by default. When enabled, Amelia logs backend thinking streams or explicit model-authored work notes here when available."));
+    }
+
+    emit reasoningTraceCaptureToggled(checked);
 }
 
 void MainWindow::onTranscriptAnchorClicked(const QUrl &url)
@@ -1301,7 +1585,13 @@ void MainWindow::onSendClicked()
 
     appendUserMessage(prompt);
     m_input->clear();
+    const bool hadOneShotPriorities = !m_oneShotPrioritizedAssets.isEmpty();
     emit promptSubmitted(prompt, m_externalSearchCheck->isChecked());
+    if (hadOneShotPriorities) {
+        m_oneShotPrioritizedAssets.clear();
+        rebuildPrioritizedKnowledgeAssetsUi();
+        emitPrioritizedKnowledgeAssetsState();
+    }
 }
 
 void MainWindow::onConversationItemChanged(QListWidgetItem *current, QListWidgetItem *previous)

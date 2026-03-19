@@ -29,12 +29,14 @@ public:
     void setInactivityTimeoutMs(int timeoutMs);
     void setTotalTimeoutMs(int timeoutMs);
     void setGenerationConfig(const AppConfig &config);
+    void setReasoningTraceEnabled(bool enabled);
 
     void stop() override;
 
 signals:
     void backendProbeFinished(bool ok, const QString &message);
     void modelsListed(const QStringList &models, const QString &message);
+    void reasoningTrace(const QString &text);
 
 private slots:
     void onReadyRead();
@@ -54,8 +56,13 @@ private:
     void resetState();
     void parseBufferedLines(bool flushRemainder);
     void appendModelDelta(const QString &delta);
+    void appendReasoningDelta(const QString &delta);
+    void processTaggedOutput(bool flushRemainder);
+    void appendVisibleDelta(const QString &delta);
     QString sanitizeVisibleText(const QString &text) const;
+    QString sanitizeReasoningText(const QString &text) const;
     void flushPendingUiDelta(bool force);
+    void flushPendingReasoningDelta(bool force);
     void armPhaseTimer(int timeoutMs);
     void stopTimers();
     void beginWaitingForFirstToken();
@@ -72,6 +79,10 @@ private:
     QByteArray m_buffer;
     QString m_accumulated;
     QString m_pendingUiDelta;
+    QString m_pendingReasoningDelta;
+    QString m_taggedOutputBuffer;
+    QString m_reasoningBuffer;
+    QString m_activeReasoningCloseTag;
     QString m_activeBaseUrl;
     QString m_activeModel;
     QStringList m_stopSequences = {
@@ -82,6 +93,9 @@ private:
     bool m_emittedStarted = false;
     bool m_receivedHeaders = false;
     bool m_receivedFirstToken = false;
+    bool m_receivedAnyOutput = false;
+    bool m_insideReasoningTrace = false;
+    bool m_reasoningTraceEnabled = false;
     int m_probeTimeoutMs = 10000;
     int m_responseHeadersTimeoutMs = 180000;
     int m_firstTokenTimeoutMs = 600000;

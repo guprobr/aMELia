@@ -46,6 +46,7 @@ public:
     bool appendMessage(const QString &conversationId, const StoredMessage &message, QString *errorMessage = nullptr);
     bool updateSummary(const QString &conversationId, const QString &summary, QString *errorMessage = nullptr);
     bool renameConversation(const QString &conversationId, const QString &title, QString *errorMessage = nullptr);
+    bool deleteConversation(const QString &conversationId, QString *errorMessage = nullptr);
 
     QString lastConversationId() const;
     bool setLastConversationId(const QString &conversationId, QString *errorMessage = nullptr);

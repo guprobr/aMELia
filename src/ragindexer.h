@@ -39,6 +39,11 @@ public:
                                int limit = 4,
                                RetrievalIntent intent = RetrievalIntent::General,
                                const QStringList &preferredRoles = {}) const;
+    QVector<RagHit> searchHitsInFiles(const QString &query,
+                                      const QStringList &preferredPaths,
+                                      int limit = 4,
+                                      RetrievalIntent intent = RetrievalIntent::General,
+                                      const QStringList &preferredRoles = {}) const;
     QString formatHitsForPrompt(const QVector<RagHit> &hits) const;
     QString formatHitsForUi(const QVector<RagHit> &hits) const;
     QString formatInventoryForUi() const;

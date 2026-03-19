@@ -8,6 +8,22 @@
 #include <QRegularExpression>
 #include <QUrl>
 
+namespace {
+constexpr auto kAmeliaThinkingOpenTag = "<amelia_thinking>";
+constexpr auto kAmeliaThinkingCloseTag = "</amelia_thinking>";
+
+int trailingPrefixOverlap(const QString &text, const QString &tag)
+{
+    const int maxLen = qMin(text.size(), tag.size() - 1);
+    for (int len = maxLen; len > 0; --len) {
+        if (text.right(len) == tag.left(len)) {
+            return len;
+        }
+    }
+    return 0;
+}
+}
+
 OllamaClient::OllamaClient(QObject *parent)
     : LlmClient(parent)
 {
@@ -64,14 +80,11 @@ void OllamaClient::generate(const QString &baseUrl,
     }
     payload.insert(QStringLiteral("options"), options);
 
-    // Qwen3 extended-thinking suppression.
-    // Setting think=false (Ollama >=0.9) or enable_thinking=false tells the
-    // model not to emit a hidden <think>...</think> reasoning block.  This
-    // reduces first-token latency and prevents thinking tokens from bleeding
-    // through if sanitizeVisibleText ever misses a partial tag.
-    // The field is silently ignored by older Ollama versions, so it is safe
-    // to send unconditionally.
-    payload.insert(QStringLiteral("think"), false);
+    // When Diagnostics reasoning capture is enabled, ask Ollama for the
+    // model's explicit thinking stream when the backend/model supports it.
+    // Otherwise keep thinking suppressed to reduce latency and avoid stray
+    // hidden reasoning text bleeding into the visible answer.
+    payload.insert(QStringLiteral("think"), m_reasoningTraceEnabled);
 
     m_reply = m_network.post(request, QJsonDocument(payload).toJson(QJsonDocument::Compact));
     if (m_reply == nullptr) {
@@ -239,6 +252,11 @@ void OllamaClient::setGenerationConfig(const AppConfig &config)
     }
 }
 
+void OllamaClient::setReasoningTraceEnabled(bool enabled)
+{
+    m_reasoningTraceEnabled = enabled;
+}
+
 void OllamaClient::stop()
 {
     stopTimers();
@@ -263,11 +281,12 @@ void OllamaClient::onReadyRead()
     }
 
     m_buffer += m_reply->readAll();
-    const QString before = m_accumulated;
+    const bool hadAnyOutput = m_receivedAnyOutput;
     parseBufferedLines(false);
     flushPendingUiDelta(false);
+    flushPendingReasoningDelta(false);
 
-    if (!m_receivedFirstToken && m_accumulated.size() > before.size()) {
+    if (!m_receivedFirstToken && !hadAnyOutput && m_receivedAnyOutput) {
         beginStreaming();
     } else if (m_streamPhase == StreamPhase::Streaming) {
         armPhaseTimer(m_inactivityTimeoutMs);
@@ -283,12 +302,14 @@ void OllamaClient::onFinished()
     stopTimers();
 
     m_buffer += m_reply->readAll();
-    const QString before = m_accumulated;
+    const bool hadAnyOutput = m_receivedAnyOutput;
     parseBufferedLines(true);
-    if (!m_receivedFirstToken && m_accumulated.size() > before.size()) {
+    processTaggedOutput(true);
+    if (!m_receivedFirstToken && (!hadAnyOutput && m_receivedAnyOutput)) {
         m_receivedFirstToken = true;
     }
     flushPendingUiDelta(true);
+    flushPendingReasoningDelta(true);
 
     const QNetworkReply::NetworkError error = m_reply->error();
     const QString errorText = describeNetworkFailure(m_reply,
@@ -369,11 +390,17 @@ void OllamaClient::resetState()
     m_buffer.clear();
     m_accumulated.clear();
     m_pendingUiDelta.clear();
+    m_pendingReasoningDelta.clear();
+    m_taggedOutputBuffer.clear();
+    m_reasoningBuffer.clear();
+    m_activeReasoningCloseTag.clear();
     m_activeBaseUrl.clear();
     m_activeModel.clear();
     m_emittedStarted = false;
     m_receivedHeaders = false;
     m_receivedFirstToken = false;
+    m_receivedAnyOutput = false;
+    m_insideReasoningTrace = false;
     m_streamPhase = StreamPhase::Idle;
 }
 
@@ -391,13 +418,22 @@ void OllamaClient::parseBufferedLines(bool flushRemainder)
         }
 
         const QJsonObject obj = doc.object();
+        const QJsonObject messageObj = obj.value(QStringLiteral("message")).toObject();
+
         QString delta = obj.value(QStringLiteral("response")).toString();
         if (delta.isEmpty()) {
-            const QJsonObject messageObj = obj.value(QStringLiteral("message")).toObject();
             delta = messageObj.value(QStringLiteral("content")).toString();
         }
         if (!delta.isEmpty()) {
             appendModelDelta(delta);
+        }
+
+        QString reasoningDelta = obj.value(QStringLiteral("thinking")).toString();
+        if (reasoningDelta.isEmpty()) {
+            reasoningDelta = messageObj.value(QStringLiteral("thinking")).toString();
+        }
+        if (!reasoningDelta.isEmpty()) {
+            appendReasoningDelta(reasoningDelta);
         }
     };
 
@@ -421,10 +457,155 @@ void OllamaClient::parseBufferedLines(bool flushRemainder)
 
 void OllamaClient::appendModelDelta(const QString &delta)
 {
+    m_taggedOutputBuffer += delta;
+    processTaggedOutput(false);
+}
+
+void OllamaClient::appendReasoningDelta(const QString &delta)
+{
+    const QString sanitized = sanitizeReasoningText(delta);
+    if (sanitized.isEmpty()) {
+        return;
+    }
+
+    m_receivedAnyOutput = true;
+    m_pendingReasoningDelta += sanitized;
+}
+
+void OllamaClient::processTaggedOutput(bool flushRemainder)
+{
+    const QString ameliaOpenTag = QString::fromUtf8(kAmeliaThinkingOpenTag);
+    const QString ameliaCloseTag = QString::fromUtf8(kAmeliaThinkingCloseTag);
+    const QString thinkOpenTag = QStringLiteral("<think>");
+    const QString thinkCloseTag = QStringLiteral("</think>");
+
+    auto earliestOpenTag = [&](QString *openTag, QString *closeTag, int *openIndex) {
+        const int ameliaIndex = m_taggedOutputBuffer.indexOf(ameliaOpenTag);
+        const int thinkIndex = m_taggedOutputBuffer.indexOf(thinkOpenTag);
+
+        if (ameliaIndex < 0 && thinkIndex < 0) {
+            *openTag = QString();
+            *closeTag = QString();
+            *openIndex = -1;
+            return;
+        }
+
+        if (ameliaIndex >= 0 && (thinkIndex < 0 || ameliaIndex <= thinkIndex)) {
+            *openTag = ameliaOpenTag;
+            *closeTag = ameliaCloseTag;
+            *openIndex = ameliaIndex;
+            return;
+        }
+
+        *openTag = thinkOpenTag;
+        *closeTag = thinkCloseTag;
+        *openIndex = thinkIndex;
+    };
+
+    auto trailingOverlapForAnyOpenTag = [&]() -> int {
+        return qMax(trailingPrefixOverlap(m_taggedOutputBuffer, ameliaOpenTag),
+                    trailingPrefixOverlap(m_taggedOutputBuffer, thinkOpenTag));
+    };
+
+    while (true) {
+        if (!m_insideReasoningTrace) {
+            QString openTag;
+            QString closeTag;
+            int openIndex = -1;
+            earliestOpenTag(&openTag, &closeTag, &openIndex);
+            if (openIndex < 0) {
+                if (m_taggedOutputBuffer.isEmpty()) {
+                    break;
+                }
+
+                int safeLen = m_taggedOutputBuffer.size();
+                if (!flushRemainder) {
+                    safeLen -= trailingOverlapForAnyOpenTag();
+                }
+
+                if (safeLen <= 0) {
+                    break;
+                }
+
+                appendVisibleDelta(m_taggedOutputBuffer.left(safeLen));
+                m_taggedOutputBuffer.remove(0, safeLen);
+                continue;
+            }
+
+            if (openIndex > 0) {
+                appendVisibleDelta(m_taggedOutputBuffer.left(openIndex));
+            }
+            m_taggedOutputBuffer.remove(0, openIndex + openTag.size());
+            m_insideReasoningTrace = true;
+            m_activeReasoningCloseTag = closeTag;
+            continue;
+        }
+
+        const QString closeTag = m_activeReasoningCloseTag.isEmpty() ? ameliaCloseTag : m_activeReasoningCloseTag;
+        const int closeIndex = m_taggedOutputBuffer.indexOf(closeTag);
+        if (closeIndex < 0) {
+            if (m_taggedOutputBuffer.isEmpty()) {
+                break;
+            }
+
+            int safeLen = m_taggedOutputBuffer.size();
+            if (!flushRemainder) {
+                safeLen -= trailingPrefixOverlap(m_taggedOutputBuffer, closeTag);
+            }
+
+            if (safeLen <= 0) {
+                break;
+            }
+
+            m_reasoningBuffer += m_taggedOutputBuffer.left(safeLen);
+            m_taggedOutputBuffer.remove(0, safeLen);
+            continue;
+        }
+
+        m_reasoningBuffer += m_taggedOutputBuffer.left(closeIndex);
+        m_taggedOutputBuffer.remove(0, closeIndex + closeTag.size());
+
+        const QString note = sanitizeReasoningText(m_reasoningBuffer).trimmed();
+        if (!note.isEmpty()) {
+            m_receivedAnyOutput = true;
+            emit reasoningTrace(note);
+        }
+
+        m_reasoningBuffer.clear();
+        m_insideReasoningTrace = false;
+        m_activeReasoningCloseTag.clear();
+    }
+
+    if (!flushRemainder) {
+        return;
+    }
+
+    if (m_insideReasoningTrace) {
+        const QString note = sanitizeReasoningText(m_reasoningBuffer + m_taggedOutputBuffer).trimmed();
+        if (!note.isEmpty()) {
+            m_receivedAnyOutput = true;
+            emit reasoningTrace(note);
+        }
+        m_reasoningBuffer.clear();
+        m_insideReasoningTrace = false;
+        m_activeReasoningCloseTag.clear();
+        m_taggedOutputBuffer.clear();
+        return;
+    }
+
+    if (!m_taggedOutputBuffer.isEmpty()) {
+        appendVisibleDelta(m_taggedOutputBuffer);
+        m_taggedOutputBuffer.clear();
+    }
+}
+
+void OllamaClient::appendVisibleDelta(const QString &delta)
+{
     const QString sanitized = sanitizeVisibleText(delta);
     if (sanitized.isEmpty()) {
         return;
     }
+    m_receivedAnyOutput = true;
     m_accumulated += sanitized;
     m_pendingUiDelta += sanitized;
 }
@@ -435,6 +616,19 @@ QString OllamaClient::sanitizeVisibleText(const QString &text) const
     cleaned.replace(QRegularExpression(QStringLiteral(R"(<think>.*?</think>)"), QRegularExpression::DotMatchesEverythingOption), QString());
     cleaned.replace(QStringLiteral("<think>"), QString());
     cleaned.replace(QStringLiteral("</think>"), QString());
+    cleaned.replace(QString::fromUtf8(kAmeliaThinkingOpenTag), QString());
+    cleaned.replace(QString::fromUtf8(kAmeliaThinkingCloseTag), QString());
+    cleaned.replace(QStringLiteral("<END>"), QString());
+    return cleaned;
+}
+
+QString OllamaClient::sanitizeReasoningText(const QString &text) const
+{
+    QString cleaned = text;
+    cleaned.replace(QStringLiteral("<think>"), QString());
+    cleaned.replace(QStringLiteral("</think>"), QString());
+    cleaned.replace(QString::fromUtf8(kAmeliaThinkingOpenTag), QString());
+    cleaned.replace(QString::fromUtf8(kAmeliaThinkingCloseTag), QString());
     cleaned.replace(QStringLiteral("<END>"), QString());
     return cleaned;
 }
@@ -457,6 +651,26 @@ void OllamaClient::flushPendingUiDelta(bool force)
 
     emit responseDelta(m_pendingUiDelta);
     m_pendingUiDelta.clear();
+}
+
+void OllamaClient::flushPendingReasoningDelta(bool force)
+{
+    if (m_pendingReasoningDelta.isEmpty()) {
+        return;
+    }
+
+    const bool shouldFlush = force
+            || m_pendingReasoningDelta.size() >= 140
+            || m_pendingReasoningDelta.contains(QLatin1Char('\n'))
+            || m_pendingReasoningDelta.endsWith(QLatin1Char('.'))
+            || m_pendingReasoningDelta.endsWith(QLatin1Char(':'));
+
+    if (!shouldFlush) {
+        return;
+    }
+
+    emit reasoningTrace(m_pendingReasoningDelta);
+    m_pendingReasoningDelta.clear();
 }
 
 void OllamaClient::armPhaseTimer(int timeoutMs)

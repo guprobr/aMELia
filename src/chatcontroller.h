@@ -43,6 +43,9 @@ public:
     void clearKnowledgeBase();
     void prepareForShutdown();
     void startBootstrap();
+    void deleteConversationById(const QString &conversationId);
+    void setReasoningTraceEnabled(bool enabled);
+    void setPrioritizedKnowledgeAssets(const QStringList &paths);
 
 signals:
     void assistantStreamChunk(const QString &chunk);
@@ -77,6 +80,7 @@ private slots:
     void onSearchError(const QString &query, const QString &message);
     void onModelStarted();
     void onModelDelta(const QString &text);
+    void onModelReasoningTrace(const QString &text);
     void onModelFinished(const QString &fullText);
     void onModelError(const QString &message);
     void onBackendProbeFinished(bool ok, const QString &message);
@@ -134,6 +138,9 @@ private:
         bool outlineOnlyFirstPass = false;
         QString localContext;
         QString localUi;
+        QStringList prioritizedAssetsRequested;
+        QStringList prioritizedAssetsUsed;
+        int prioritizedHits = 0;
         int retrievedHits = 0;
         double bestHitScore = 0.0;
         bool shouldSearch = false;
@@ -161,6 +168,8 @@ private:
     QString m_pendingLocalContext;
     QString m_pendingMemoryContext;
     QStringList m_availableModels;
+    QStringList m_prioritizedKnowledgeAssets;
+    QStringList m_currentRequestPrioritizedKnowledgeAssets;
     QStringList m_diagnostics;
     int m_startupChunkCount = 0;
     int m_streamChunkCount = 0;
@@ -183,6 +192,8 @@ private:
     quint64 m_promptPreparationSerial = 0;
     bool m_busy = false;
     bool m_indexing = false;
+    bool m_reasoningTraceEnabled = false;
+    int m_reasoningTraceNoteCount = 0;
     bool m_outlineOnlyFirstPass = false;
     bool m_shuttingDown = false;
     bool m_bootstrapStarted = false;

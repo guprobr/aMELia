@@ -253,3 +253,11 @@ Main things to check:
 - whether the KB is currently refreshing in the background
 - whether your local disk is slow
 - whether Ollama is CPU-only instead of GPU-backed
+
+## Recent UI additions
+
+- Knowledge Base tab now supports live filename/path filtering for indexed assets.
+- Diagnostics tab now includes an optional **Capture reasoning trace** toggle. When enabled, Amelia asks Ollama for backend thinking streams when supported and also records explicit tagged reasoning notes if the model emits them. This remains intentionally separate from any hidden internal chain-of-thought.
+- Session list now includes **Delete selected** to remove an individual saved conversation from history.
+- Knowledge Base now supports **Use once** and **Pin** actions so indexed assets can be prioritized for retrieval. One-shot priorities are consumed by the next prompt; pinned assets stay active until cleared. Active priorities are shown in a dedicated panel near the prompt box.
+- The **Privacy** tab was moved to the end of the inspection tabs for a cleaner flow.

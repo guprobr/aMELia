@@ -303,6 +303,63 @@ bool StorageManager::renameConversation(const QString &conversationId, const QSt
     return saveConversation(record, errorMessage);
 }
 
+bool StorageManager::deleteConversation(const QString &conversationId, QString *errorMessage)
+{
+    const QString trimmedId = conversationId.trimmed();
+    if (trimmedId.isEmpty()) {
+        if (errorMessage != nullptr) {
+            *errorMessage = QStringLiteral("Conversation id is empty.");
+        }
+        return false;
+    }
+
+    QVector<ConversationRecord> records = readConversationIndex(errorMessage);
+    if (errorMessage != nullptr && !errorMessage->isEmpty()) {
+        return false;
+    }
+
+    bool removedFromIndex = false;
+    records.erase(std::remove_if(records.begin(), records.end(), [&trimmedId, &removedFromIndex](const ConversationRecord &record) {
+        const bool match = record.id == trimmedId;
+        if (match) {
+            removedFromIndex = true;
+        }
+        return match;
+    }), records.end());
+
+    QFile conversationFile(conversationFilePath(trimmedId));
+    const bool fileExisted = conversationFile.exists();
+    if (fileExisted && !conversationFile.remove()) {
+        if (errorMessage != nullptr) {
+            *errorMessage = QStringLiteral("Failed to remove conversation file: %1").arg(QDir::toNativeSeparators(conversationFile.fileName()));
+        }
+        return false;
+    }
+
+    if (!removedFromIndex && !fileExisted) {
+        if (errorMessage != nullptr) {
+            *errorMessage = QStringLiteral("Conversation not found.");
+        }
+        return false;
+    }
+
+    if (!writeConversationIndex(records, errorMessage)) {
+        return false;
+    }
+
+    if (lastConversationId() == trimmedId) {
+        const QString replacementId = records.isEmpty() ? QString() : records.first().id;
+        if (!setLastConversationId(replacementId, errorMessage)) {
+            return false;
+        }
+    }
+
+    if (errorMessage != nullptr) {
+        errorMessage->clear();
+    }
+    return true;
+}
+
 QString StorageManager::lastConversationId() const
 {
     QFile file(statePath());

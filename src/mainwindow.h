@@ -12,6 +12,7 @@ class QLineEdit;
 class QListWidget;
 class QListWidgetItem;
 class QPlainTextEdit;
+class QPoint;
 class QProgressBar;
 class QPushButton;
 class QTextEdit;
@@ -61,6 +62,9 @@ signals:
     void clearMemoriesRequested();
     void removeKnowledgeAssetsRequested(const QStringList &paths);
     void clearKnowledgeBaseRequested();
+    void deleteConversationRequested(const QString &conversationId);
+    void reasoningTraceCaptureToggled(bool enabled);
+    void prioritizedKnowledgeAssetsChanged(const QStringList &paths);
 
 private slots:
     void onSendClicked();
@@ -85,6 +89,12 @@ private slots:
     void onRemoveSelectedKnowledgeAssetsClicked();
     void onClearKnowledgeBaseClicked();
     void onTranscriptAnchorClicked(const QUrl &url);
+    void onDeleteConversationClicked();
+    void onReasoningTraceToggleToggled(bool checked);
+    void onPrioritizeSelectedKnowledgeAssetsClicked();
+    void onPinSelectedKnowledgeAssetsClicked();
+    void onRemoveSelectedPrioritizedAssetsClicked();
+    void onClearPrioritizedAssetsClicked();
 
 private:
     void appendTranscriptEntry(const QString &role, const QString &text);
@@ -95,6 +105,9 @@ private:
     void insertTranscriptMessage(const QString &role, const QString &text);
     void applyKnowledgeBaseFilter();
     void updateKnowledgeBaseFilterStatus();
+    QStringList selectedKnowledgeAssetPaths() const;
+    void rebuildPrioritizedKnowledgeAssetsUi();
+    void emitPrioritizedKnowledgeAssetsState();
     void beginResponseProgress(const QString &label = QString());
     void setResponseProgressStage(int value, const QString &label);
     void setResponseProgressBusy(const QString &label);
@@ -105,6 +118,8 @@ private:
 
     QTextEdit *m_transcript = nullptr;
     QPlainTextEdit *m_input = nullptr;
+    QListWidget *m_prioritizedAssetsList = nullptr;
+    QLabel *m_prioritizedAssetsStatus = nullptr;
     QPlainTextEdit *m_privacyPreview = nullptr;
     QPlainTextEdit *m_localSources = nullptr;
     QPlainTextEdit *m_externalSources = nullptr;
@@ -118,6 +133,7 @@ private:
     QLabel *m_sourceInventoryFilterStatus = nullptr;
     QListWidget *m_sourceInventoryList = nullptr;
     QListWidget *m_conversationsList = nullptr;
+    QPushButton *m_deleteConversationButton = nullptr;
     QCheckBox *m_externalSearchCheck = nullptr;
     QComboBox *m_modelCombo = nullptr;
     QComboBox *m_promptLabPresetCombo = nullptr;
@@ -143,6 +159,12 @@ private:
     QPushButton *m_promptLabCopyRecipeButton = nullptr;
     QPushButton *m_copyLastAnswerButton = nullptr;
     QPushButton *m_copyCodeBlocksButton = nullptr;
+    QPushButton *m_reasoningTraceToggleButton = nullptr;
+    QLabel *m_reasoningTraceInfoLabel = nullptr;
+    QPushButton *m_prioritizeSelectedAssetButton = nullptr;
+    QPushButton *m_pinSelectedAssetButton = nullptr;
+    QPushButton *m_removePrioritizedAssetButton = nullptr;
+    QPushButton *m_clearPrioritizedAssetsButton = nullptr;
     QPushButton *m_removeSelectedAssetButton = nullptr;
     QPushButton *m_clearKnowledgeBaseButton = nullptr;
     QLabel *m_statusLabel = nullptr;
@@ -165,5 +187,7 @@ private:
     QAction *m_aboutAmeliaAction = nullptr;
     QAction *m_aboutQtAction = nullptr;
     QAction *m_clearMemoriesAction = nullptr;
+    QStringList m_oneShotPrioritizedAssets;
+    QStringList m_pinnedKnowledgeAssets;
     QStringList m_transcriptCodeBlocks;
 };
