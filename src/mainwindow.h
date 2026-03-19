@@ -81,6 +81,7 @@ private slots:
     void onPromptLabCopyRecipeClicked();
     void onCopyLastAnswerClicked();
     void onCopyCodeBlocksClicked();
+    void onKnowledgeBaseFilterTextChanged(const QString &text);
     void onRemoveSelectedKnowledgeAssetsClicked();
     void onClearKnowledgeBaseClicked();
     void onTranscriptAnchorClicked(const QUrl &url);
@@ -92,6 +93,8 @@ private:
     void rebuildDiagnosticsFromPlainText(const QString &text);
     QString buildPromptLabRecipe() const;
     void insertTranscriptMessage(const QString &role, const QString &text);
+    void applyKnowledgeBaseFilter();
+    void updateKnowledgeBaseFilterStatus();
     void beginResponseProgress(const QString &label = QString());
     void setResponseProgressStage(int value, const QString &label);
     void setResponseProgressBusy(const QString &label);
@@ -111,6 +114,8 @@ private:
     QPlainTextEdit *m_sessionSummary = nullptr;
     QTextEdit *m_diagnostics = nullptr;
     QPlainTextEdit *m_sourceInventory = nullptr;
+    QLineEdit *m_sourceInventoryFilter = nullptr;
+    QLabel *m_sourceInventoryFilterStatus = nullptr;
     QListWidget *m_sourceInventoryList = nullptr;
     QListWidget *m_conversationsList = nullptr;
     QCheckBox *m_externalSearchCheck = nullptr;

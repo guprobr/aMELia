@@ -13,6 +13,7 @@
 #include <QDesktopServices>
 #include <QComboBox>
 #include <QFileDialog>
+#include <QFileInfo>
 #include <QFont>
 #include <QFormLayout>
 #include <QHBoxLayout>
@@ -519,6 +520,16 @@ MainWindow::MainWindow(QWidget *parent)
     m_sourceInventory = new QPlainTextEdit(kbTab);
     m_sourceInventory->setReadOnly(true);
     m_sourceInventory->setMaximumHeight(120);
+
+    auto *kbFilterLayout = new QHBoxLayout();
+    m_sourceInventoryFilter = new QLineEdit(kbTab);
+    m_sourceInventoryFilter->setClearButtonEnabled(true);
+    m_sourceInventoryFilter->setPlaceholderText(QStringLiteral("Search indexed file names or paths..."));
+    m_sourceInventoryFilterStatus = new QLabel(QStringLiteral("0 / 0 shown"), kbTab);
+    kbFilterLayout->addWidget(new QLabel(QStringLiteral("Search:"), kbTab));
+    kbFilterLayout->addWidget(m_sourceInventoryFilter, 1);
+    kbFilterLayout->addWidget(m_sourceInventoryFilterStatus);
+
     m_sourceInventoryList = new QListWidget(kbTab);
     m_sourceInventoryList->setSelectionMode(QAbstractItemView::ExtendedSelection);
     auto *kbButtons = new QHBoxLayout();
@@ -528,6 +539,7 @@ MainWindow::MainWindow(QWidget *parent)
     kbButtons->addWidget(m_clearKnowledgeBaseButton);
     kbButtons->addStretch(1);
     kbLayout->addWidget(m_sourceInventory);
+    kbLayout->addLayout(kbFilterLayout);
     kbLayout->addWidget(m_sourceInventoryList, 1);
     kbLayout->addLayout(kbButtons);
     tabs->addTab(kbTab, QStringLiteral("Knowledge Base"));
@@ -597,6 +609,7 @@ MainWindow::MainWindow(QWidget *parent)
     connect(m_promptLabBrowseFolderButton, &QPushButton::clicked, this, &MainWindow::onPromptLabBrowseFolderClicked);
     connect(m_promptLabCopyRecipeButton, &QPushButton::clicked, this, &MainWindow::onPromptLabCopyRecipeClicked);
     connect(m_copyLastAnswerButton, &QPushButton::clicked, this, &MainWindow::onCopyLastAnswerClicked);
+    connect(m_sourceInventoryFilter, &QLineEdit::textChanged, this, &MainWindow::onKnowledgeBaseFilterTextChanged);
     connect(m_removeSelectedAssetButton, &QPushButton::clicked, this, &MainWindow::onRemoveSelectedKnowledgeAssetsClicked);
     connect(m_clearKnowledgeBaseButton, &QPushButton::clicked, this, &MainWindow::onClearKnowledgeBaseClicked);
 
@@ -1104,6 +1117,7 @@ void MainWindow::setSourceInventory(const QString &text)
 
     m_sourceInventoryList->clear();
     if (text.trimmed().isEmpty() || text.trimmed() == QStringLiteral("<none>")) {
+        updateKnowledgeBaseFilterStatus();
         return;
     }
 
@@ -1124,8 +1138,68 @@ void MainWindow::setSourceInventory(const QString &text)
         }
         auto *item = new QListWidgetItem(filePath, m_sourceInventoryList);
         item->setData(Qt::UserRole, filePath);
+        item->setData(Qt::UserRole + 1, QFileInfo(filePath).fileName());
         item->setToolTip(details.join(QStringLiteral("\n")));
     }
+
+    applyKnowledgeBaseFilter();
+}
+
+void MainWindow::applyKnowledgeBaseFilter()
+{
+    if (m_sourceInventoryList == nullptr) {
+        updateKnowledgeBaseFilterStatus();
+        return;
+    }
+
+    const QString needle = m_sourceInventoryFilter != nullptr ? m_sourceInventoryFilter->text().trimmed() : QString();
+    for (int i = 0; i < m_sourceInventoryList->count(); ++i) {
+        QListWidgetItem *item = m_sourceInventoryList->item(i);
+        if (item == nullptr) {
+            continue;
+        }
+
+        bool matches = true;
+        if (!needle.isEmpty()) {
+            const QString fullPath = item->data(Qt::UserRole).toString();
+            const QString fileName = item->data(Qt::UserRole + 1).toString();
+            const QString toolTip = item->toolTip();
+            matches = fullPath.contains(needle, Qt::CaseInsensitive)
+                   || fileName.contains(needle, Qt::CaseInsensitive)
+                   || toolTip.contains(needle, Qt::CaseInsensitive);
+        }
+
+        item->setHidden(!matches);
+        if (!matches) {
+            item->setSelected(false);
+        }
+    }
+
+    updateKnowledgeBaseFilterStatus();
+}
+
+void MainWindow::updateKnowledgeBaseFilterStatus()
+{
+    if (m_sourceInventoryFilterStatus == nullptr || m_sourceInventoryList == nullptr) {
+        return;
+    }
+
+    const int total = m_sourceInventoryList->count();
+    int visible = 0;
+    for (int i = 0; i < total; ++i) {
+        QListWidgetItem *item = m_sourceInventoryList->item(i);
+        if (item != nullptr && !item->isHidden()) {
+            ++visible;
+        }
+    }
+
+    m_sourceInventoryFilterStatus->setText(QStringLiteral("%1 / %2 shown").arg(visible).arg(total));
+}
+
+void MainWindow::onKnowledgeBaseFilterTextChanged(const QString &text)
+{
+    Q_UNUSED(text);
+    applyKnowledgeBaseFilter();
 }
 
 void MainWindow::onRemoveSelectedKnowledgeAssetsClicked()

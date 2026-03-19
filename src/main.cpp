@@ -27,8 +27,8 @@ QString builtInDefaultConfig()
     return QStringLiteral(
 R"JSON({
   "ollamaBaseUrl": "http://127.0.0.1:11434",
-  "ollamaModel": "qwen2.5-coder:14b",
-  "docsRoot": "./docs/sample",
+  "ollamaModel": "qwen2.5:7b",
+  "docsRoot": "${HOME}/.amelia_qt6/docs/sample",
   "dataRoot": "${HOME}/.amelia_qt6",
   "knowledgeRoot": "${HOME}/.amelia_qt6/knowledge",
   "enableExternalSearch": true,

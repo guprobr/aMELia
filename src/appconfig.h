@@ -11,8 +11,8 @@ inline QString ameliaDefaultDataRoot()
 
 struct AppConfig {
     QString ollamaBaseUrl = QStringLiteral("http://127.0.0.1:11434");
-    QString ollamaModel = QStringLiteral("qwen2.5-coder:14b");
-    QString docsRoot = QStringLiteral("./docs/sample");
+    QString ollamaModel = QStringLiteral("qwen2.5:7b");
+    QString docsRoot = QStringLiteral("${HOME}/.amelia_qt6/docs/sample");
     QString dataRoot = ameliaDefaultDataRoot();
     QString knowledgeRoot;
 

@@ -35,6 +35,7 @@ Fresh configs now default to:
 
 ### Earlier v6.96 improvements still present
 
+- Knowledge Base tab now includes live filename/path filtering with a visible match counter
 - bootstrap dialog appears immediately at startup
 - logo spinner + bootstrap log window remain in place until the main window shows
 - incremental KB refresh avoids rebuilding the whole cache for one changed or added asset
