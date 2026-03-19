@@ -1,8 +1,11 @@
 #pragma once
 
+#include "appconfig.h"
+
 #include <QObject>
 #include <QPointer>
 
+class QTimer;
 class QWidget;
 class QSystemTrayIcon;
 
@@ -31,9 +34,12 @@ public slots:
 
 private:
     bool shouldEmitForSeverity(int severity) const;
+    void showInAppToast(const QString &title, const QString &message, int severity);
 
-    const AppConfig &m_config;
+    AppConfig m_config;
     QPointer<QWidget> m_alertWidget;
+    QPointer<QWidget> m_toastWidget;
+    QPointer<QTimer> m_toastTimer;
     QSystemTrayIcon *m_trayIcon = nullptr;
     bool m_ownsTray = false;
 };
