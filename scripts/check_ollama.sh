@@ -2,7 +2,11 @@
 set -euo pipefail
 
 BASE_URL="${1:-http://127.0.0.1:11434}"
+<<<<<<< HEAD
 MODEL="${2:-qwen2.5-coder:7b}"
+=======
+MODEL="${2:-qwen2.5:7b}"
+>>>>>>> 486a6af (- display version bumped to `7.1b`)
 
 normalize_tags_url() {
   local url="$1"

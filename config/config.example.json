@@ -1,9 +1,17 @@
 {
+<<<<<<< HEAD
   "ollamaBaseUrl": "http://127.0.0.1:11434",
   "ollamaModel": "qwen2.5-coder:14b",
   "docsRoot": "./docs/sample",
   "dataRoot": "${HOME}/.amelia_qt6",
   "knowledgeRoot": "${HOME}/.amelia_qt6/knowledge",
+=======
+  "ollamaBaseUrl": "http://localhost:11434",
+  "ollamaModel": "qwen2.5:7b",
+  "docsRoot": "${dataRoot}/docs/sample",
+  "dataRoot": "${HOME}/.amelia_qt6",
+  "knowledgeRoot": "${dataRoot}/knowledge",
+>>>>>>> 486a6af (- display version bumped to `7.1b`)
   "enableExternalSearch": false,
   "autoSuggestExternalSearch": true,
   "probeOllamaOnStartup": true,

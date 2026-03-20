@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # Amelia Qt6 v7.0
 
 Amelia is a local-first Qt6/C++ coding and cloud assistant that talks to a local Ollama server, stores its state under `~/.amelia_qt6`, indexes a local knowledge base, and can optionally use sanitized external web search through SearXNG.
@@ -24,6 +25,64 @@ The transcript segment parser was also hardened so fenced code blocks with trail
 
 ### Existing improvements still present
 
+=======
+# aMELia Qt6 v7.1b
+
+Amelia is a local-first Qt6/C++ coding and cloud assistant that talks to a local Ollama server, stores its state under `~/.amelia_qt6`, indexes a local knowledge base, and can optionally use sanitized external web search through SearXNG.
+
+This build rolls forward the existing bootstrap, indexing, transcript, Prompt Lab, notification, and progress-bar work, and adds a Knowledge Base collection model with preserved folder structure, a tree-view browser, a hard-locked Knowledge Base root and safer workspace-jail boundaries under `~/.amelia_qt6`, stronger transcript code-block handling, first-run service prompts, and a full JSON configuration editor. aMELia is also allegorically considered a MEL: Model Enhancement Lab.
+
+## What's new in v7.1b
+
+### Knowledge Base collections and safer structure handling
+
+- display version bumped to `7.1b`
+- imported files and folders are now stored as **collections** with:
+  - an immutable collection hash / ID
+  - a user-visible **label** that can be renamed later
+  - duplicate-label protection
+- imported folder structure is preserved under the collection, so files with the same leaf name remain distinguishable
+- standalone-file imports are grouped deterministically instead of being flattened into one ambiguous directory
+- Knowledge Base metadata is now persisted through a manifest file, so collection identity, grouping, and labels survive reindexing
+- Knowledge Base removal and clear operations now work against the manifest-aware model instead of a flat loose-file model
+
+### Knowledge Base UI improvements
+
+- the **Knowledge Base** tab now uses a **tree view** with expanders for:
+  - collection label
+  - folder / subgroup
+  - file
+- the tree can be sorted by **name** or **file type**
+- selected collections can be **renamed** from the UI while keeping the immutable internal collection ID unchanged
+- UI display names now prefer collection labels and relative paths instead of ambiguous bare file names
+
+### Safer local workspace handling
+
+- Amelia now exposes and prepares a dedicated workspace jail rooted under `~/.amelia_qt6/workspace`
+- runtime scratch space is separated into `~/.amelia_qt6/workspace/runtime`
+- backend / diagnostics views now show the workspace jail paths explicitly
+- the Knowledge Base root is now hard-locked under Amelia's active data root (`<dataRoot>/knowledge`) instead of allowing it to point elsewhere
+- configured `knowledgeRoot` values are normalized back to Amelia's own data root so KB operations stay jailed
+- Knowledge Base operations continue to work on copies stored under Amelia's own data root, reducing the chance of acting blindly on the user's original filesystem
+
+### Transcript and code-block fixes
+
+- transcript **Copy code** links now use stable per-block indices again
+- the copy-code parser no longer falls back to the wrong block once the transcript grows
+- transcript code blocks now render with stricter `white-space: pre` handling, preserving indentation more faithfully in the final transcript output
+- fenced-code rendering keeps exact code text in the clipboard flow instead of repeatedly copying the first block
+
+### Tray menu improvement
+
+- right-clicking the system tray icon now opens a useful context menu with:
+  - **Show Amelia**
+  - **Hide Amelia**
+  - **Exit**
+
+### Existing improvements still present
+
+
+>>>>>>> 486a6af (- display version bumped to `7.1b`)
 This release keeps the improvements from the earlier 6.9x line, including:
 
 - native desktop notifications for startup, prompt lifecycle, indexing, memory, model refresh, and related events
@@ -31,6 +90,10 @@ This release keeps the improvements from the earlier 6.9x line, including:
 - bootstrap dialog visibility at startup
 - incremental / asynchronous knowledge-base indexing
 - transcript formatting and copy helpers
+<<<<<<< HEAD
+=======
+- reasoning-only stall guard that retries once without backend thinking when a model loops before the first visible answer
+>>>>>>> 486a6af (- display version bumped to `7.1b`)
 - Prompt Lab asset-aware recipe composition
 - semantic retrieval, external search integration, and outline-first planning
 
@@ -38,6 +101,7 @@ This release keeps the improvements from the earlier 6.9x line, including:
 
 - **Local-first desktop app** built with C++ and Qt6
 - **Local Ollama integration** for model generation, model refresh, backend probing, and model selection
+<<<<<<< HEAD
 - **Persistent local state** under `~/.amelia_qt6` for config, conversations, memories, summaries, and KB cache
 - **Session management** with create, restore, list, and delete conversation workflows
 - **Rich transcript view** with colored role cards, Markdown rendering, fenced-code rendering, clickable code-copy links, and clipboard copy of the last answer
@@ -45,6 +109,17 @@ This release keeps the improvements from the earlier 6.9x line, including:
 - **Manual Memory** capture plus persisted memory storage / clearing
 - **Knowledge Base ingestion** from files and folders
 - **Knowledge Base inspection** with source summary, searchable asset list, remove-selected, and clear-KB actions
+=======
+- **Persistent local state** under `~/.amelia_qt6` for config, conversations, memories, summaries, KB cache, collection manifests, and workspace jail data
+- **Session management** with create, restore, list, and delete conversation workflows
+- **Rich transcript view** with colored role cards, Markdown rendering, fenced-code rendering, clickable code-copy links, and clipboard copy of the last answer
+- **Transcript sanitization** that neutralizes raw HTML-like tags before Markdown rendering to avoid broken layouts
+- **Exact code-block transcript handling** with stable copy links and stronger indentation preservation
+- **Manual Memory** capture plus persisted memory storage / clearing
+- **Knowledge Base ingestion** from files and folders with preserved collection structure
+- **Knowledge Base collections** with immutable IDs, user-facing unique labels, rename support, manifest-backed grouping, and a KB root locked under Amelia's data root
+- **Knowledge Base inspection** with source summary, searchable tree view, collection/folder expanders, sorting by name or file type, remove-selected, and clear-KB actions
+>>>>>>> 486a6af (- display version bumped to `7.1b`)
 - **Knowledge Base prioritization** with **Use once** and **Pin** actions plus an active-priority panel near the prompt box
 - **Incremental indexing** so changed assets can be refreshed without rebuilding the entire cache
 - **Asynchronous PDF ingestion** and non-blocking KB analysis
@@ -59,6 +134,10 @@ This release keeps the improvements from the earlier 6.9x line, including:
 - **Diagnostics panel** for operational logs and optional reasoning-trace capture
 - **Reasoning trace toggle** for backend thinking streams when exposed by the selected model/backend
 - **Desktop notifications** for meaningful task lifecycle events
+<<<<<<< HEAD
+=======
+- **System tray controls** with Show / Hide / Exit actions
+>>>>>>> 486a6af (- display version bumped to `7.1b`)
 - **Busy indicator and response progress bar** for long-running operations and streamed answer progress
 - **Bootstrap dialog** shown immediately at startup while initialization completes
 - **Tooltips across the UI** for buttons, tabs, lists, and major controls
@@ -68,7 +147,11 @@ This release keeps the improvements from the earlier 6.9x line, including:
 
 ## Versioning
 
+<<<<<<< HEAD
 - Version is now `7.0`.
+=======
+- Version is now `7.1b`.
+>>>>>>> 486a6af (- display version bumped to `7.1b`)
 - The display version comes from one place only:
   - `src/appversion.h`
 
@@ -130,14 +213,23 @@ sudo systemctl status ollama
 Pull at least one model, for example:
 
 ```bash
+<<<<<<< HEAD
 ollama pull qwen2.5-coder:14b
+=======
+ollama pull qwen2.5:7b
+>>>>>>> 486a6af (- display version bumped to `7.1b`)
 ```
 
 Quick API test:
 
 ```bash
+<<<<<<< HEAD
 curl http://127.0.0.1:11434/api/generate -d '{
   "model": "qwen2.5-coder:14b",
+=======
+curl http://localhost:11434/api/generate -d '{
+  "model": "qwen2.5:7b",
+>>>>>>> 486a6af (- display version bumped to `7.1b`)
   "prompt": "hello"
 }'
 ```
@@ -157,7 +249,11 @@ docker run -d \
 Then pull a model inside the container:
 
 ```bash
+<<<<<<< HEAD
 docker exec -it ollama ollama pull qwen2.5-coder:14b
+=======
+docker exec -it ollama ollama pull qwen2.5:7b
+>>>>>>> 486a6af (- display version bumped to `7.1b`)
 ```
 
 ## Starting SearXNG search container
@@ -195,6 +291,13 @@ Amelia stores runtime data in:
 - `~/.amelia_qt6/state.json`
 - `~/.amelia_qt6/rag_cache.json`
 - `~/.amelia_qt6/knowledge/`
+<<<<<<< HEAD
+=======
+- `~/.amelia_qt6/knowledge/collections/`
+- `~/.amelia_qt6/knowledge/.amelia_kb_manifest.json`
+- `~/.amelia_qt6/workspace/`
+- `~/.amelia_qt6/workspace/runtime/`
+>>>>>>> 486a6af (- display version bumped to `7.1b`)
 
 Preferred user config path:
 
@@ -210,6 +313,11 @@ If you already have:
 
 then its values still win. Update that file manually if you want the new defaults on an existing installation.
 
+<<<<<<< HEAD
+=======
+Note: `knowledgeRoot` is now normalized under Amelia's active `dataRoot`, so it can no longer relocate the Knowledge Base outside Amelia's own storage jail.
+
+>>>>>>> 486a6af (- display version bumped to `7.1b`)
 ## Knowledge-base behavior
 
 Amelia behaves better with large KBs because:
