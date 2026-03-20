@@ -4,6 +4,8 @@ Amelia is a local-first Qt6/C++ coding and cloud assistant that talks to a local
 
 This build rolls forward the existing bootstrap, indexing, transcript, Prompt Lab, notification, and progress-bar work, and adds a Knowledge Base collection model with preserved folder structure, a tree-view browser, a hard-locked Knowledge Base root and safer workspace-jail boundaries under `~/.amelia_qt6`, stronger transcript code-block handling, first-run service prompts, and a full JSON configuration editor. aMELia is also allegorically considered a MEL: Model Enhancement Lab.
 
+NOTE: prompt transcripts are first generated in markdown but after it finishes, they should be properly formatted.
+
 ## What's new in v7.1e
 
 ### Transcript table/code-block safety and model defaults
