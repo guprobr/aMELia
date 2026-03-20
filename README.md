@@ -1,4 +1,4 @@
-# aMELia Qt6 v7.1e1
+# aMELia Qt6 v7.7
 
 Amelia is a local-first Qt6/C++ coding and cloud assistant that talks to a local Ollama server, stores its state under `~/.amelia_qt6`, indexes a local knowledge base, and can optionally use sanitized external web search through SearXNG.
 
@@ -6,7 +6,7 @@ This build rolls forward the existing bootstrap, indexing, transcript, Prompt La
 
 NOTE: prompt transcripts are first generated in markdown but after it finishes, they should be properly formatted.
 
-## What's new in v7.1e
+## What's new in v7.7
 
 ### Transcript table/code-block safety and model defaults
 
@@ -21,6 +21,10 @@ NOTE: prompt transcripts are first generated in markdown but after it finishes, 
 - embedding progress labels now include the current file and completed chunk count, for example `Embedding 1 / 3: manual.pdf — 48/221 chunks`
 - neural-indexing chunking now uses a more compact profile with reduced overlap, which lowers duplicated embedding work and improves retrieval focus
 - the default Ollama embedding batch size is now smaller, so progress updates arrive more often and long CPU-only embedding requests feel less stuck
+- indexing now exposes a dedicated **Cancel index** button during reindexing runs
+- canceling indexing now keeps already-committed files, discards the file that was in flight, and writes the partial-safe cache back to disk
+- closing Amelia during indexing now triggers the same cancellation path so the app can shut down more cleanly
+- Knowledge Base assets can now be **dragged and dropped between collections** directly from the existing tree view
 - the Knowledge Base tab now includes a dedicated **footprint / stats panel** showing:
   - number of collections
   - total files
@@ -50,7 +54,7 @@ NOTE: prompt transcripts are first generated in markdown but after it finishes, 
 
 ### Knowledge Base collections and safer structure handling
 
-- display version bumped to `7.1e`
+- display version bumped to `7.7`
 - imported files and folders are now stored as **collections** with:
   - an immutable collection hash / ID
   - a user-visible **label** that can be renamed later
@@ -122,6 +126,8 @@ This release keeps the improvements from the earlier 6.9x line, including:
 - **Knowledge Base inspection** with source summary, searchable tree view, collection/folder expanders, sorting by name or file type, remove-selected, and clear-KB actions
 - **Knowledge Base prioritization** with **Use once** and **Pin** actions plus an active-priority panel near the prompt box
 - **Incremental indexing** so changed assets can be refreshed without rebuilding the entire cache
+- **Partial-safe cancellation** so user-canceled reindexes keep finished work and discard only the in-flight file
+- **Tree-view asset moves** so Knowledge Base files can be dragged to another collection or folder without re-importing them
 - **Asynchronous PDF ingestion** and non-blocking KB analysis
 - **Semantic retrieval** with a real Ollama embedding path plus automatic local fallback
 - **Structure-aware chunking** that preserves headings, code fences, page markers, and list regions more faithfully
@@ -145,9 +151,15 @@ This release keeps the improvements from the earlier 6.9x line, including:
 
 ## Versioning
 
-- Version is now `7.1e`.
+- Version is now `7.7`.
 - The display version comes from one place only:
   - `src/core/appversion.h`
+
+## Cache / index regeneration notes
+
+- These code changes do **not** require a forced global cache wipe or full Knowledge Base rebuild just because the application was upgraded.
+- Moving assets between collections **does** change their stored path / collection metadata, so Amelia refreshes the KB index after a move.
+- Cancel-index support is backward-compatible with the current cache format; it changes the write behavior, not the cache schema.
 
 ## Ubuntu packages
 
@@ -376,4 +388,7 @@ Main things to check:
 
 ## Recent changes
 
+- 7.7 indexing cancellation: the Knowledge Base shows a dedicated **Cancel index** button while indexing. Canceling now commits already-finished files, preserves the previous cache state for the in-flight file, and writes a partial-safe cache instead of treating the whole run as all-or-nothing.
+- 7.7 Knowledge Base drag-and-drop moves: assets can now be dragged from the current tree view and dropped onto another collection or folder node to move them. Amelia updates the manifest, moves the stored files, and then refreshes the index.
+- 7.7 shutdown cleanup: closing Amelia during indexing now requests cancellation and waits for the worker/process shutdown path cleanly so hidden leftover processes are less likely to remain consuming CPU.
 - 7.1e1 transcript rendering hotfix: unsafe markdown tables containing fenced code or HTML line breaks are automatically rewritten into stacked sections before rendering, preventing the rest of the transcript from breaking.

@@ -31,6 +31,7 @@ public:
     void sendUserPrompt(const QString &prompt, bool allowExternalSearch);
     void stopGeneration();
     void reindexDocs();
+    void cancelReindex();
     void probeBackend();
     void refreshBackendModels();
     void newConversation();
@@ -40,6 +41,7 @@ public:
     void setBackendModel(const QString &model);
     void importKnowledgePaths(const QStringList &paths, const QString &label);
     void removeKnowledgeAssets(const QStringList &paths);
+    void moveKnowledgeAssets(const QStringList &paths, const QString &targetCollectionId, const QString &targetGroupLabel);
     void renameKnowledgeCollection(const QString &collectionId, const QString &newLabel);
     void clearKnowledgeBase();
     void prepareForShutdown();

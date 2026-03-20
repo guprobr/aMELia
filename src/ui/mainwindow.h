@@ -2,6 +2,7 @@
 
 #include <QHash>
 #include <QMainWindow>
+#include <QCloseEvent>
 #include <QString>
 #include <QStringList>
 
@@ -57,6 +58,7 @@ signals:
     void promptSubmitted(const QString &prompt, bool allowExternalSearch);
     void stopRequested();
     void reindexRequested();
+    void cancelIndexingRequested();
     void testBackendRequested();
     void refreshModelsRequested();
     void newConversationRequested();
@@ -66,6 +68,7 @@ signals:
     void importPathsRequested(const QStringList &paths, const QString &label);
     void clearMemoriesRequested();
     void removeKnowledgeAssetsRequested(const QStringList &paths);
+    void moveKnowledgeAssetsRequested(const QStringList &paths, const QString &targetCollectionId, const QString &targetGroupLabel);
     void clearKnowledgeBaseRequested();
     void deleteConversationRequested(const QString &conversationId);
     void reasoningTraceCaptureToggled(bool enabled);
@@ -103,7 +106,11 @@ private slots:
     void onRemoveSelectedPrioritizedAssetsClicked();
     void onClearPrioritizedAssetsClicked();
     void onRenameSelectedKnowledgeGroupClicked();
+    void onKnowledgeAssetsDropped(const QStringList &paths, const QString &targetCollectionId, const QString &targetGroupLabel);
     void onOpenConfigurationDialog();
+
+protected:
+    void closeEvent(QCloseEvent *event) override;
 
 private:
     void appendTranscriptEntry(const QString &role, const QString &text);
@@ -161,6 +168,7 @@ private:
     QPushButton *m_sendButton = nullptr;
     QPushButton *m_stopButton = nullptr;
     QPushButton *m_reindexButton = nullptr;
+    QPushButton *m_cancelIndexingButton = nullptr;
     QPushButton *m_testBackendButton = nullptr;
     QPushButton *m_refreshModelsButton = nullptr;
     QPushButton *m_newConversationButton = nullptr;
@@ -199,6 +207,7 @@ private:
     int m_streamReceivedChars = 0;
     int m_streamEstimatedChars = 1400;
     bool m_indexingActive = false;
+    bool m_closePendingAfterIndexCancel = false;
     bool m_updatingConversationList = false;
     bool m_updatingModelList = false;
     QAction *m_aboutAmeliaAction = nullptr;

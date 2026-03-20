@@ -210,24 +210,42 @@ ChatController::ChatController(const AppConfig &config, QObject *parent)
 
     m_reindexWatcher = new QFutureWatcher<int>(this);
     connect(m_reindexWatcher, &QFutureWatcher<int>::finished, this, [this]() {
-        if (m_shuttingDown) {
-            return;
-        }
         const int chunks = m_reindexWatcher->result();
         m_startupChunkCount = chunks;
         m_indexing = false;
 
-        emit indexingProgressChanged(qMax(1, chunks), qMax(1, chunks), QStringLiteral("Index complete."));
+        const bool canceled = (m_rag != nullptr && m_rag->lastReindexCanceled());
+        const QString finalLabel = canceled
+                ? QStringLiteral("Indexing canceled. Partial cache saved.")
+                : QStringLiteral("Index complete.");
+        emit indexingProgressChanged(qMax(1, chunks), qMax(1, chunks), finalLabel);
         emit indexingStateChanged(false);
-        const QString reindexMessage = QStringLiteral("Local docs indexed: %1 chunks across %2 sources.").arg(chunks).arg(m_rag->sourceCount());
+
+        if (m_shuttingDown) {
+            return;
+        }
+
+        const QString reindexMessage = canceled
+                ? QStringLiteral("Knowledge indexing was canceled. Amelia kept %1 chunks across %2 sources and discarded the in-flight file.")
+                      .arg(chunks)
+                      .arg(m_rag->sourceCount())
+                : QStringLiteral("Local docs indexed: %1 chunks across %2 sources.").arg(chunks).arg(m_rag->sourceCount());
         emit systemNotice(reindexMessage);
         addDiagnostic(QStringLiteral("rag"),
-                      QStringLiteral("Reindex finished: %1 chunks across %2 source(s)")
-                          .arg(chunks)
-                          .arg(m_rag->sourceCount()));
-        notifyTaskSucceeded(QStringLiteral("Knowledge indexing complete"), reindexMessage);
+                      canceled
+                          ? QStringLiteral("Reindex canceled after committing %1 chunks across %2 source(s)")
+                                .arg(chunks)
+                                .arg(m_rag->sourceCount())
+                          : QStringLiteral("Reindex finished: %1 chunks across %2 source(s)")
+                                .arg(chunks)
+                                .arg(m_rag->sourceCount()));
+        if (canceled) {
+            notifyTaskStarted(QStringLiteral("Knowledge indexing canceled"), reindexMessage);
+        } else {
+            notifyTaskSucceeded(QStringLiteral("Knowledge indexing complete"), reindexMessage);
+        }
         refreshSourceInventory();
-        emit statusChanged(QStringLiteral("Ready."));
+        emit statusChanged(canceled ? QStringLiteral("Indexing canceled. Partial cache saved.") : QStringLiteral("Ready."));
         emit backendSummaryReady(buildBackendSummary());
     });
 
@@ -348,7 +366,6 @@ void ChatController::prepareForShutdown()
     m_shuttingDown = true;
     m_promptPreparationSerial += 1;
     m_busy = false;
-    m_indexing = false;
 
     if (m_rag != nullptr) {
         m_rag->requestCancel();
@@ -357,6 +374,17 @@ void ChatController::prepareForShutdown()
         m_llmClient->stop();
     }
 
+    if (m_startupLoadWatcher != nullptr && m_startupLoadWatcher->isRunning()) {
+        m_startupLoadWatcher->waitForFinished();
+    }
+    if (m_reindexWatcher != nullptr && m_reindexWatcher->isRunning()) {
+        m_reindexWatcher->waitForFinished();
+    }
+    if (m_promptPreparationWatcher != nullptr && m_promptPreparationWatcher->isRunning()) {
+        m_promptPreparationWatcher->waitForFinished();
+    }
+
+    m_indexing = false;
     disconnect(this, nullptr, nullptr, nullptr);
 }
 
@@ -724,6 +752,18 @@ void ChatController::stopGeneration()
     notifyTaskFailed(QStringLiteral("Prompt stopped"), QStringLiteral("The current request was stopped before completion."));
 }
 
+void ChatController::cancelReindex()
+{
+    if (!m_indexing || m_rag == nullptr) {
+        return;
+    }
+
+    m_rag->requestCancel();
+    emit indexingProgressChanged(0, 0, QStringLiteral("Canceling indexing..."));
+    emit statusChanged(QStringLiteral("Canceling indexing..."));
+    addDiagnostic(QStringLiteral("rag"), QStringLiteral("Index cancel requested by user."));
+}
+
 void ChatController::reindexDocs()
 {
     if (m_busy) {
@@ -940,6 +980,34 @@ void ChatController::renameKnowledgeCollection(const QString &collectionId, cons
     addDiagnostic(QStringLiteral("ingest"), message);
     refreshSourceInventory();
     notifyTaskSucceeded(QStringLiteral("Knowledge Base label renamed"), message);
+}
+
+void ChatController::moveKnowledgeAssets(const QStringList &paths,
+                                         const QString &targetCollectionId,
+                                         const QString &targetGroupLabel)
+{
+    if (paths.isEmpty() || targetCollectionId.trimmed().isEmpty()) {
+        return;
+    }
+    if (m_busy || m_indexing) {
+        emit systemNotice(QStringLiteral("Stop the current task before moving knowledge base assets."));
+        return;
+    }
+
+    QString message;
+    const int moved = m_rag->moveKnowledgePaths(paths,
+                                                m_storage->knowledgeRoot(),
+                                                targetCollectionId.trimmed(),
+                                                targetGroupLabel.trimmed(),
+                                                &message);
+    emit systemNotice(message);
+    addDiagnostic(QStringLiteral("ingest"), message);
+    if (moved > 0) {
+        notifyTaskSucceeded(QStringLiteral("Knowledge assets moved"), message);
+        reindexDocs();
+    } else {
+        notifyTaskFailed(QStringLiteral("Knowledge asset move failed"), message);
+    }
 }
 
 void ChatController::removeKnowledgeAssets(const QStringList &paths)

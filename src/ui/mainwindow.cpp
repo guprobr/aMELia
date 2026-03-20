@@ -14,10 +14,13 @@
 #include <QTextDocument>
 #include <QTextBrowser>
 #include <QDesktopServices>
+#include <QDragMoveEvent>
 #include <QDialogButtonBox>
 #include <QDialog>
+#include <QDir>
 #include <QComboBox>
 #include <QFileDialog>
+#include <QDropEvent>
 #include <QFileInfo>
 #include <QFont>
 #include <QFormLayout>
@@ -33,13 +36,16 @@
 #include <QListWidgetItem>
 #include <QMenu>
 #include <QMenuBar>
+#include <QMimeData>
 #include <QMessageBox>
 #include <QPlainTextEdit>
 #include <QPoint>
 #include <QPushButton>
+#include <QCloseEvent>
 #include <QProgressBar>
 #include <QStatusBar>
 #include <QRegularExpression>
+#include <QSet>
 #include <QSplitter>
 #include <QTabWidget>
 #include <QTabBar>
@@ -143,6 +149,151 @@ constexpr int kKnowledgeNodeTypeRole = Qt::UserRole + 20;
 constexpr int kKnowledgePathRole = Qt::UserRole + 21;
 constexpr int kKnowledgeCollectionIdRole = Qt::UserRole + 22;
 constexpr int kKnowledgeSearchBlobRole = Qt::UserRole + 23;
+constexpr int kKnowledgeGroupLabelRole = Qt::UserRole + 24;
+constexpr char kKnowledgeMoveMimeType[] = "application/x-amelia-kb-paths";
+
+class KnowledgeTreeWidget final : public QTreeWidget {
+    Q_OBJECT
+public:
+    explicit KnowledgeTreeWidget(QWidget *parent = nullptr)
+        : QTreeWidget(parent)
+    {
+        setDragEnabled(true);
+        setAcceptDrops(true);
+        setDropIndicatorShown(true);
+        setDragDropMode(QAbstractItemView::DragDrop);
+        setDefaultDropAction(Qt::MoveAction);
+        setDragDropOverwriteMode(false);
+    }
+
+signals:
+    void knowledgeAssetsDropped(const QStringList &paths,
+                                const QString &targetCollectionId,
+                                const QString &targetGroupLabel);
+
+protected:
+    QStringList mimeTypes() const override
+    {
+        return {QString::fromLatin1(kKnowledgeMoveMimeType)};
+    }
+
+    QMimeData *mimeData(const QList<QTreeWidgetItem *> &items) const override
+    {
+        QStringList paths;
+        QSet<QString> seen;
+
+        std::function<void(const QTreeWidgetItem *)> collectRecursive = [&](const QTreeWidgetItem *item) {
+            if (item == nullptr) {
+                return;
+            }
+
+            const QString directPath = item->data(0, kKnowledgePathRole).toString().trimmed();
+            if (!directPath.isEmpty()) {
+                if (!seen.contains(directPath)) {
+                    seen.insert(directPath);
+                    paths << directPath;
+                }
+                return;
+            }
+
+            for (int i = 0; i < item->childCount(); ++i) {
+                collectRecursive(item->child(i));
+            }
+        };
+
+        for (const QTreeWidgetItem *item : items) {
+            collectRecursive(item);
+        }
+
+        if (paths.isEmpty()) {
+            return nullptr;
+        }
+
+        auto *mimeData = new QMimeData();
+        mimeData->setData(QString::fromLatin1(kKnowledgeMoveMimeType), paths.join(QLatin1Char('\n')).toUtf8());
+        return mimeData;
+    }
+
+    Qt::DropActions supportedDropActions() const override
+    {
+        return Qt::MoveAction;
+    }
+
+    void dragMoveEvent(QDragMoveEvent *event) override
+    {
+        if (resolveDropTarget(event->position().toPoint()).first.trimmed().isEmpty()) {
+            event->ignore();
+            return;
+        }
+        if (!event->mimeData()->hasFormat(QString::fromLatin1(kKnowledgeMoveMimeType))) {
+            event->ignore();
+            return;
+        }
+        event->acceptProposedAction();
+    }
+
+    void dropEvent(QDropEvent *event) override
+    {
+        if (!event->mimeData()->hasFormat(QString::fromLatin1(kKnowledgeMoveMimeType))) {
+            event->ignore();
+            return;
+        }
+
+        const auto target = resolveDropTarget(event->position().toPoint());
+        const QString targetCollectionId = target.first.trimmed();
+        if (targetCollectionId.isEmpty()) {
+            event->ignore();
+            return;
+        }
+
+        const QString payload = QString::fromUtf8(event->mimeData()->data(QString::fromLatin1(kKnowledgeMoveMimeType)));
+        QStringList paths;
+        QSet<QString> seen;
+        for (const QString &line : payload.split(QLatin1Char('\n'), Qt::SkipEmptyParts)) {
+            const QString trimmed = line.trimmed();
+            if (!trimmed.isEmpty() && !seen.contains(trimmed)) {
+                seen.insert(trimmed);
+                paths << trimmed;
+            }
+        }
+        if (paths.isEmpty()) {
+            event->ignore();
+            return;
+        }
+
+        emit knowledgeAssetsDropped(paths, targetCollectionId, target.second);
+        event->acceptProposedAction();
+    }
+
+private:
+    QPair<QString, QString> resolveDropTarget(const QPoint &pos) const
+    {
+        QTreeWidgetItem *targetItem = itemAt(pos);
+        if (targetItem == nullptr) {
+            return {};
+        }
+
+        QString nodeType = targetItem->data(0, kKnowledgeNodeTypeRole).toString().trimmed();
+        if (nodeType == QStringLiteral("file")) {
+            targetItem = targetItem->parent();
+            if (targetItem == nullptr) {
+                return {};
+            }
+            nodeType = targetItem->data(0, kKnowledgeNodeTypeRole).toString().trimmed();
+        }
+
+        const QString collectionId = targetItem->data(0, kKnowledgeCollectionIdRole).toString().trimmed();
+        if (collectionId.isEmpty()) {
+            return {};
+        }
+
+        QString targetGroupLabel;
+        if (nodeType == QStringLiteral("group")) {
+            targetGroupLabel = targetItem->data(0, kKnowledgeGroupLabelRole).toString().trimmed();
+        }
+        return {collectionId, targetGroupLabel};
+    }
+};
 
 QStringList splitAssetPaths(const QString &raw)
 {
@@ -747,6 +898,7 @@ MainWindow::MainWindow(const QString &configPath,
     m_sendButton = new QPushButton(QStringLiteral("Send"), chatPane);
     m_stopButton = new QPushButton(QStringLiteral("Stop"), chatPane);
     m_reindexButton = new QPushButton(QStringLiteral("Reindex docs"), chatPane);
+    m_cancelIndexingButton = new QPushButton(QStringLiteral("Cancel index"), chatPane);
     m_testBackendButton = nullptr;
     m_refreshModelsButton = new QPushButton(QStringLiteral("List models"), chatPane);
     m_rememberButton = new QPushButton(QStringLiteral("Manual Memory"), chatPane);
@@ -764,6 +916,8 @@ MainWindow::MainWindow(const QString &configPath,
     m_busyIndicatorTimer->setInterval(100);
 
     m_stopButton->setEnabled(false);
+    m_cancelIndexingButton->hide();
+    m_cancelIndexingButton->setEnabled(false);
 
     controlsLayout->addWidget(m_importFilesButton);
     controlsLayout->addWidget(m_importFolderButton);
@@ -772,6 +926,7 @@ MainWindow::MainWindow(const QString &configPath,
     controlsLayout->addStretch(1);
     controlsLayout->addWidget(m_refreshModelsButton);
     controlsLayout->addWidget(m_reindexButton);
+    controlsLayout->addWidget(m_cancelIndexingButton);
     controlsLayout->addWidget(m_stopButton);
     controlsLayout->addWidget(m_sendButton);
 
@@ -897,12 +1052,13 @@ MainWindow::MainWindow(const QString &configPath,
     kbFilterLayout->addWidget(m_sourceInventorySortCombo, 0);
     kbFilterLayout->addWidget(m_sourceInventoryFilterStatus);
 
-    m_sourceInventoryTree = new QTreeWidget(kbTab);
+    m_sourceInventoryTree = new KnowledgeTreeWidget(kbTab);
     m_sourceInventoryTree->setSelectionMode(QAbstractItemView::ExtendedSelection);
     m_sourceInventoryTree->setRootIsDecorated(true);
     m_sourceInventoryTree->setAlternatingRowColors(true);
     m_sourceInventoryTree->setSortingEnabled(true);
     m_sourceInventoryTree->setHeaderLabels({QStringLiteral("Knowledge asset"), QStringLiteral("Kind"), QStringLiteral("Location / notes")});
+    m_sourceInventoryTree->viewport()->setAcceptDrops(true);
 
     auto *kbButtons = new QHBoxLayout();
     m_prioritizeSelectedAssetButton = new QPushButton(QStringLiteral("Use once"), kbTab);
@@ -1062,6 +1218,7 @@ MainWindow::MainWindow(const QString &configPath,
     connect(m_sendButton, &QPushButton::clicked, this, &MainWindow::onSendClicked);
     connect(m_stopButton, &QPushButton::clicked, this, &MainWindow::stopRequested);
     connect(m_reindexButton, &QPushButton::clicked, this, &MainWindow::reindexRequested);
+    connect(m_cancelIndexingButton, &QPushButton::clicked, this, &MainWindow::cancelIndexingRequested);
     connect(m_refreshModelsButton, &QPushButton::clicked, this, &MainWindow::refreshModelsRequested);
     connect(m_newConversationButton, &QPushButton::clicked, this, &MainWindow::newConversationRequested);
     connect(m_deleteConversationButton, &QPushButton::clicked, this, &MainWindow::onDeleteConversationClicked);
@@ -1088,6 +1245,9 @@ MainWindow::MainWindow(const QString &configPath,
     connect(m_removePrioritizedAssetButton, &QPushButton::clicked, this, &MainWindow::onRemoveSelectedPrioritizedAssetsClicked);
     connect(m_clearPrioritizedAssetsButton, &QPushButton::clicked, this, &MainWindow::onClearPrioritizedAssetsClicked);
     connect(m_reasoningTraceToggleButton, &QPushButton::toggled, this, &MainWindow::onReasoningTraceToggleToggled);
+    if (auto *knowledgeTree = qobject_cast<KnowledgeTreeWidget *>(m_sourceInventoryTree)) {
+        connect(knowledgeTree, &KnowledgeTreeWidget::knowledgeAssetsDropped, this, &MainWindow::onKnowledgeAssetsDropped);
+    }
 
     if (m_promptLabPreview != nullptr) {
         m_promptLabPreview->setPlainText(buildPromptLabRecipe());
@@ -1095,6 +1255,21 @@ MainWindow::MainWindow(const QString &configPath,
     rebuildPrioritizedKnowledgeAssetsUi();
 }
 
+
+void MainWindow::closeEvent(QCloseEvent *event)
+{
+    if (m_indexingActive) {
+        m_closePendingAfterIndexCancel = true;
+        emit cancelIndexingRequested();
+        if (m_statusLabel != nullptr) {
+            m_statusLabel->setText(QStringLiteral("Canceling indexing before exit..."));
+        }
+        event->ignore();
+        return;
+    }
+
+    QMainWindow::closeEvent(event);
+}
 
 void MainWindow::appendTranscriptEntry(const QString &role, const QString &text)
 {
@@ -1520,6 +1695,9 @@ void MainWindow::setBusy(bool busy)
     if (m_clearKnowledgeBaseButton != nullptr) m_clearKnowledgeBaseButton->setEnabled(!busy && !m_indexingActive);
     if (m_removePrioritizedAssetButton != nullptr) m_removePrioritizedAssetButton->setEnabled(!busy);
     if (m_clearPrioritizedAssetsButton != nullptr) m_clearPrioritizedAssetsButton->setEnabled(!busy);
+    if (m_cancelIndexingButton != nullptr) m_cancelIndexingButton->setEnabled(m_indexingActive && !busy);
+    if (m_sourceInventoryTree != nullptr) m_sourceInventoryTree->setDragEnabled(!busy && !m_indexingActive);
+    if (m_sourceInventoryTree != nullptr) { m_sourceInventoryTree->setAcceptDrops(!busy && !m_indexingActive); m_sourceInventoryTree->viewport()->setAcceptDrops(!busy && !m_indexingActive); }
 
     if (busy) {
         beginResponseProgress(QStringLiteral("Preparing prompt..."));
@@ -1553,6 +1731,16 @@ void MainWindow::setIndexingActive(bool active)
     if (m_clearKnowledgeBaseButton != nullptr) m_clearKnowledgeBaseButton->setEnabled(!active && !m_stopButton->isEnabled());
     if (m_removePrioritizedAssetButton != nullptr) m_removePrioritizedAssetButton->setEnabled(!active && !m_stopButton->isEnabled());
     if (m_clearPrioritizedAssetsButton != nullptr) m_clearPrioritizedAssetsButton->setEnabled(!active && !m_stopButton->isEnabled());
+    if (m_cancelIndexingButton != nullptr) {
+        m_cancelIndexingButton->setVisible(active);
+        m_cancelIndexingButton->setEnabled(active);
+    }
+    if (m_sourceInventoryTree != nullptr) {
+        const bool allowTreeDragDrop = !active && !m_stopButton->isEnabled();
+        m_sourceInventoryTree->setDragEnabled(allowTreeDragDrop);
+        m_sourceInventoryTree->setAcceptDrops(allowTreeDragDrop);
+        m_sourceInventoryTree->viewport()->setAcceptDrops(allowTreeDragDrop);
+    }
 
     if (m_taskProgressBar == nullptr) {
         return;
@@ -1564,9 +1752,17 @@ void MainWindow::setIndexingActive(bool active)
         m_taskProgressBar->setFormat(QStringLiteral("Indexing local docs..."));
         m_statusLabel->setText(QStringLiteral("Indexing local docs..."));
     } else {
+        if (m_cancelIndexingButton != nullptr) {
+            m_cancelIndexingButton->hide();
+            m_cancelIndexingButton->setEnabled(false);
+        }
         resetTaskProgressBar();
         if (!m_stopButton->isEnabled()) {
             m_statusLabel->setText(QStringLiteral("Ready."));
+        }
+        if (m_closePendingAfterIndexCancel) {
+            m_closePendingAfterIndexCancel = false;
+            QTimer::singleShot(0, this, [this]() { close(); });
         }
     }
 }
@@ -1778,6 +1974,7 @@ void MainWindow::setSourceInventory(const QString &text)
                 fileItem->setData(0, kKnowledgeNodeTypeRole, QStringLiteral("file"));
                 fileItem->setData(0, kKnowledgePathRole, filePath);
                 fileItem->setData(0, kKnowledgeCollectionIdRole, collection.value(QStringLiteral("collectionId")).toString());
+                fileItem->setData(0, kKnowledgeGroupLabelRole, group.value(QStringLiteral("label")).toString(QStringLiteral("(root)")));
                 fileItem->setData(0, kKnowledgeSearchBlobRole,
                                   collection.value(QStringLiteral("label")).toString()
                                       + QLatin1Char('\n')
@@ -2232,6 +2429,33 @@ void MainWindow::onRenameSelectedKnowledgeGroupClicked()
     }
 
     emit renameKnowledgeCollectionRequested(collectionId, newLabel);
+}
+
+void MainWindow::onKnowledgeAssetsDropped(const QStringList &paths,
+                                         const QString &targetCollectionId,
+                                         const QString &targetGroupLabel)
+{
+    if (paths.isEmpty()) {
+        return;
+    }
+    if (m_indexingActive || (m_stopButton != nullptr && m_stopButton->isEnabled())) {
+        m_statusLabel->setText(QStringLiteral("Finish the current task before moving Knowledge Base assets."));
+        return;
+    }
+
+    QStringList uniquePaths;
+    for (const QString &path : paths) {
+        const QString cleaned = QDir::cleanPath(path.trimmed());
+        if (!cleaned.isEmpty() && !uniquePaths.contains(cleaned)) {
+            uniquePaths << cleaned;
+        }
+    }
+    if (uniquePaths.isEmpty() || targetCollectionId.trimmed().isEmpty()) {
+        return;
+    }
+
+    emit moveKnowledgeAssetsRequested(uniquePaths, targetCollectionId.trimmed(), targetGroupLabel.trimmed());
+    m_statusLabel->setText(QStringLiteral("Moving %1 Knowledge Base asset(s)...").arg(uniquePaths.size()));
 }
 
 void MainWindow::onClearKnowledgeBaseClicked()
@@ -2770,3 +2994,4 @@ void MainWindow::onClearMemoriesTriggered()
 
     emit clearMemoriesRequested();
 }
+#include "mainwindow.moc"

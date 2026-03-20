@@ -34,6 +34,7 @@ public:
     void requestCancel();
 
     int reindex(const std::function<void(int, int, const QString &)> &progressCallback = {});
+    bool lastReindexCanceled() const;
     bool loadCache();
     bool saveCache() const;
     bool cacheNeedsRefresh() const;
@@ -57,6 +58,11 @@ public:
     QStringList supportedExtensions() const;
     int importPaths(const QStringList &paths, const QString &destinationRoot, const QString &label, QString *message = nullptr) const;
     int removeKnowledgePaths(const QStringList &paths, const QString &destinationRoot, QString *message = nullptr) const;
+    int moveKnowledgePaths(const QStringList &paths,
+                           const QString &destinationRoot,
+                           const QString &targetCollectionId,
+                           const QString &targetGroupLabel = QString(),
+                           QString *message = nullptr) const;
     bool clearKnowledgeLibrary(const QString &destinationRoot, QString *message = nullptr) const;
     bool renameCollectionLabel(const QString &destinationRoot, const QString &collectionId, const QString &newLabel, QString *message = nullptr);
 
@@ -101,4 +107,5 @@ private:
     EmbeddingClient m_embeddingClient;
     bool m_semanticEnabled = true;
     std::atomic_bool m_cancelRequested{false};
+    bool m_lastReindexCanceled = false;
 };

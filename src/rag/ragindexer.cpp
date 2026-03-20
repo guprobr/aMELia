@@ -843,6 +843,25 @@ bool copyFileIntoCollection(const QString &sourceFile,
     return true;
 }
 
+bool moveStoredKnowledgeFile(const QString &sourcePath, const QString &destinationPath)
+{
+    const QString normalizedSource = QDir::cleanPath(QDir::fromNativeSeparators(QFileInfo(sourcePath).absoluteFilePath()));
+    const QString normalizedDestination = QDir::cleanPath(QDir::fromNativeSeparators(QFileInfo(destinationPath).absoluteFilePath()));
+    if (normalizedSource == normalizedDestination) {
+        return true;
+    }
+
+    QDir().mkpath(QFileInfo(destinationPath).dir().absolutePath());
+    QFile::remove(destinationPath);
+    if (QFile::rename(sourcePath, destinationPath)) {
+        return true;
+    }
+    if (!QFile::copy(sourcePath, destinationPath)) {
+        return false;
+    }
+    return QFile::remove(sourcePath);
+}
+
 int importPathIntoCollection(const QString &path,
                              const QString &collectionId,
                              const QString &collectionRoot,
@@ -1104,6 +1123,11 @@ void RagIndexer::requestCancel()
     m_cancelRequested.store(true, std::memory_order_relaxed);
 }
 
+bool RagIndexer::lastReindexCanceled() const
+{
+    return m_lastReindexCanceled;
+}
+
 void RagIndexer::rebuildEmbeddings()
 {
     ensureEmbeddingsForChunks(m_chunks);
@@ -1154,10 +1178,47 @@ QString RagIndexer::chunkingStrategyName()
 int RagIndexer::reindex(const std::function<void(int, int, const QString &)> &progressCallback)
 {
     m_cancelRequested.store(false, std::memory_order_relaxed);
+    m_lastReindexCanceled = false;
 
-    auto cancelEarly = [this, &progressCallback]() -> int {
+    auto finalizeWorkingState = [this, &progressCallback](const QHash<QString, SourceInfo> &workingSourcesByPath,
+                                                          const QHash<QString, QVector<Chunk>> &workingChunksByPath,
+                                                          const QString &label,
+                                                          bool canceled,
+                                                          int progressValue,
+                                                          int progressMaximum) -> int {
+        QVector<SourceInfo> finalizedSources;
+        finalizedSources.reserve(workingSourcesByPath.size());
+        for (auto it = workingSourcesByPath.cbegin(); it != workingSourcesByPath.cend(); ++it) {
+            finalizedSources.push_back(it.value());
+        }
+        std::sort(finalizedSources.begin(), finalizedSources.end(), [](const SourceInfo &a, const SourceInfo &b) {
+            if (a.collectionLabel != b.collectionLabel) {
+                return a.collectionLabel.toLower() < b.collectionLabel.toLower();
+            }
+            if (a.groupLabel != b.groupLabel) {
+                return a.groupLabel.toLower() < b.groupLabel.toLower();
+            }
+            if (a.relativePath != b.relativePath) {
+                return a.relativePath.toLower() < b.relativePath.toLower();
+            }
+            return a.fileName.toLower() < b.fileName.toLower();
+        });
+
+        QVector<Chunk> finalizedChunks;
+        for (const SourceInfo &source : finalizedSources) {
+            const QVector<Chunk> chunksForPath = workingChunksByPath.value(source.filePath);
+            for (const Chunk &chunk : chunksForPath) {
+                finalizedChunks.push_back(chunk);
+            }
+        }
+
+        m_sources = finalizedSources;
+        m_chunks = finalizedChunks;
+        saveCache();
+        m_lastReindexCanceled = canceled;
+
         if (progressCallback) {
-            progressCallback(0, 0, QStringLiteral("Indexing canceled."));
+            progressCallback(progressValue, progressMaximum, label);
         }
         return m_chunks.size();
     };
@@ -1165,6 +1226,7 @@ int RagIndexer::reindex(const std::function<void(int, int, const QString &)> &pr
     if (m_docsRoot.trimmed().isEmpty()) {
         m_chunks.clear();
         m_sources.clear();
+        saveCache();
         return 0;
     }
 
@@ -1175,7 +1237,11 @@ int RagIndexer::reindex(const std::function<void(int, int, const QString &)> &pr
     QDirIterator gatherIt(m_docsRoot, extensions(), QDir::Files, QDirIterator::Subdirectories);
     while (gatherIt.hasNext()) {
         if (m_cancelRequested.load(std::memory_order_relaxed)) {
-            return cancelEarly();
+            return finalizeWorkingState({}, {},
+                                        QStringLiteral("Indexing canceled. Partial cache saved; the in-flight file was discarded."),
+                                        true,
+                                        0,
+                                        1);
         }
 
         const QString path = gatherIt.next();
@@ -1204,11 +1270,25 @@ int RagIndexer::reindex(const std::function<void(int, int, const QString &)> &pr
         existingChunksByPath[chunk.filePath].push_back(chunk);
     }
 
-    QVector<Chunk> newChunks;
-    QVector<SourceInfo> newSources;
-    newSources.reserve(totalFiles);
+    QHash<QString, SourceInfo> workingSourcesByPath = existingSourcesByPath;
+    QHash<QString, QVector<Chunk>> workingChunksByPath = existingChunksByPath;
+
+    QSet<QString> currentPathSet;
+    for (const QString &path : paths) {
+        currentPathSet.insert(path);
+    }
+    for (auto it = workingSourcesByPath.begin(); it != workingSourcesByPath.end();) {
+        if (!currentPathSet.contains(it.key())) {
+            workingChunksByPath.remove(it.key());
+            it = workingSourcesByPath.erase(it);
+            continue;
+        }
+        ++it;
+    }
+
     int reusedFiles = 0;
     int rebuiltFiles = 0;
+    int committedFiles = 0;
 
     const auto applyMetadata = [this, &metadataByPath](SourceInfo &source) {
         const QString canonicalPath = canonicalPathFor(source.filePath);
@@ -1232,9 +1312,18 @@ int RagIndexer::reindex(const std::function<void(int, int, const QString &)> &pr
         source.originalPath.clear();
     };
 
+    const auto cancelWithPartialCommit = [&](const QString &label) -> int {
+        return finalizeWorkingState(workingSourcesByPath,
+                                    workingChunksByPath,
+                                    label,
+                                    true,
+                                    qBound(0, committedFiles, totalFiles > 0 ? totalFiles : 1),
+                                    totalFiles > 0 ? totalFiles : 1);
+    };
+
     for (int i = 0; i < totalFiles; ++i) {
         if (m_cancelRequested.load(std::memory_order_relaxed)) {
-            return cancelEarly();
+            return cancelWithPartialCommit(QStringLiteral("Indexing canceled. Partial cache saved; the in-flight file was discarded."));
         }
 
         const QString path = paths.at(i);
@@ -1259,11 +1348,10 @@ int RagIndexer::reindex(const std::function<void(int, int, const QString &)> &pr
             }
 
             source.chunkCount = reusedChunks.size();
-            newSources.push_back(source);
-            for (const Chunk &chunk : reusedChunks) {
-                newChunks.push_back(chunk);
-            }
+            workingSourcesByPath.insert(path, source);
+            workingChunksByPath.insert(path, reusedChunks);
             ++reusedFiles;
+            ++committedFiles;
 
             if (progressCallback) {
                 progressCallback(i + 1,
@@ -1283,6 +1371,9 @@ int RagIndexer::reindex(const std::function<void(int, int, const QString &)> &pr
         QString textValue;
         QString extractor;
         const bool ok = readTextFile(path, &textValue, &extractor, &m_cancelRequested);
+        if (m_cancelRequested.load(std::memory_order_relaxed)) {
+            return cancelWithPartialCommit(QStringLiteral("Indexing canceled. Partial cache saved; the in-flight file was discarded."));
+        }
         const QString sourceRole = detectSourceRole(info, sourceType, textValue);
 
         SourceInfo source;
@@ -1295,6 +1386,7 @@ int RagIndexer::reindex(const std::function<void(int, int, const QString &)> &pr
         source.fileSizeBytes = info.size();
         applyMetadata(source);
 
+        QVector<Chunk> rebuiltChunksForPath;
         if (ok && !textValue.trimmed().isEmpty()) {
             const bool preferCompactChunks = m_semanticEnabled && m_embeddingClient.isConfigured();
             const QVector<QString> blocks = buildSemanticBlocks(textValue);
@@ -1331,11 +1423,14 @@ int RagIndexer::reindex(const std::function<void(int, int, const QString &)> &pr
                                                               }
                                                           });
             }
+            if (m_cancelRequested.load(std::memory_order_relaxed)) {
+                return cancelWithPartialCommit(QStringLiteral("Indexing canceled. Partial cache saved; the in-flight file was discarded."));
+            }
 
             int chunkIndex = 0;
             for (int j = 0; j < embeddingsInput.size(); ++j) {
                 if (m_cancelRequested.load(std::memory_order_relaxed)) {
-                    return cancelEarly();
+                    return cancelWithPartialCommit(QStringLiteral("Indexing canceled. Partial cache saved; the in-flight file was discarded."));
                 }
 
                 Chunk chunk;
@@ -1349,13 +1444,15 @@ int RagIndexer::reindex(const std::function<void(int, int, const QString &)> &pr
                 if (m_semanticEnabled && j < embeddings.size()) {
                     chunk.embedding = embeddings.at(j);
                 }
-                newChunks.push_back(chunk);
+                rebuiltChunksForPath.push_back(chunk);
                 ++source.chunkCount;
             }
         }
 
-        newSources.push_back(source);
+        workingSourcesByPath.insert(path, source);
+        workingChunksByPath.insert(path, rebuiltChunksForPath);
         ++rebuiltFiles;
+        ++committedFiles;
 
         if (progressCallback) {
             progressCallback(i + 1,
@@ -1364,32 +1461,22 @@ int RagIndexer::reindex(const std::function<void(int, int, const QString &)> &pr
         }
     }
 
-    m_chunks = std::move(newChunks);
-    m_sources = std::move(newSources);
-
-    std::sort(m_sources.begin(), m_sources.end(), [](const SourceInfo &a, const SourceInfo &b) {
-        if (a.collectionLabel != b.collectionLabel) {
-            return a.collectionLabel.toLower() < b.collectionLabel.toLower();
-        }
-        if (a.groupLabel != b.groupLabel) {
-            return a.groupLabel.toLower() < b.groupLabel.toLower();
-        }
-        return a.fileName.toLower() < b.fileName.toLower();
-    });
-
-    saveCache();
-
-    if (progressCallback) {
-        progressCallback(totalFiles > 0 ? totalFiles : 1,
-                         totalFiles > 0 ? totalFiles : 1,
-                         QStringLiteral("Index ready: %1 files (%2 reused, %3 rebuilt, %4 chunks)")
-                             .arg(totalFiles)
-                             .arg(reusedFiles)
-                             .arg(rebuiltFiles)
-                             .arg(m_chunks.size()));
-    }
-
-    return m_chunks.size();
+    return finalizeWorkingState(workingSourcesByPath,
+                                workingChunksByPath,
+                                QStringLiteral("Index ready: %1 files (%2 reused, %3 rebuilt, %4 chunks)")
+                                    .arg(totalFiles)
+                                    .arg(reusedFiles)
+                                    .arg(rebuiltFiles)
+                                    .arg([&workingChunksByPath]() {
+                                        int count = 0;
+                                        for (auto it = workingChunksByPath.cbegin(); it != workingChunksByPath.cend(); ++it) {
+                                            count += it.value().size();
+                                        }
+                                        return count;
+                                    }()),
+                                false,
+                                totalFiles > 0 ? totalFiles : 1,
+                                totalFiles > 0 ? totalFiles : 1);
 }
 
 bool RagIndexer::loadCache()
@@ -2030,6 +2117,177 @@ int RagIndexer::removeKnowledgePaths(const QStringList &paths, const QString &de
     return removed;
 }
 
+
+int RagIndexer::moveKnowledgePaths(const QStringList &paths,
+                                   const QString &destinationRoot,
+                                   const QString &targetCollectionId,
+                                   const QString &targetGroupLabel,
+                                   QString *message) const
+{
+    if (paths.isEmpty() || targetCollectionId.trimmed().isEmpty()) {
+        if (message != nullptr) {
+            *message = QStringLiteral("Move request is incomplete.");
+        }
+        return 0;
+    }
+
+    QVector<ManifestCollection> collections = loadManifestCollections(destinationRoot);
+    int targetCollectionIndex = -1;
+    for (int i = 0; i < collections.size(); ++i) {
+        if (collections.at(i).collectionId == targetCollectionId) {
+            targetCollectionIndex = i;
+            break;
+        }
+    }
+    if (targetCollectionIndex < 0) {
+        if (message != nullptr) {
+            *message = QStringLiteral("Destination Knowledge Base collection was not found.");
+        }
+        return 0;
+    }
+
+    QSet<QString> selectedPaths;
+    for (const QString &path : paths) {
+        const QString canonical = canonicalPathFor(path);
+        if (!canonical.isEmpty()) {
+            selectedPaths.insert(canonical);
+        }
+    }
+    if (selectedPaths.isEmpty()) {
+        if (message != nullptr) {
+            *message = QStringLiteral("No valid Knowledge Base assets were selected for moving.");
+        }
+        return 0;
+    }
+
+    QString normalizedTargetGroupLabel = targetGroupLabel.trimmed();
+    if (normalizedTargetGroupLabel == QStringLiteral("(root)")) {
+        normalizedTargetGroupLabel.clear();
+    }
+    if (!normalizedTargetGroupLabel.isEmpty()) {
+        normalizedTargetGroupLabel = QDir::cleanPath(QDir::fromNativeSeparators(normalizedTargetGroupLabel));
+    }
+
+    QSet<QString> targetUsedRelativePaths;
+    for (const ManifestEntry &entry : collections.at(targetCollectionIndex).entries) {
+        targetUsedRelativePaths.insert(entry.relativePath);
+    }
+    for (const ManifestEntry &entry : collections.at(targetCollectionIndex).entries) {
+        if (selectedPaths.contains(canonicalPathFor(entry.internalPath))) {
+            targetUsedRelativePaths.remove(entry.relativePath);
+        }
+    }
+
+    const QString targetCollectionRoot = QDir(collectionsRootFor(destinationRoot)).filePath(targetCollectionId);
+    QDir().mkpath(targetCollectionRoot);
+
+    QVector<ManifestEntry> movedEntries;
+    QStringList movedSourcePaths;
+    int moved = 0;
+    int failed = 0;
+
+    for (ManifestCollection &collection : collections) {
+        QVector<ManifestEntry> remainingEntries;
+        remainingEntries.reserve(collection.entries.size());
+
+        for (const ManifestEntry &entry : std::as_const(collection.entries)) {
+            const QString canonicalInternalPath = canonicalPathFor(entry.internalPath);
+            if (!selectedPaths.contains(canonicalInternalPath)) {
+                remainingEntries.push_back(entry);
+                continue;
+            }
+
+            const QFileInfo entryInfo(entry.internalPath);
+            QString desiredRelativePath = normalizedTargetGroupLabel.isEmpty()
+                    ? entry.relativePath
+                    : QDir(normalizedTargetGroupLabel).filePath(entryInfo.fileName());
+            if (desiredRelativePath.trimmed().isEmpty()) {
+                desiredRelativePath = entryInfo.fileName();
+            }
+            desiredRelativePath = QDir::cleanPath(QDir::fromNativeSeparators(desiredRelativePath));
+
+            if (collection.collectionId == targetCollectionId && entry.relativePath == desiredRelativePath) {
+                remainingEntries.push_back(entry);
+                continue;
+            }
+
+            const QString uniqueRelativePath = ensureUniqueRelativePath(desiredRelativePath, &targetUsedRelativePaths);
+            const QString destinationPath = QDir(targetCollectionRoot).filePath(uniqueRelativePath);
+            if (!moveStoredKnowledgeFile(entry.internalPath, destinationPath)) {
+                remainingEntries.push_back(entry);
+                ++failed;
+                continue;
+            }
+
+            ManifestEntry movedEntry = entry;
+            movedEntry.internalPath = canonicalPathFor(destinationPath);
+            movedEntry.relativePath = uniqueRelativePath;
+            movedEntry.groupLabel = groupLabelFromRelativePath(uniqueRelativePath);
+            movedEntry.groupId = stableHashHex(targetCollectionId + QStringLiteral("|") + movedEntry.groupLabel);
+            movedEntries.push_back(movedEntry);
+            movedSourcePaths.push_back(canonicalInternalPath);
+            ++moved;
+        }
+
+        collection.entries = remainingEntries;
+    }
+
+    if (movedEntries.isEmpty()) {
+        if (message != nullptr) {
+            *message = failed > 0
+                    ? QStringLiteral("Failed to move the selected Knowledge Base asset(s).")
+                    : QStringLiteral("No Knowledge Base assets were moved.");
+        }
+        return 0;
+    }
+
+    collections[targetCollectionIndex].entries += movedEntries;
+
+    QVector<ManifestCollection> filteredCollections;
+    filteredCollections.reserve(collections.size());
+    for (const ManifestCollection &collection : std::as_const(collections)) {
+        if (!collection.entries.isEmpty()) {
+            filteredCollections.push_back(collection);
+        }
+    }
+
+    if (!saveManifestCollections(destinationRoot, filteredCollections)) {
+        if (message != nullptr) {
+            *message = QStringLiteral("Failed to persist the Knowledge Base move operation.");
+        }
+        return 0;
+    }
+
+    const QString canonicalCollectionsRoot = canonicalPathFor(collectionsRootFor(destinationRoot));
+    for (const QString &path : std::as_const(movedSourcePaths)) {
+        if (!canonicalCollectionsRoot.isEmpty()) {
+            pruneEmptyKnowledgeDirectories(path, canonicalCollectionsRoot);
+        }
+    }
+
+    QString destinationLabel = targetCollectionId;
+    for (const ManifestCollection &collection : std::as_const(filteredCollections)) {
+        if (collection.collectionId == targetCollectionId) {
+            destinationLabel = collection.label;
+            break;
+        }
+    }
+
+    if (message != nullptr) {
+        *message = failed > 0
+                ? QStringLiteral("Moved %1 Knowledge Base asset(s) to '%2' (%3 failed).")
+                      .arg(moved)
+                      .arg(destinationLabel)
+                      .arg(failed)
+                : QStringLiteral("Moved %1 Knowledge Base asset(s) to '%2'.")
+                      .arg(moved)
+                      .arg(destinationLabel);
+    }
+
+    return moved;
+}
+
+
 bool RagIndexer::clearKnowledgeLibrary(const QString &destinationRoot, QString *message) const
 {
     QDir rootDir(destinationRoot);
@@ -2045,6 +2303,7 @@ bool RagIndexer::clearKnowledgeLibrary(const QString &destinationRoot, QString *
     }
     return removed;
 }
+
 
 bool RagIndexer::renameCollectionLabel(const QString &destinationRoot, const QString &collectionId, const QString &newLabel, QString *message)
 {

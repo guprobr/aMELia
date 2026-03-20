@@ -152,6 +152,7 @@ int main(int argc, char *argv[])
     QApplication::setApplicationName(QStringLiteral("amelia_qt6"));
     QApplication::setApplicationDisplayName(QStringLiteral("Amelia Qt6 v%1").arg(QLatin1StringView(AmeliaVersion::kDisplayVersion)));
     QApplication::setOrganizationName(QStringLiteral("guprobr"));
+    QApplication::setDesktopFileName(QStringLiteral("amelia_qt6"));
     QApplication::setQuitOnLastWindowClosed(true);
 
     auto *bootstrap = new BootstrapDialog();
@@ -201,6 +202,8 @@ int main(int argc, char *argv[])
                          controller, &ChatController::stopGeneration);
         QObject::connect(window, &MainWindow::reindexRequested,
                          controller, &ChatController::reindexDocs);
+        QObject::connect(window, &MainWindow::cancelIndexingRequested,
+                         controller, &ChatController::cancelReindex);
         QObject::connect(window, &MainWindow::testBackendRequested,
                          controller, &ChatController::probeBackend);
         QObject::connect(window, &MainWindow::refreshModelsRequested,
@@ -227,6 +230,8 @@ int main(int argc, char *argv[])
                          controller, &ChatController::clearMemories);
         QObject::connect(window, &MainWindow::removeKnowledgeAssetsRequested,
                          controller, &ChatController::removeKnowledgeAssets);
+        QObject::connect(window, &MainWindow::moveKnowledgeAssetsRequested,
+                         controller, &ChatController::moveKnowledgeAssets);
         QObject::connect(window, &MainWindow::clearKnowledgeBaseRequested,
                          controller, &ChatController::clearKnowledgeBase);
 
@@ -297,7 +302,7 @@ int main(int argc, char *argv[])
         QObject::connect(controller, &ChatController::startupFinished, &app, [window, bootstrap]() {
             bootstrap->appendLog(QStringLiteral("Showing main window..."));
             window->show();
-            bootstrap->hide();
+            bootstrap->close();
         });
 
         bootstrap->appendLog(QStringLiteral("Controller created. Starting asynchronous bootstrap..."));
