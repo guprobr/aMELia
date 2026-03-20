@@ -15,45 +15,6 @@ find_package(Qt6 REQUIRED COMPONENTS Core Widgets Network Concurrent)
 qt_standard_project_setup()
 
 qt_add_executable(amelia_qt6
-<<<<<<< HEAD
-    src/main.cpp
-    src/appconfig.h
-    src/appconfig.cpp
-    src/chatcontroller.h
-    src/chatcontroller.cpp
-    src/llmclient.h
-    src/ollamaclient.h
-    src/ollamaclient.cpp
-    src/mainwindow.h
-    src/mainwindow.cpp
-    src/bootstrapdialog.h
-    src/bootstrapdialog.cpp
-    src/notificationcenter.h
-    src/notificationcenter.cpp
-    src/policyengine.h
-    src/policyengine.cpp
-    src/ragindexer.h
-    src/ragindexer.cpp
-    src/searchbroker.h
-    src/searchbroker.cpp
-    src/toolexecutor.h
-    src/toolexecutor.cpp
-    src/embeddingclient.h
-    src/embeddingclient.cpp
-    src/outlineplanner.h
-    src/outlineplanner.cpp
-    src/qdrantclient.h
-    src/qdrantclient.cpp
-    src/storagemanager.h
-    src/storagemanager.cpp
-    src/memorymanager.h
-    src/memorymanager.cpp
-    src/sessionsummary.h
-    src/sessionsummary.cpp
-    assets/resources.qrc
-)
-
-=======
     src/app/main.cpp
     src/core/appconfig.h
     src/core/appconfig.cpp
@@ -97,7 +58,6 @@ target_include_directories(amelia_qt6
         ${CMAKE_CURRENT_SOURCE_DIR}/src
 )
 
->>>>>>> 486a6af (- display version bumped to `7.1b`)
 target_link_libraries(amelia_qt6
     PRIVATE
         Qt6::Core
