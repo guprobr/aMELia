@@ -8,6 +8,7 @@
 #include <QVector>
 
 #include "backend/outlineplanner.h"
+#include "rag/embeddingclient.h"
 
 struct RagHit {
     QString filePath;
@@ -29,6 +30,7 @@ public:
     void setDocsRoot(const QString &rootPath);
     void setCachePath(const QString &cachePath);
     void setSemanticEnabled(bool enabled);
+    void configureEmbeddingBackend(const QString &baseUrl, const QString &model, int timeoutMs, int batchSize);
     void requestCancel();
 
     int reindex(const std::function<void(int, int, const QString &)> &progressCallback = {});
@@ -48,6 +50,7 @@ public:
     QString formatHitsForPrompt(const QVector<RagHit> &hits) const;
     QString formatHitsForUi(const QVector<RagHit> &hits) const;
     QString formatInventoryForUi() const;
+    QString embeddingBackendName() const;
     int chunkCount() const;
     int sourceCount() const;
 
@@ -89,11 +92,13 @@ private:
     void rebuildEmbeddings();
     void ensureEmbeddingsForChunks(QVector<Chunk> &chunks) const;
     static bool sourceMatchesFile(const SourceInfo &source, const QFileInfo &info);
+    static QString chunkingStrategyName();
 
     QString m_docsRoot;
     QString m_cachePath;
     QVector<Chunk> m_chunks;
     QVector<SourceInfo> m_sources;
+    EmbeddingClient m_embeddingClient;
     bool m_semanticEnabled = true;
     std::atomic_bool m_cancelRequested{false};
 };

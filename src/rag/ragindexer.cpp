@@ -18,6 +18,7 @@
 #include <QRegularExpression>
 #include <QSaveFile>
 #include <QSet>
+#include <utility>
 
 namespace {
 QString detectSourceType(const QFileInfo &info)
@@ -149,51 +150,313 @@ QString cleanedPdfText(QString text)
     return pages.join(QStringLiteral("\n\n"));
 }
 
-int chooseChunkEnd(const QString &text, int offset, int targetSize)
+bool isPageMarkerLine(const QString &trimmed)
 {
-    const int hardEnd = qMin(offset + targetSize, text.size());
-    if (hardEnd >= text.size()) {
-        return text.size();
-    }
-
-    const int minimumSplit = offset + qMax(900, targetSize / 2);
-    int split = text.lastIndexOf(QStringLiteral("\n[[PAGE "), hardEnd);
-    if (split >= minimumSplit) {
-        return split;
-    }
-
-    split = text.lastIndexOf(QStringLiteral("\n\n"), hardEnd);
-    if (split >= minimumSplit) {
-        return split;
-    }
-
-    split = text.lastIndexOf(QLatin1Char('\n'), hardEnd);
-    if (split >= minimumSplit) {
-        return split;
-    }
-
-    return hardEnd;
+    return trimmed.startsWith(QStringLiteral("[[PAGE ")) && trimmed.endsWith(QStringLiteral("]]"));
 }
 
-int chooseNextChunkOffset(const QString &text, int chunkEnd, int overlap)
+bool isFenceDelimiter(const QString &trimmed)
 {
-    if (chunkEnd >= text.size()) {
-        return text.size();
+    return trimmed.startsWith(QStringLiteral("```")) || trimmed.startsWith(QStringLiteral("~~~"));
+}
+
+bool isHeadingLikeLine(const QString &trimmed)
+{
+    if (trimmed.startsWith(QLatin1Char('#'))) {
+        return true;
+    }
+    static const QRegularExpression numberedHeading(QStringLiteral(R"(^\d+(?:\.\d+){0,4}[.)]?\s+\S+)"));
+    static const QRegularExpression titledHeading(QStringLiteral(R"(^[A-Z][A-Za-z0-9 _/().:+-]{2,80}:$)"));
+    return numberedHeading.match(trimmed).hasMatch() || titledHeading.match(trimmed).hasMatch();
+}
+
+bool isBulletLine(const QString &trimmed)
+{
+    static const QRegularExpression bulletExpression(QStringLiteral(R"(^(?:[-*+]\s+|\d+[.)]\s+|[a-zA-Z][.)]\s+))"));
+    return bulletExpression.match(trimmed).hasMatch();
+}
+
+bool isStructuredCodeLikeLine(const QString &line)
+{
+    const QString trimmed = line.trimmed();
+    if (trimmed.isEmpty()) {
+        return false;
+    }
+    if (line.startsWith(QStringLiteral("    ")) || line.startsWith(QLatin1Char('\t'))) {
+        return true;
+    }
+    return trimmed.startsWith(QLatin1Char('$'))
+            || trimmed.startsWith(QLatin1Char('#'))
+            || trimmed.contains(QStringLiteral("::"))
+            || trimmed.contains(QStringLiteral("=>"))
+            || trimmed.contains(QLatin1Char('{'))
+            || trimmed.contains(QLatin1Char('}'))
+            || trimmed.contains(QLatin1Char('='));
+}
+
+QString normalizeBlockText(const QString &text)
+{
+    return collapseExcessBlankLines(trimTrailingWhitespacePerLine(text)).trimmed();
+}
+
+QStringList splitOversizedBlock(const QString &block, int maxBlockChars)
+{
+    const QString normalized = normalizeBlockText(block);
+    if (normalized.isEmpty()) {
+        return {};
+    }
+    if (normalized.size() <= maxBlockChars) {
+        return {normalized};
     }
 
-    int nextOffset = qMax(0, chunkEnd - overlap);
-    const int nextPageMarker = text.indexOf(QStringLiteral("\n[[PAGE "), nextOffset);
-    const int nextBlankBlock = text.indexOf(QStringLiteral("\n\n"), nextOffset);
-    if (nextPageMarker >= 0 && nextPageMarker < chunkEnd) {
-        nextOffset = nextPageMarker + 1;
-    } else if (nextBlankBlock >= 0 && nextBlankBlock < chunkEnd) {
-        nextOffset = nextBlankBlock + 2;
+    QStringList parts;
+    int offset = 0;
+    while (offset < normalized.size()) {
+        const int remaining = normalized.size() - offset;
+        if (remaining <= maxBlockChars) {
+            parts << normalized.mid(offset).trimmed();
+            break;
+        }
+
+        const int hardEnd = qMin(normalized.size(), offset + maxBlockChars);
+        const int minimumSplit = offset + qMax(600, maxBlockChars / 2);
+        int split = normalized.lastIndexOf(QStringLiteral("\n\n"), hardEnd);
+        if (split < minimumSplit) {
+            split = normalized.lastIndexOf(QLatin1Char('\n'), hardEnd);
+        }
+        if (split < minimumSplit) {
+            split = normalized.lastIndexOf(QLatin1Char(' '), hardEnd);
+        }
+        if (split < minimumSplit) {
+            split = hardEnd;
+        }
+
+        const QString piece = normalized.mid(offset, split - offset).trimmed();
+        if (!piece.isEmpty()) {
+            parts << piece;
+        }
+        offset = split;
+        while (offset < normalized.size() && normalized.at(offset).isSpace()) {
+            ++offset;
+        }
     }
 
-    while (nextOffset < text.size() && text.at(nextOffset) == QLatin1Char('\n')) {
-        ++nextOffset;
+    return parts;
+}
+
+QVector<QString> buildSemanticBlocks(const QString &text)
+{
+    QVector<QString> blocks;
+    if (text.trimmed().isEmpty()) {
+        return blocks;
     }
-    return nextOffset;
+
+    const QStringList lines = text.split(QLatin1Char('\n'), Qt::KeepEmptyParts);
+    QStringList currentLines;
+    QString pendingPrefix;
+    bool inFence = false;
+
+    auto flushCurrent = [&]() {
+        if (currentLines.isEmpty()) {
+            return;
+        }
+        const QString block = normalizeBlockText(currentLines.join(QStringLiteral("\n")));
+        if (!block.isEmpty()) {
+            const QStringList pieces = splitOversizedBlock(block, 1800);
+            for (const QString &piece : pieces) {
+                if (!piece.trimmed().isEmpty()) {
+                    blocks.push_back(piece.trimmed());
+                }
+            }
+        }
+        currentLines.clear();
+    };
+
+    for (const QString &line : lines) {
+        const QString trimmed = line.trimmed();
+
+        if (isPageMarkerLine(trimmed)) {
+            flushCurrent();
+            pendingPrefix = trimmed;
+            continue;
+        }
+
+        if (isFenceDelimiter(trimmed)) {
+            if (!inFence) {
+                flushCurrent();
+                if (!pendingPrefix.isEmpty()) {
+                    currentLines << pendingPrefix;
+                    pendingPrefix.clear();
+                }
+            }
+            currentLines << line;
+            inFence = !inFence;
+            if (!inFence) {
+                flushCurrent();
+            }
+            continue;
+        }
+
+        if (inFence) {
+            currentLines << line;
+            continue;
+        }
+
+        if (trimmed.isEmpty()) {
+            flushCurrent();
+            continue;
+        }
+
+        if (isHeadingLikeLine(trimmed)) {
+            flushCurrent();
+            QString headingBlock = trimmed;
+            if (!pendingPrefix.isEmpty()) {
+                headingBlock.prepend(pendingPrefix + QStringLiteral("\n"));
+                pendingPrefix.clear();
+            }
+            blocks.push_back(headingBlock.trimmed());
+            continue;
+        }
+
+        const bool startsStructuredBlock = isBulletLine(trimmed) || isStructuredCodeLikeLine(line);
+        if (startsStructuredBlock && !currentLines.isEmpty()) {
+            const QString previousTrimmed = currentLines.constLast().trimmed();
+            const bool previousStructured = isBulletLine(previousTrimmed) || isStructuredCodeLikeLine(currentLines.constLast());
+            if (!previousStructured) {
+                flushCurrent();
+            }
+        }
+
+        if (!pendingPrefix.isEmpty() && currentLines.isEmpty()) {
+            currentLines << pendingPrefix;
+            pendingPrefix.clear();
+        }
+        currentLines << line;
+    }
+
+    flushCurrent();
+    if (!pendingPrefix.isEmpty()) {
+        blocks.push_back(pendingPrefix);
+    }
+    return blocks;
+}
+
+int totalBlockChars(const QStringList &blocks)
+{
+    int total = 0;
+    for (const QString &block : blocks) {
+        total += block.size();
+    }
+    if (blocks.size() > 1) {
+        total += (blocks.size() - 1) * 2;
+    }
+    return total;
+}
+
+QStringList overlapTailBlocks(const QStringList &blocks, int overlapChars)
+{
+    QStringList carry;
+    int carryChars = 0;
+    for (int i = blocks.size() - 1; i >= 0; --i) {
+        const QString &block = blocks.at(i);
+        const int blockChars = block.size() + (carry.isEmpty() ? 0 : 2);
+        if (!carry.isEmpty() && carryChars + blockChars > overlapChars * 2) {
+            break;
+        }
+        carry.prepend(block);
+        carryChars += blockChars;
+        if (carryChars >= overlapChars) {
+            break;
+        }
+    }
+    return carry;
+}
+
+QVector<QString> buildChunksFromBlocks(const QVector<QString> &blocks, bool preferCompactChunks)
+{
+    const int targetChunkChars = preferCompactChunks ? 1400 : 2400;
+    const int minimumChunkChars = preferCompactChunks ? 650 : 1100;
+    const int hardChunkChars = preferCompactChunks ? 1800 : 3200;
+    const int overlapChars = preferCompactChunks ? 140 : 360;
+
+    QVector<QString> chunks;
+    if (blocks.isEmpty()) {
+        return chunks;
+    }
+
+    QStringList currentBlocks;
+    int currentChars = 0;
+
+    auto flushChunk = [&]() {
+        if (currentBlocks.isEmpty()) {
+            return;
+        }
+        const QString chunk = normalizeBlockText(currentBlocks.join(QStringLiteral("\n\n")));
+        if (!chunk.isEmpty()) {
+            chunks.push_back(chunk);
+        }
+    };
+
+    for (const QString &block : blocks) {
+        if (block.trimmed().isEmpty()) {
+            continue;
+        }
+
+        const int separatorChars = currentBlocks.isEmpty() ? 0 : 2;
+        const int projected = currentChars + separatorChars + block.size();
+        const bool shouldSplit = !currentBlocks.isEmpty()
+                && projected > targetChunkChars
+                && currentChars >= minimumChunkChars;
+        const bool mustSplit = !currentBlocks.isEmpty() && projected > hardChunkChars;
+        if (shouldSplit || mustSplit) {
+            const QStringList carry = overlapTailBlocks(currentBlocks, overlapChars);
+            flushChunk();
+            currentBlocks = carry;
+            currentChars = totalBlockChars(currentBlocks);
+        }
+
+        currentBlocks << block;
+        currentChars = totalBlockChars(currentBlocks);
+    }
+
+    flushChunk();
+
+    if (chunks.size() >= 2 && chunks.constLast().size() < minimumChunkChars / 2) {
+        const QString merged = normalizeBlockText(chunks.at(chunks.size() - 2) + QStringLiteral("\n\n") + chunks.constLast());
+        chunks[chunks.size() - 2] = merged;
+        chunks.removeLast();
+    }
+
+    return chunks;
+}
+
+bool shouldKeepChunkText(const QString &text)
+{
+    const QString simplified = text.simplified();
+    if (simplified.isEmpty()) {
+        return false;
+    }
+
+    if (simplified.size() >= 80) {
+        return true;
+    }
+
+    int alnumCount = 0;
+    int wordCount = 0;
+    bool inWord = false;
+    for (const QChar ch : simplified) {
+        if (ch.isLetterOrNumber()) {
+            ++alnumCount;
+            if (!inWord) {
+                ++wordCount;
+                inWord = true;
+            }
+        } else {
+            inWord = false;
+        }
+    }
+
+    return alnumCount >= 32 && wordCount >= 6;
 }
 
 bool isCancelRequested(const std::atomic_bool *cancelRequested)
@@ -654,14 +917,26 @@ bool isReservedKnowledgeMetadataFile(const QFileInfo &info)
 QStringList queryTerms(const QString &query)
 {
     QString normalized = query.toLower();
-    normalized.replace(QRegularExpression(QStringLiteral("[^a-z0-9._+-]+")), QStringLiteral(" "));
+    normalized.replace(QRegularExpression(QStringLiteral("[^a-z0-9._+:-]+")), QStringLiteral(" "));
     const QStringList parts = normalized.split(QLatin1Char(' '), Qt::SkipEmptyParts);
     static const QSet<QString> stopWords = {
         QStringLiteral("the"), QStringLiteral("and"), QStringLiteral("for"), QStringLiteral("with"),
         QStringLiteral("from"), QStringLiteral("into"), QStringLiteral("that"), QStringLiteral("this"),
         QStringLiteral("what"), QStringLiteral("when"), QStringLiteral("where"), QStringLiteral("which"),
         QStringLiteral("your"), QStringLiteral("through"), QStringLiteral("create"), QStringLiteral("write"),
-        QStringLiteral("format"), QStringLiteral("whole"), QStringLiteral("deployment")
+        QStringLiteral("format"), QStringLiteral("whole"), QStringLiteral("please"), QStringLiteral("show"),
+        QStringLiteral("explain"), QStringLiteral("about")
+    };
+
+    static const QHash<QString, QStringList> expansions = {
+        {QStringLiteral("deploy"), {QStringLiteral("deployment"), QStringLiteral("install"), QStringLiteral("bootstrap")}},
+        {QStringLiteral("deployment"), {QStringLiteral("deploy"), QStringLiteral("install")}},
+        {QStringLiteral("runbook"), {QStringLiteral("mop"), QStringLiteral("playbook"), QStringLiteral("procedure")}},
+        {QStringLiteral("mop"), {QStringLiteral("runbook"), QStringLiteral("procedure")}},
+        {QStringLiteral("hld"), {QStringLiteral("architecture"), QStringLiteral("topology")}},
+        {QStringLiteral("lld"), {QStringLiteral("design"), QStringLiteral("implementation")}},
+        {QStringLiteral("k8s"), {QStringLiteral("kubernetes")}},
+        {QStringLiteral("harbor"), {QStringLiteral("registry")}}
     };
 
     QStringList terms;
@@ -672,6 +947,15 @@ QStringList queryTerms(const QString &query)
         }
         seen.insert(part);
         terms.push_back(part);
+        const auto expansionIt = expansions.constFind(part);
+        if (expansionIt != expansions.cend()) {
+            for (const QString &expanded : expansionIt.value()) {
+                if (!seen.contains(expanded)) {
+                    seen.insert(expanded);
+                    terms.push_back(expanded);
+                }
+            }
+        }
     }
     return terms;
 }
@@ -693,19 +977,22 @@ double lexicalScoreChunk(const QString &text, const QString &fileName, const QSt
             ++matched;
         }
         if (bodyCount > 0) {
-            score += 0.9 + qMin(1.1, 0.18 * static_cast<double>(bodyCount - 1));
+            score += 0.95 + qMin(1.25, 0.16 * static_cast<double>(bodyCount - 1));
         }
         if (fileCount > 0) {
-            score += 0.35 + qMin(0.6, 0.20 * static_cast<double>(fileCount - 1));
+            score += 0.55 + qMin(0.75, 0.18 * static_cast<double>(fileCount - 1));
         }
     }
 
     const double coverage = static_cast<double>(matched) / static_cast<double>(terms.size());
-    score += coverage * 1.6;
+    score += coverage * 1.8;
 
     const QString queryLower = query.toLower().trimmed();
     if (!queryLower.isEmpty() && lower.contains(queryLower)) {
-        score += 1.1;
+        score += 1.2;
+    }
+    if (!queryLower.isEmpty() && fileLower.contains(queryLower)) {
+        score += 0.75;
     }
 
     return score;
@@ -768,18 +1055,22 @@ QString makeExcerpt(const QString &text, const QStringList &terms)
     return text.mid(start, 360).trimmed();
 }
 
-QString matchReason(double lexical, double semantic, const QString &role)
+QString matchReason(double lexical, double semantic, const QString &role, bool neuralSemantic)
 {
     QStringList reasons;
-    if (lexical >= 1.5) {
+    if (lexical >= 1.8) {
         reasons << QStringLiteral("strong lexical overlap");
     } else if (lexical > 0.0) {
         reasons << QStringLiteral("keyword overlap");
     }
-    if (semantic >= 0.55) {
-        reasons << QStringLiteral("strong semantic similarity");
-    } else if (semantic >= 0.30) {
-        reasons << QStringLiteral("semantic match");
+    if (semantic >= 0.65) {
+        reasons << (neuralSemantic
+                    ? QStringLiteral("strong embedding similarity")
+                    : QStringLiteral("strong surface-form vector similarity"));
+    } else if (semantic >= 0.38) {
+        reasons << (neuralSemantic
+                    ? QStringLiteral("embedding similarity")
+                    : QStringLiteral("surface-form vector similarity"));
     }
     if (!role.trimmed().isEmpty()) {
         reasons << QStringLiteral("role=%1").arg(role);
@@ -803,6 +1094,11 @@ void RagIndexer::setSemanticEnabled(bool enabled)
     m_semanticEnabled = enabled;
 }
 
+void RagIndexer::configureEmbeddingBackend(const QString &baseUrl, const QString &model, int timeoutMs, int batchSize)
+{
+    m_embeddingClient.configureOllama(baseUrl, model, timeoutMs, batchSize);
+}
+
 void RagIndexer::requestCancel()
 {
     m_cancelRequested.store(true, std::memory_order_relaxed);
@@ -822,11 +1118,25 @@ void RagIndexer::ensureEmbeddingsForChunks(QVector<Chunk> &chunks) const
         return;
     }
 
-    EmbeddingClient embedder;
-    for (Chunk &chunk : chunks) {
-        if (chunk.embedding.isEmpty()) {
-            chunk.embedding = embedder.embedText(chunk.text);
+    QStringList missingTexts;
+    QVector<int> missingIndexes;
+    missingTexts.reserve(chunks.size());
+    missingIndexes.reserve(chunks.size());
+    for (int i = 0; i < chunks.size(); ++i) {
+        if (chunks[i].embedding.isEmpty()) {
+            missingIndexes.push_back(i);
+            missingTexts.push_back(chunks[i].text);
         }
+    }
+
+    if (missingTexts.isEmpty()) {
+        return;
+    }
+
+    const QVector<QVector<float>> embeddings = m_embeddingClient.embedTexts(missingTexts);
+    const int assignCount = qMin(missingIndexes.size(), embeddings.size());
+    for (int i = 0; i < assignCount; ++i) {
+        chunks[missingIndexes.at(i)].embedding = embeddings.at(i);
     }
 }
 
@@ -834,6 +1144,11 @@ bool RagIndexer::sourceMatchesFile(const SourceInfo &source, const QFileInfo &in
 {
     return source.fileModifiedMs == info.lastModified().toMSecsSinceEpoch()
             && source.fileSizeBytes == info.size();
+}
+
+QString RagIndexer::chunkingStrategyName()
+{
+    return QStringLiteral("semantic-blocks-v3");
 }
 
 int RagIndexer::reindex(const std::function<void(int, int, const QString &)> &progressCallback)
@@ -895,8 +1210,6 @@ int RagIndexer::reindex(const std::function<void(int, int, const QString &)> &pr
     int reusedFiles = 0;
     int rebuiltFiles = 0;
 
-    EmbeddingClient embedder;
-
     const auto applyMetadata = [this, &metadataByPath](SourceInfo &source) {
         const QString canonicalPath = canonicalPathFor(source.filePath);
         const auto metadataIt = metadataByPath.constFind(canonicalPath);
@@ -938,20 +1251,9 @@ int RagIndexer::reindex(const std::function<void(int, int, const QString &)> &pr
             SourceInfo source = sourceIt.value();
             applyMetadata(source);
             QVector<Chunk> reusedChunks = chunksIt.value();
-            if (m_semanticEnabled) {
+            ensureEmbeddingsForChunks(reusedChunks);
+            if (!m_semanticEnabled) {
                 for (Chunk &chunk : reusedChunks) {
-                    if (m_cancelRequested.load(std::memory_order_relaxed)) {
-                        return cancelEarly();
-                    }
-                    if (chunk.embedding.isEmpty()) {
-                        chunk.embedding = embedder.embedText(chunk.text);
-                    }
-                }
-            } else {
-                for (Chunk &chunk : reusedChunks) {
-                    if (m_cancelRequested.load(std::memory_order_relaxed)) {
-                        return cancelEarly();
-                    }
                     chunk.embedding.clear();
                 }
             }
@@ -966,7 +1268,7 @@ int RagIndexer::reindex(const std::function<void(int, int, const QString &)> &pr
             if (progressCallback) {
                 progressCallback(i + 1,
                                  totalFiles > 0 ? totalFiles : 1,
-                                 QStringLiteral("Using cached index %1 / %2: %3").arg(i + 1).arg(totalFiles).arg(info.fileName()));
+                                 QStringLiteral("Using cached index %1 / %2: %3 (%4 chunks)").arg(i + 1).arg(totalFiles).arg(info.fileName()).arg(reusedChunks.size()));
             }
             continue;
         }
@@ -994,23 +1296,46 @@ int RagIndexer::reindex(const std::function<void(int, int, const QString &)> &pr
         applyMetadata(source);
 
         if (ok && !textValue.trimmed().isEmpty()) {
-            constexpr int chunkSize = 2800;
-            constexpr int overlap = 420;
-            int offset = 0;
+            const bool preferCompactChunks = m_semanticEnabled && m_embeddingClient.isConfigured();
+            const QVector<QString> blocks = buildSemanticBlocks(textValue);
+            const QVector<QString> chunkTexts = buildChunksFromBlocks(blocks, preferCompactChunks);
+            QStringList embeddingsInput;
+            embeddingsInput.reserve(chunkTexts.size());
+            for (const QString &chunkText : chunkTexts) {
+                const QString normalizedChunk = chunkText.trimmed();
+                if (shouldKeepChunkText(normalizedChunk)) {
+                    embeddingsInput.push_back(normalizedChunk);
+                }
+            }
+
+            QVector<QVector<float>> embeddings;
+            if (m_semanticEnabled && !embeddingsInput.isEmpty()) {
+                if (progressCallback) {
+                    progressCallback(0, embeddingsInput.size(),
+                                     QStringLiteral("Embedding %1 / %2: %3 — 0/%4 chunks")
+                                         .arg(i + 1)
+                                         .arg(totalFiles)
+                                         .arg(info.fileName())
+                                         .arg(embeddingsInput.size()));
+                }
+                embeddings = m_embeddingClient.embedTexts(embeddingsInput,
+                                                          [progressCallback, i, totalFiles, info](int completed, int total) {
+                                                              if (progressCallback) {
+                                                                  progressCallback(completed, total,
+                                                                                   QStringLiteral("Embedding %1 / %2: %3 — %4/%5 chunks")
+                                                                                       .arg(i + 1)
+                                                                                       .arg(totalFiles)
+                                                                                       .arg(info.fileName())
+                                                                                       .arg(completed)
+                                                                                       .arg(total));
+                                                              }
+                                                          });
+            }
+
             int chunkIndex = 0;
-            while (offset < textValue.size()) {
+            for (int j = 0; j < embeddingsInput.size(); ++j) {
                 if (m_cancelRequested.load(std::memory_order_relaxed)) {
                     return cancelEarly();
-                }
-
-                const int end = chooseChunkEnd(textValue, offset, chunkSize);
-                const QString chunkText = textValue.mid(offset, end - offset).trimmed();
-                if (chunkText.isEmpty()) {
-                    if (end <= offset) {
-                        break;
-                    }
-                    offset = chooseNextChunkOffset(textValue, end, overlap);
-                    continue;
                 }
 
                 Chunk chunk;
@@ -1018,26 +1343,14 @@ int RagIndexer::reindex(const std::function<void(int, int, const QString &)> &pr
                 chunk.fileName = info.fileName();
                 chunk.sourceType = sourceType;
                 chunk.sourceRole = sourceRole;
-                chunk.text = chunkText;
+                chunk.text = embeddingsInput.at(j);
                 chunk.chunkIndex = chunkIndex++;
                 chunk.fileModifiedMs = source.fileModifiedMs;
-                if (m_semanticEnabled) {
-                    if (m_cancelRequested.load(std::memory_order_relaxed)) {
-                        return cancelEarly();
-                    }
-                    chunk.embedding = embedder.embedText(chunk.text);
+                if (m_semanticEnabled && j < embeddings.size()) {
+                    chunk.embedding = embeddings.at(j);
                 }
                 newChunks.push_back(chunk);
                 ++source.chunkCount;
-
-                if (end >= textValue.size()) {
-                    break;
-                }
-                const int nextOffset = chooseNextChunkOffset(textValue, end, overlap);
-                if (nextOffset <= offset) {
-                    break;
-                }
-                offset = nextOffset;
             }
         }
 
@@ -1097,7 +1410,17 @@ bool RagIndexer::loadCache()
     }
 
     const QJsonObject root = doc.object();
+    if (root.value(QStringLiteral("format")).toString() != QStringLiteral("amelia-rag-cache-v2")) {
+        return false;
+    }
     if (root.value(QStringLiteral("docsRoot")).toString() != m_docsRoot) {
+        return false;
+    }
+    if (root.value(QStringLiteral("chunkingStrategy")).toString() != chunkingStrategyName()) {
+        return false;
+    }
+    if (m_semanticEnabled
+        && root.value(QStringLiteral("embeddingCacheKey")).toString() != m_embeddingClient.cacheKey()) {
         return false;
     }
 
@@ -1174,9 +1497,12 @@ bool RagIndexer::saveCache() const
     }
 
     QJsonObject root;
+    root.insert(QStringLiteral("format"), QStringLiteral("amelia-rag-cache-v2"));
     root.insert(QStringLiteral("docsRoot"), m_docsRoot);
     root.insert(QStringLiteral("semanticEnabled"), m_semanticEnabled);
-    root.insert(QStringLiteral("embeddingBackend"), EmbeddingClient().backendName());
+    root.insert(QStringLiteral("chunkingStrategy"), chunkingStrategyName());
+    root.insert(QStringLiteral("embeddingBackend"), m_embeddingClient.backendName());
+    root.insert(QStringLiteral("embeddingCacheKey"), m_embeddingClient.cacheKey());
 
     QJsonArray chunkArray;
     for (const Chunk &chunk : m_chunks) {
@@ -1297,8 +1623,31 @@ QVector<RagHit> RagIndexer::searchHitsInFiles(const QString &query,
                                               const QStringList &preferredRoles) const
 {
     const QStringList terms = queryTerms(query);
-    const EmbeddingClient embedder;
-    const QVector<float> queryEmbedding = m_semanticEnabled ? embedder.embedText(query) : QVector<float>();
+
+    int expectedEmbeddingDims = 0;
+    for (const Chunk &chunk : m_chunks) {
+        if (!chunk.embedding.isEmpty()) {
+            expectedEmbeddingDims = chunk.embedding.size();
+            break;
+        }
+    }
+
+    QVector<float> queryEmbedding;
+    bool neuralSemantic = false;
+    bool semanticActive = false;
+    if (m_semanticEnabled && expectedEmbeddingDims > 0) {
+        queryEmbedding = m_embeddingClient.embedText(query);
+        neuralSemantic = m_embeddingClient.lastRequestUsedNeural();
+        if (queryEmbedding.size() != expectedEmbeddingDims && expectedEmbeddingDims == m_embeddingClient.localFallbackDimensions()) {
+            queryEmbedding = m_embeddingClient.embedTextLocalFallback(query);
+            neuralSemantic = false;
+        }
+        semanticActive = !queryEmbedding.isEmpty() && queryEmbedding.size() == expectedEmbeddingDims;
+    }
+
+    const double lexicalWeight = neuralSemantic ? 0.85 : 0.98;
+    const double semanticWeight = neuralSemantic ? 1.55 : 0.28;
+    const double threshold = neuralSemantic ? 0.92 : 1.00;
 
     QSet<QString> pathFilter;
     for (const QString &path : preferredPaths) {
@@ -1317,10 +1666,16 @@ QVector<RagHit> RagIndexer::searchHitsInFiles(const QString &query,
         }
 
         const double lexical = lexicalScoreChunk(chunk.text, chunk.fileName, terms, query);
-        const double semantic = m_semanticEnabled ? qMax(0.0f, EmbeddingClient::cosineSimilarity(queryEmbedding, chunk.embedding)) : 0.0;
+        const double semantic = semanticActive
+                ? qMax(0.0f, EmbeddingClient::cosineSimilarity(queryEmbedding, chunk.embedding))
+                : 0.0;
         const double role = roleBias(intent, chunk.sourceRole, preferredRoles);
-        const double finalScore = lexical * 0.55 + semantic * 2.8 + role;
-        const double threshold = m_semanticEnabled ? 0.45 : 0.90;
+        const bool strongPureSemanticHit = neuralSemantic && lexical <= 0.0 && semantic >= 0.72;
+        if (!strongPureSemanticHit && lexical <= 0.0 && (!semanticActive || semantic < 0.38)) {
+            continue;
+        }
+
+        const double finalScore = lexical * lexicalWeight + semantic * semanticWeight + role;
         if (finalScore <= threshold) {
             continue;
         }
@@ -1332,7 +1687,7 @@ QVector<RagHit> RagIndexer::searchHitsInFiles(const QString &query,
         hit.sourceRole = chunk.sourceRole;
         hit.excerpt = makeExcerpt(chunk.text, terms);
         hit.chunkText = chunk.text;
-        hit.matchReason = matchReason(lexical, semantic, chunk.sourceRole);
+        hit.matchReason = matchReason(lexical, semantic, chunk.sourceRole, neuralSemantic);
         hit.lexicalScore = lexical;
         hit.semanticScore = semantic;
         hit.rerankScore = finalScore;
@@ -1344,6 +1699,9 @@ QVector<RagHit> RagIndexer::searchHitsInFiles(const QString &query,
     std::sort(ranked.begin(), ranked.end(), [](const RagHit &a, const RagHit &b) {
         if (!qFuzzyCompare(a.rerankScore + 1.0, b.rerankScore + 1.0)) {
             return a.rerankScore > b.rerankScore;
+        }
+        if (!qFuzzyCompare(a.lexicalScore + 1.0, b.lexicalScore + 1.0)) {
+            return a.lexicalScore > b.lexicalScore;
         }
         if (!qFuzzyCompare(a.semanticScore + 1.0, b.semanticScore + 1.0)) {
             return a.semanticScore > b.semanticScore;
@@ -1403,7 +1761,7 @@ QString RagIndexer::formatHitsForUi(const QVector<RagHit> &hits) const
     for (const RagHit &hit : hits) {
         lines << QStringLiteral("File: %1").arg(hit.filePath);
         lines << QStringLiteral("Role: %1 | Type: %2").arg(hit.sourceRole, hit.sourceType);
-        lines << QStringLiteral("Chunk: %1 | Rerank: %2 | Lexical: %3 | Semantic: %4")
+        lines << QStringLiteral("Chunk: %1 | Rerank: %2 | Lexical: %3 | Embedding: %4")
                      .arg(hit.chunkIndex)
                      .arg(QString::number(hit.rerankScore, 'f', 2))
                      .arg(QString::number(hit.lexicalScore, 'f', 2))
@@ -1415,6 +1773,11 @@ QString RagIndexer::formatHitsForUi(const QVector<RagHit> &hits) const
     return lines.join(QStringLiteral("\n"));
 }
 
+QString RagIndexer::embeddingBackendName() const
+{
+    return m_embeddingClient.backendName();
+}
+
 QString RagIndexer::formatInventoryForUi() const
 {
     if (m_sources.isEmpty()) {
@@ -1422,13 +1785,20 @@ QString RagIndexer::formatInventoryForUi() const
     }
 
     QJsonObject root;
-    root.insert(QStringLiteral("format"), QStringLiteral("amelia-kb-inventory-v3"));
+    root.insert(QStringLiteral("format"), QStringLiteral("amelia-kb-inventory-v5"));
     root.insert(QStringLiteral("knowledgeRoot"), m_docsRoot);
     root.insert(QStringLiteral("collectionsRoot"), collectionsRootFor(m_docsRoot));
     root.insert(QStringLiteral("workspaceJailRoot"), QFileInfo(m_docsRoot).dir().absolutePath());
     root.insert(QStringLiteral("sources"), m_sources.size());
     root.insert(QStringLiteral("chunks"), m_chunks.size());
+    qint64 totalBytes = 0;
+    for (const SourceInfo &source : m_sources) {
+        totalBytes += source.fileSizeBytes;
+    }
+    root.insert(QStringLiteral("totalBytes"), static_cast<double>(totalBytes));
     root.insert(QStringLiteral("semanticEnabled"), m_semanticEnabled);
+    root.insert(QStringLiteral("embeddingBackend"), m_embeddingClient.backendName());
+    root.insert(QStringLiteral("chunkingStrategy"), chunkingStrategyName());
 
     QJsonArray collections;
     QHash<QString, int> collectionIndexes;
@@ -1443,6 +1813,8 @@ QString RagIndexer::formatInventoryForUi() const
             collection.insert(QStringLiteral("collectionId"), collectionId);
             collection.insert(QStringLiteral("label"), collectionLabel);
             collection.insert(QStringLiteral("fileCount"), 0);
+            collection.insert(QStringLiteral("chunkCount"), 0);
+            collection.insert(QStringLiteral("totalBytes"), 0.0);
             collection.insert(QStringLiteral("groups"), QJsonArray());
             collections.push_back(collection);
             collectionIndex = collections.size() - 1;
@@ -1465,6 +1837,8 @@ QString RagIndexer::formatInventoryForUi() const
             group.insert(QStringLiteral("groupId"), groupId);
             group.insert(QStringLiteral("label"), groupLabel);
             group.insert(QStringLiteral("fileCount"), 0);
+            group.insert(QStringLiteral("chunkCount"), 0);
+            group.insert(QStringLiteral("totalBytes"), 0.0);
             group.insert(QStringLiteral("files"), QJsonArray());
             groups.push_back(group);
             groupIndex = groups.size() - 1;
@@ -1489,10 +1863,14 @@ QString RagIndexer::formatInventoryForUi() const
 
         group.insert(QStringLiteral("files"), files);
         group.insert(QStringLiteral("fileCount"), files.size());
+        group.insert(QStringLiteral("chunkCount"), group.value(QStringLiteral("chunkCount")).toInt() + source.chunkCount);
+        group.insert(QStringLiteral("totalBytes"), group.value(QStringLiteral("totalBytes")).toDouble() + static_cast<double>(source.fileSizeBytes));
         groups.replace(groupIndex, group);
 
         collection.insert(QStringLiteral("groups"), groups);
         collection.insert(QStringLiteral("fileCount"), collection.value(QStringLiteral("fileCount")).toInt() + 1);
+        collection.insert(QStringLiteral("chunkCount"), collection.value(QStringLiteral("chunkCount")).toInt() + source.chunkCount);
+        collection.insert(QStringLiteral("totalBytes"), collection.value(QStringLiteral("totalBytes")).toDouble() + static_cast<double>(source.fileSizeBytes));
         collections.replace(collectionIndex, collection);
     }
 

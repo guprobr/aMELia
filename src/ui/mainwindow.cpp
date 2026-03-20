@@ -179,6 +179,183 @@ QString trimCodeBlockFencePadding(QString code)
     return code;
 }
 
+QString decodeMarkdownCellText(QString cell)
+{
+    cell.replace(QRegularExpression(QStringLiteral(R"((?i)<br\s*/?>)")), QStringLiteral("\n"));
+    cell.replace(QStringLiteral("&nbsp;"), QStringLiteral(" "));
+    return cell.trimmed();
+}
+
+QStringList splitMarkdownTableRow(const QString &line)
+{
+    QString working = line.trimmed();
+    if (working.startsWith(QLatin1Char('|'))) {
+        working.remove(0, 1);
+    }
+    if (working.endsWith(QLatin1Char('|'))) {
+        working.chop(1);
+    }
+
+    QStringList cells;
+    QString current;
+    bool escaped = false;
+    for (const QChar ch : working) {
+        if (escaped) {
+            current += ch;
+            escaped = false;
+            continue;
+        }
+        if (ch == QLatin1Char('\\')) {
+            current += ch;
+            escaped = true;
+            continue;
+        }
+        if (ch == QLatin1Char('|')) {
+            cells.push_back(current.trimmed());
+            current.clear();
+            continue;
+        }
+        current += ch;
+    }
+    cells.push_back(current.trimmed());
+    return cells;
+}
+
+bool isMarkdownTableLine(const QString &line)
+{
+    const QString trimmed = line.trimmed();
+    return trimmed.startsWith(QLatin1Char('|')) && trimmed.count(QLatin1Char('|')) >= 2;
+}
+
+bool isMarkdownTableSeparatorLine(const QString &line)
+{
+    const QStringList cells = splitMarkdownTableRow(line);
+    if (cells.isEmpty()) {
+        return false;
+    }
+    for (const QString &cell : cells) {
+        if (cell.isEmpty()) {
+            return false;
+        }
+        for (const QChar ch : cell) {
+            if (ch != QLatin1Char('-') && ch != QLatin1Char(':') && !ch.isSpace()) {
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
+bool markdownTableBlockNeedsRewrite(const QStringList &lines, int start, int end)
+{
+    static const QRegularExpression brPattern(QStringLiteral(R"((?i)<br\s*/?>)"));
+    for (int i = start; i < end; ++i) {
+        const QString line = lines.at(i);
+        if (line.contains(QStringLiteral("```")) || line.contains(brPattern)
+                || line.contains(QStringLiteral("<pre"), Qt::CaseInsensitive)
+                || line.contains(QStringLiteral("</pre"), Qt::CaseInsensitive)
+                || line.contains(QStringLiteral("<code"), Qt::CaseInsensitive)
+                || line.contains(QStringLiteral("</code"), Qt::CaseInsensitive)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+QString rewriteUnsafeMarkdownTables(const QString &markdown)
+{
+    const QStringList lines = markdown.split(QLatin1Char('\n'), Qt::KeepEmptyParts);
+    QStringList output;
+    int i = 0;
+    while (i < lines.size()) {
+        if (!isMarkdownTableLine(lines.at(i))) {
+            output << lines.at(i);
+            ++i;
+            continue;
+        }
+
+        const int start = i;
+        while (i < lines.size() && isMarkdownTableLine(lines.at(i))) {
+            ++i;
+        }
+        const int end = i;
+        if (end - start < 2 || !isMarkdownTableSeparatorLine(lines.at(start + 1)) || !markdownTableBlockNeedsRewrite(lines, start, end)) {
+            for (int j = start; j < end; ++j) {
+                output << lines.at(j);
+            }
+            continue;
+        }
+
+        const QStringList headers = splitMarkdownTableRow(lines.at(start));
+        int rowNumber = 0;
+        for (int row = start + 2; row < end; ++row) {
+            const QStringList cells = splitMarkdownTableRow(lines.at(row));
+            if (cells.isEmpty()) {
+                continue;
+            }
+
+            ++rowNumber;
+            QString title;
+            const int titleIndex = headers.indexOf(QStringLiteral("Concept"));
+            if (titleIndex >= 0 && titleIndex < cells.size()) {
+                title = decodeMarkdownCellText(cells.at(titleIndex));
+            }
+            if (title.isEmpty()) {
+                title = QStringLiteral("Item %1").arg(rowNumber);
+            }
+
+            output << QStringLiteral("### %1").arg(title);
+            output << QString();
+            for (int col = 0; col < headers.size() && col < cells.size(); ++col) {
+                const QString header = headers.at(col).trimmed();
+                if (header.isEmpty()) {
+                    continue;
+                }
+                const QString value = decodeMarkdownCellText(cells.at(col));
+                if (value.isEmpty()) {
+                    continue;
+                }
+                if (value.contains(QStringLiteral("```"))) {
+                    const int fence = value.indexOf(QStringLiteral("```"));
+                    const QString beforeFence = value.left(fence).trimmed();
+                    const QString afterFence = value.mid(fence).trimmed();
+                    if (!beforeFence.isEmpty()) {
+                        output << QStringLiteral("**%1:** %2").arg(header, beforeFence);
+                        output << QString();
+                    } else {
+                        output << QStringLiteral("**%1**").arg(header);
+                        output << QString();
+                    }
+                    output << afterFence;
+                    output << QString();
+                } else if (value.contains(QLatin1Char('\n'))) {
+                    output << QStringLiteral("**%1:**").arg(header);
+                    output << value;
+                    output << QString();
+                } else {
+                    output << QStringLiteral("**%1:** %2").arg(header, value);
+                    output << QString();
+                }
+            }
+            if (row + 1 < end) {
+                output << QStringLiteral("---");
+                output << QString();
+            }
+        }
+    }
+
+    return output.join(QLatin1Char('\n'));
+}
+
+QString normalizeRenderableMarkdown(const QString &text)
+{
+    QString normalized = rewriteUnsafeMarkdownTables(text);
+    normalized.replace(QRegularExpression(QStringLiteral(R"(```([A-Za-z0-9_+\-]*)<br\s*/?>)"), QRegularExpression::CaseInsensitiveOption),
+                       QStringLiteral("```\\1\n"));
+    normalized.replace(QRegularExpression(QStringLiteral(R"((?i)<br\s*/?>```)")), QStringLiteral("\n```"));
+    return normalized;
+}
+
 QVector<TranscriptSegment> splitTranscriptSegments(const QString &text)
 {
     QVector<TranscriptSegment> segments;
@@ -216,10 +393,14 @@ QVector<TranscriptSegment> splitTranscriptSegments(const QString &text)
     for (int i = 0; i < lines.size(); ++i) {
         const QString &line = lines.at(i);
         if (!inCode) {
-            const QString trimmed = line.trimmed();
-            if (trimmed.startsWith(QStringLiteral("```"))) {
+            const int fencePos = line.indexOf(QStringLiteral("```"));
+            if (fencePos >= 0) {
+                const QString beforeFence = line.left(fencePos);
+                if (!beforeFence.isEmpty()) {
+                    plainBuffer += beforeFence;
+                }
                 flushPlain();
-                currentLanguage = trimmed.mid(3).trimmed();
+                currentLanguage = line.mid(fencePos + 3).trimmed();
                 inCode = true;
             } else {
                 plainBuffer += line;
@@ -267,7 +448,8 @@ QVector<TranscriptSegment> splitTranscriptSegments(const QString &text)
 QString extractCodeBlocks(const QString &text)
 {
     QStringList blocks;
-    const QVector<TranscriptSegment> segments = splitTranscriptSegments(text);
+    const QString normalizedText = normalizeRenderableMarkdown(text);
+    const QVector<TranscriptSegment> segments = splitTranscriptSegments(normalizedText);
     for (const TranscriptSegment &segment : segments) {
         if (segment.isCode && !segment.text.trimmed().isEmpty()) {
             const QString code = trimCodeBlockFencePadding(segment.text);
@@ -337,7 +519,7 @@ QString decodeDoubleEscapedHtmlEntities(QString html)
 
 QString markdownFragmentToHtml(const QString &markdown)
 {
-    const QString trimmed = markdown.trimmed();
+    const QString trimmed = normalizeRenderableMarkdown(markdown).trimmed();
     if (trimmed.isEmpty()) {
         return QString();
     }
@@ -364,7 +546,8 @@ QString messageToRichHtml(const QString &role, const QString &text, QStringList 
     const QString bodyColor = transcriptBodyColor(role).name();
     QStringList bodyParts;
 
-    const QVector<TranscriptSegment> segments = splitTranscriptSegments(text);
+    const QString normalizedText = normalizeRenderableMarkdown(text);
+    const QVector<TranscriptSegment> segments = splitTranscriptSegments(normalizedText);
     for (const TranscriptSegment &segment : segments) {
         if (segment.isCode) {
             const QString code = trimCodeBlockFencePadding(segment.text);
@@ -398,7 +581,7 @@ QString messageToRichHtml(const QString &role, const QString &text, QStringList 
     }
 
     if (bodyParts.isEmpty()) {
-        bodyParts << QStringLiteral("<p>%1</p>").arg(text.toHtmlEscaped().replace(QStringLiteral("\n"), QStringLiteral("<br>")));
+        bodyParts << QStringLiteral("<p>%1</p>").arg(normalizedText.toHtmlEscaped().replace(QStringLiteral("\n"), QStringLiteral("<br>")));
     }
 
     return QStringLiteral(
@@ -407,6 +590,20 @@ QString messageToRichHtml(const QString &role, const QString &text, QStringList 
         "<div style=\"color:%3;\">%4</div>"
         "</div>")
         .arg(prefixColor, rolePrefix, bodyColor, bodyParts.join(QStringLiteral("\n")));
+}
+
+QString formatByteCount(qint64 bytes)
+{
+    static const QStringList units = {QStringLiteral("B"), QStringLiteral("KB"), QStringLiteral("MB"), QStringLiteral("GB"), QStringLiteral("TB")};
+    double value = static_cast<double>(qMax<qint64>(0, bytes));
+    int unitIndex = 0;
+    while (value >= 1024.0 && unitIndex < units.size() - 1) {
+        value /= 1024.0;
+        ++unitIndex;
+    }
+
+    const int precision = (unitIndex == 0 || value >= 10.0) ? 0 : 1;
+    return QStringLiteral("%1 %2").arg(QString::number(value, 'f', precision), units.at(unitIndex));
 }
 
 void appendPathsToLineEdit(QLineEdit *lineEdit, const QStringList &paths)
@@ -537,6 +734,7 @@ MainWindow::MainWindow(const QString &configPath,
     m_modelCombo = new QComboBox(chatPane);
     m_modelCombo->setEditable(false);
     m_modelCombo->setMinimumWidth(220);
+    m_modelCombo->addItem(QStringLiteral("gpt-oss:20b"));
     m_modelCombo->addItem(QStringLiteral("qwen2.5:7b"));
     m_modelCombo->addItem(QStringLiteral("qwen2.5-coder:7b"));
     auto *modelLabel = new QLabel(QStringLiteral("Model:"), chatPane);
@@ -680,7 +878,12 @@ MainWindow::MainWindow(const QString &configPath,
     auto *kbLayout = new QVBoxLayout(kbTab);
     m_sourceInventory = new QPlainTextEdit(kbTab);
     m_sourceInventory->setReadOnly(true);
-    m_sourceInventory->setMaximumHeight(120);
+    m_sourceInventory->setMaximumHeight(96);
+
+    m_sourceInventoryStats = new QPlainTextEdit(kbTab);
+    m_sourceInventoryStats->setReadOnly(true);
+    m_sourceInventoryStats->setMaximumHeight(170);
+    m_sourceInventoryStats->setPlaceholderText(QStringLiteral("Knowledge Base footprint and collection statistics appear here."));
 
     auto *kbFilterLayout = new QHBoxLayout();
     m_sourceInventoryFilter = new QLineEdit(kbTab);
@@ -714,6 +917,7 @@ MainWindow::MainWindow(const QString &configPath,
     kbButtons->addWidget(m_clearKnowledgeBaseButton);
     kbButtons->addStretch(1);
     kbLayout->addWidget(m_sourceInventory);
+    kbLayout->addWidget(m_sourceInventoryStats);
     kbLayout->addLayout(kbFilterLayout);
     kbLayout->addWidget(m_sourceInventoryTree, 1);
     kbLayout->addLayout(kbButtons);
@@ -825,6 +1029,7 @@ MainWindow::MainWindow(const QString &configPath,
     setWidgetTip(m_promptLabPreview, QStringLiteral("Preview of the generated Prompt Lab recipe and JSONL helper output."));
     setWidgetTip(m_backendSummary, QStringLiteral("Snapshot of active backend configuration, models, and runtime settings."));
     setWidgetTip(m_sourceInventory, QStringLiteral("Summary of indexed Knowledge Base sources and cache state."));
+    setWidgetTip(m_sourceInventoryStats, QStringLiteral("Knowledge Base storage footprint, chunk counts, and per-collection statistics."));
     setWidgetTip(m_sourceInventoryFilter, QStringLiteral("Filter Knowledge Base collections, folders, file names, original paths, or extractors."));
     setWidgetTip(m_sourceInventorySortCombo, QStringLiteral("Sort the Knowledge Base tree by file name or file type."));
     setWidgetTip(m_sourceInventoryTree, QStringLiteral("Knowledge Base tree grouped by collection label and preserved folder structure."));
@@ -1426,6 +1631,9 @@ void MainWindow::setSourceInventory(const QString &text)
     if (m_sourceInventory != nullptr) {
         m_sourceInventory->clear();
     }
+    if (m_sourceInventoryStats != nullptr) {
+        m_sourceInventoryStats->clear();
+    }
 
     if (m_sourceInventoryTree == nullptr) {
         return;
@@ -1433,6 +1641,9 @@ void MainWindow::setSourceInventory(const QString &text)
 
     m_sourceInventoryTree->clear();
     if (text.trimmed().isEmpty() || text.trimmed() == QStringLiteral("<none>")) {
+        if (m_sourceInventoryStats != nullptr) {
+            m_sourceInventoryStats->setPlainText(QStringLiteral("No imported Knowledge Base assets."));
+        }
         updateKnowledgeBaseFilterStatus();
         return;
     }
@@ -1442,24 +1653,53 @@ void MainWindow::setSourceInventory(const QString &text)
         if (m_sourceInventory != nullptr) {
             m_sourceInventory->setPlainText(text);
         }
+        if (m_sourceInventoryStats != nullptr) {
+            m_sourceInventoryStats->setPlainText(QStringLiteral("Statistics unavailable for the current inventory payload."));
+        }
         updateKnowledgeBaseFilterStatus();
         return;
     }
 
     const QJsonObject root = doc.object();
+    const qint64 totalBytes = static_cast<qint64>(root.value(QStringLiteral("totalBytes")).toDouble());
+    const QJsonArray collections = root.value(QStringLiteral("collections")).toArray();
+
     QStringList summary;
     summary << QStringLiteral("Knowledge root: %1").arg(root.value(QStringLiteral("knowledgeRoot")).toString(QStringLiteral("<unknown>")));
     summary << QStringLiteral("Collections root: %1").arg(root.value(QStringLiteral("collectionsRoot")).toString(QStringLiteral("<unknown>")));
     summary << QStringLiteral("Workspace jail root: %1").arg(root.value(QStringLiteral("workspaceJailRoot")).toString(QStringLiteral("<unknown>")));
-    summary << QStringLiteral("Sources: %1 | Chunks: %2 | Semantic retrieval: %3")
+    summary << QStringLiteral("Collections: %1 | Sources: %2 | Chunks: %3 | Stored size: %4")
+                  .arg(collections.size())
                   .arg(root.value(QStringLiteral("sources")).toInt())
                   .arg(root.value(QStringLiteral("chunks")).toInt())
-                  .arg(root.value(QStringLiteral("semanticEnabled")).toBool() ? QStringLiteral("enabled") : QStringLiteral("disabled"));
+                  .arg(formatByteCount(totalBytes));
+    summary << QStringLiteral("Semantic retrieval: %1 | Chunking: %2")
+                  .arg(root.value(QStringLiteral("semanticEnabled")).toBool() ? QStringLiteral("enabled") : QStringLiteral("disabled"),
+                       root.value(QStringLiteral("chunkingStrategy")).toString(QStringLiteral("<unknown>")));
     if (m_sourceInventory != nullptr) {
         m_sourceInventory->setPlainText(summary.join(QStringLiteral("\n")));
     }
 
-    const QJsonArray collections = root.value(QStringLiteral("collections")).toArray();
+    QStringList stats;
+    stats << QStringLiteral("Library footprint");
+    stats << QStringLiteral("  Collections: %1").arg(collections.size());
+    stats << QStringLiteral("  Files: %1").arg(root.value(QStringLiteral("sources")).toInt());
+    stats << QStringLiteral("  Chunks: %1").arg(root.value(QStringLiteral("chunks")).toInt());
+    stats << QStringLiteral("  Stored size: %1").arg(formatByteCount(totalBytes));
+    stats << QStringLiteral("  Embedding backend: %1").arg(root.value(QStringLiteral("embeddingBackend")).toString(QStringLiteral("<unknown>")));
+    stats << QString();
+    stats << QStringLiteral("Per-collection stats");
+
+    const auto appendStatsLine = [&](const QString &line) {
+        stats << line;
+        if (m_sourceInventoryStats != nullptr) {
+            m_sourceInventoryStats->setPlainText(stats.join(QStringLiteral("\n")));
+        }
+    };
+
+    if (collections.isEmpty()) {
+        appendStatsLine(QStringLiteral("  <none>"));
+    }
     QStringList availablePaths;
     for (const QJsonValue &collectionValue : collections) {
         if (!collectionValue.isObject()) {
@@ -1467,10 +1707,21 @@ void MainWindow::setSourceInventory(const QString &text)
         }
 
         const QJsonObject collection = collectionValue.toObject();
+        const int collectionChunkCount = collection.value(QStringLiteral("chunkCount")).toInt();
+        const qint64 collectionBytes = static_cast<qint64>(collection.value(QStringLiteral("totalBytes")).toDouble());
+        appendStatsLine(QStringLiteral("  • %1 — %2 files, %3 chunks, %4")
+                            .arg(collection.value(QStringLiteral("label")).toString(QStringLiteral("Imported collection")))
+                            .arg(collection.value(QStringLiteral("fileCount")).toInt())
+                            .arg(collectionChunkCount)
+                            .arg(formatByteCount(collectionBytes)));
+
         auto *collectionItem = new QTreeWidgetItem(m_sourceInventoryTree);
         collectionItem->setText(0, collection.value(QStringLiteral("label")).toString(QStringLiteral("Imported collection")));
         collectionItem->setText(1, QStringLiteral("Collection"));
-        collectionItem->setText(2, QStringLiteral("%1 file(s)").arg(collection.value(QStringLiteral("fileCount")).toInt()));
+        collectionItem->setText(2, QStringLiteral("%1 file(s) • %2 chunks • %3")
+                                    .arg(collection.value(QStringLiteral("fileCount")).toInt())
+                                    .arg(collectionChunkCount)
+                                    .arg(formatByteCount(collectionBytes)));
         collectionItem->setData(0, kKnowledgeNodeTypeRole, QStringLiteral("collection"));
         collectionItem->setData(0, kKnowledgeCollectionIdRole, collection.value(QStringLiteral("collectionId")).toString());
         collectionItem->setData(0, kKnowledgeSearchBlobRole,
@@ -1486,10 +1737,15 @@ void MainWindow::setSourceInventory(const QString &text)
             }
 
             const QJsonObject group = groupValue.toObject();
+            const int groupChunkCount = group.value(QStringLiteral("chunkCount")).toInt();
+            const qint64 groupBytes = static_cast<qint64>(group.value(QStringLiteral("totalBytes")).toDouble());
             auto *groupItem = new QTreeWidgetItem(collectionItem);
             groupItem->setText(0, group.value(QStringLiteral("label")).toString(QStringLiteral("(root)")));
             groupItem->setText(1, QStringLiteral("Folder"));
-            groupItem->setText(2, QStringLiteral("%1 file(s)").arg(group.value(QStringLiteral("fileCount")).toInt()));
+            groupItem->setText(2, QStringLiteral("%1 file(s) • %2 chunks • %3")
+                                   .arg(group.value(QStringLiteral("fileCount")).toInt())
+                                   .arg(groupChunkCount)
+                                   .arg(formatByteCount(groupBytes)));
             groupItem->setData(0, kKnowledgeNodeTypeRole, QStringLiteral("group"));
             groupItem->setData(0, kKnowledgeCollectionIdRole, collection.value(QStringLiteral("collectionId")).toString());
             groupItem->setData(0, kKnowledgeSearchBlobRole,
@@ -1549,6 +1805,7 @@ void MainWindow::setSourceInventory(const QString &text)
                                                                       sourceRole.isEmpty() ? QStringLiteral("<unknown>") : sourceRole);
                 details << QStringLiteral("Extractor: %1").arg(extractor.isEmpty() ? QStringLiteral("<unknown>") : extractor);
                 details << QStringLiteral("Chunks: %1").arg(chunkCount);
+                details << QStringLiteral("Stored size: %1").arg(formatByteCount(static_cast<qint64>(file.value(QStringLiteral("fileSizeBytes")).toDouble())));
                 fileItem->setToolTip(0, details.join(QStringLiteral("\n")));
                 fileItem->setToolTip(1, details.join(QStringLiteral("\n")));
                 fileItem->setToolTip(2, details.join(QStringLiteral("\n")));
@@ -2070,7 +2327,7 @@ void MainWindow::setAvailableModels(const QStringList &models, const QString &cu
         uniqueModels.prepend(currentModel);
     }
     if (uniqueModels.isEmpty()) {
-        uniqueModels << (currentModel.trimmed().isEmpty() ? QStringLiteral("qwen2.5:7b") : currentModel.trimmed());
+        uniqueModels << (currentModel.trimmed().isEmpty() ? QStringLiteral("gpt-oss:20b") : currentModel.trimmed());
     }
 
     m_modelCombo->clear();

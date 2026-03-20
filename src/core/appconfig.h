@@ -25,7 +25,7 @@ QString ameliaBuiltInDefaultConfigJson(const QString &ollamaBaseUrl = QString(),
 
 struct AppConfig {
     QString ollamaBaseUrl = ameliaDefaultOllamaBaseUrl();
-    QString ollamaModel = QStringLiteral("qwen2.5:7b");
+    QString ollamaModel = QStringLiteral("gpt-oss:20b");
     QString docsRoot = QStringLiteral("${dataRoot}/docs/sample");
     QString dataRoot = ameliaDefaultDataRoot();
     QString knowledgeRoot;
@@ -43,10 +43,11 @@ struct AppConfig {
     bool notifyOnTaskSuccess = true;
     bool notifyOnTaskFailure = true;
 
-    // Semantic retrieval via the lightweight local hash embedder.
-    // Enabled by default so large KBs get better relevance scoring without
-    // blocking the UI; Amelia can refresh vectors incrementally in the background.
+    // Semantic retrieval via Ollama embeddings with an automatic local hash fallback.
     bool enableSemanticRetrieval = true;
+    QString ollamaEmbeddingModel = QStringLiteral("embeddinggemma:latest");
+    int ollamaEmbeddingTimeoutMs = 120000;
+    int ollamaEmbeddingBatchSize = 4;
 
     bool preferOutlinePlanning = true;
     bool requireGroundingForProjectQuestions = true;

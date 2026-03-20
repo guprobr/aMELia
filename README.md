@@ -1,14 +1,54 @@
-# aMELia Qt6 v7.1b
+# aMELia Qt6 v7.1e1
 
 Amelia is a local-first Qt6/C++ coding and cloud assistant that talks to a local Ollama server, stores its state under `~/.amelia_qt6`, indexes a local knowledge base, and can optionally use sanitized external web search through SearXNG.
 
 This build rolls forward the existing bootstrap, indexing, transcript, Prompt Lab, notification, and progress-bar work, and adds a Knowledge Base collection model with preserved folder structure, a tree-view browser, a hard-locked Knowledge Base root and safer workspace-jail boundaries under `~/.amelia_qt6`, stronger transcript code-block handling, first-run service prompts, and a full JSON configuration editor. aMELia is also allegorically considered a MEL: Model Enhancement Lab.
 
-## What's new in v7.1b
+## What's new in v7.1e
+
+### Transcript table/code-block safety and model defaults
+
+- transcript rendering now treats fenced code blocks more defensively when the opening fence appears mid-line, which prevents Markdown tables with multiline code snippets from corrupting the rest of the transcript
+- default generation model is now **`gpt-oss:20b`**
+- default embedding model is now **`embeddinggemma:latest`**
+- README startup examples now recommend pulling `gpt-oss:20b` for generation and `embeddinggemma:latest` for embeddings
+
+### Indexing visibility and KB footprint
+
+- reindex progress now advances during long embedding runs instead of appearing frozen on large PDFs or remote Ollama setups
+- embedding progress labels now include the current file and completed chunk count, for example `Embedding 1 / 3: manual.pdf — 48/221 chunks`
+- neural-indexing chunking now uses a more compact profile with reduced overlap, which lowers duplicated embedding work and improves retrieval focus
+- the default Ollama embedding batch size is now smaller, so progress updates arrive more often and long CPU-only embedding requests feel less stuck
+- the Knowledge Base tab now includes a dedicated **footprint / stats panel** showing:
+  - number of collections
+  - total files
+  - total chunks
+  - total stored size under Amelia
+  - per-collection file / chunk / size totals
+
+### Real embeddings and safer retrieval fusion
+
+- Amelia now tries to use a real **Ollama embedding model** for semantic retrieval, instead of relying only on the previous local hash-vector approximation
+- the embedding client now supports both Ollama embedding API variants: it tries modern `POST /api/embed` first and automatically retries legacy `POST /api/embeddings` when the server answers 404
+- if the configured embedding model is unavailable, Amelia automatically falls back to the previous local hash embedder so the KB remains usable
+- backend diagnostics now preserve the last embedding error summary, so it is easier to tell whether neural embeddings are active or the local fallback is being used
+- RAG cache metadata now tracks the embedding backend and chunking strategy, so stale caches are discarded when retrieval internals change
+- retrieval weighting is now more conservative: lexical evidence stays primary unless a true neural embedding vector is actually available
+- new config keys:
+  - `ollamaEmbeddingModel`
+  - `ollamaEmbeddingTimeoutMs`
+  - `ollamaEmbeddingBatchSize`
+
+### Higher-quality chunking
+
+- chunking is now **structure-aware** instead of mostly raw size-based, and the invalid bullet-list regex from the previous build has been fixed
+- Markdown headings, PDF page markers, fenced code blocks, bullets, and command/config-like regions are kept together more often
+- oversized sections are split on paragraph, line, or whitespace boundaries before a hard cut is used
+- overlap is carried by semantic blocks instead of character offsets, reducing mid-paragraph and mid-code splits
 
 ### Knowledge Base collections and safer structure handling
 
-- display version bumped to `7.1b`
+- display version bumped to `7.1e`
 - imported files and folders are now stored as **collections** with:
   - an immutable collection hash / ID
   - a user-visible **label** that can be renamed later
@@ -81,7 +121,8 @@ This release keeps the improvements from the earlier 6.9x line, including:
 - **Knowledge Base prioritization** with **Use once** and **Pin** actions plus an active-priority panel near the prompt box
 - **Incremental indexing** so changed assets can be refreshed without rebuilding the entire cache
 - **Asynchronous PDF ingestion** and non-blocking KB analysis
-- **Semantic retrieval** for stronger local relevance ranking
+- **Semantic retrieval** with a real Ollama embedding path plus automatic local fallback
+- **Structure-aware chunking** that preserves headings, code fences, page markers, and list regions more faithfully
 - **Grounded local-source panel** showing local evidence used for answers
 - **Sanitized external search** through SearXNG, with an explicit per-prompt allow checkbox
 - **External-source panel** showing sanitized external evidence
@@ -102,9 +143,9 @@ This release keeps the improvements from the earlier 6.9x line, including:
 
 ## Versioning
 
-- Version is now `7.1b`.
+- Version is now `7.1e`.
 - The display version comes from one place only:
-  - `src/appversion.h`
+  - `src/core/appversion.h`
 
 ## Ubuntu packages
 
@@ -161,20 +202,32 @@ sudo systemctl enable --now ollama
 sudo systemctl status ollama
 ```
 
-Pull at least one model, for example:
+Pull the recommended default generation model and the dedicated embedding model:
 
 ```bash
-ollama pull qwen2.5:7b
+ollama pull gpt-oss:20b
+ollama pull embeddinggemma:latest
 ```
 
-Quick API test:
+`gpt-oss:20b` is the recommended default in Amelia because it is available directly in the Ollama library and is designed for powerful reasoning and developer use cases. On Windows, Amelia pairs well with Ollama's Vulkan GPU path when your driver / hardware stack supports it.
+
+Quick API tests:
 
 ```bash
 curl http://localhost:11434/api/generate -d '{
-  "model": "qwen2.5:7b",
+  "model": "gpt-oss:20b",
   "prompt": "hello"
 }'
 ```
+
+```bash
+curl http://localhost:11434/api/embed -d '{
+  "model": "embeddinggemma:latest",
+  "input": "hello"
+}'
+```
+
+If your Ollama runtime is older and responds with 404 on `/api/embed`, Amelia automatically retries the legacy `/api/embeddings` route.
 
 ### Ollama in Docker
 
@@ -188,10 +241,11 @@ docker run -d \
   ollama/ollama
 ```
 
-Then pull a model inside the container:
+Then pull the recommended chat model and embedding model inside the container:
 
 ```bash
-docker exec -it ollama ollama pull qwen2.5:7b
+docker exec -it ollama ollama pull gpt-oss:20b
+docker exec -it ollama ollama pull embeddinggemma:latest
 ```
 
 ## Starting SearXNG search container
@@ -316,3 +370,8 @@ Main things to check:
 - **Knowledge Base** is now the second inspection tab for a faster review workflow.
 - The external-search checkbox now defaults to off on fresh installs/configs.
 - The transcript renderer now sanitizes raw HTML-like fragments before Markdown rendering.
+
+
+## Recent changes
+
+- 7.1e1 transcript rendering hotfix: unsafe markdown tables containing fenced code or HTML line breaks are automatically rewritten into stacked sections before rendering, preventing the rest of the transcript from breaking.

@@ -143,6 +143,7 @@ private:
     QPlainTextEdit *m_sessionSummary = nullptr;
     QTextEdit *m_diagnostics = nullptr;
     QPlainTextEdit *m_sourceInventory = nullptr;
+    QPlainTextEdit *m_sourceInventoryStats = nullptr;
     QLineEdit *m_sourceInventoryFilter = nullptr;
     QLabel *m_sourceInventoryFilterStatus = nullptr;
     QTreeWidget *m_sourceInventoryTree = nullptr;

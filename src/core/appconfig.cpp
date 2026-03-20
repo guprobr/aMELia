@@ -24,7 +24,7 @@ QString ameliaBuiltInDefaultConfigJson(const QString &ollamaBaseUrl,
     return QStringLiteral(
 R"JSON({
   "ollamaBaseUrl": "%1",
-  "ollamaModel": "qwen2.5:7b",
+  "ollamaModel": "gpt-oss:20b",
   "docsRoot": "${dataRoot}/docs/sample",
   "dataRoot": "${HOME}/.amelia_qt6",
   "knowledgeRoot": "${dataRoot}/knowledge",
@@ -36,6 +36,9 @@ R"JSON({
   "autoSaveSessionSummary": true,
   "seedDocsIntoKnowledge": true,
   "enableSemanticRetrieval": true,
+  "ollamaEmbeddingModel": "embeddinggemma:latest",
+  "ollamaEmbeddingTimeoutMs": 120000,
+  "ollamaEmbeddingBatchSize": 4,
   "enableDesktopNotifications": true,
   "notifyOnTaskStart": true,
   "notifyOnTaskSuccess": true,
@@ -206,7 +209,10 @@ void applyEnvOverrides(AppConfig &config)
 {
     applyStringEnvOverride("AMELIA_OLLAMA_BASE_URL", config.ollamaBaseUrl);
     applyStringEnvOverride("AMELIA_OLLAMA_MODEL", config.ollamaModel);
+    applyStringEnvOverride("AMELIA_OLLAMA_EMBEDDING_MODEL", config.ollamaEmbeddingModel);
     applyIntEnvOverride("AMELIA_EXTERNAL_SEARCH_TIMEOUT_MS", config.externalSearchTimeoutMs, 2000);
+    applyIntEnvOverride("AMELIA_OLLAMA_EMBEDDING_TIMEOUT_MS", config.ollamaEmbeddingTimeoutMs, 3000);
+    applyIntEnvOverride("AMELIA_OLLAMA_EMBEDDING_BATCH_SIZE", config.ollamaEmbeddingBatchSize, 1);
     applyIntEnvOverride("AMELIA_OLLAMA_PROBE_TIMEOUT_MS", config.ollamaProbeTimeoutMs, 2000);
     applyIntEnvOverride("AMELIA_OLLAMA_RESPONSE_HEADERS_TIMEOUT_MS", config.ollamaResponseHeadersTimeoutMs, 5000);
     applyIntEnvOverride("AMELIA_OLLAMA_FIRST_TOKEN_TIMEOUT_MS", config.ollamaFirstTokenTimeoutMs, 5000);
@@ -299,6 +305,7 @@ AppConfig AppConfigLoader::load(const QString &path, QString *errorMessage)
     config.notifyOnTaskSuccess = obj.value(QStringLiteral("notifyOnTaskSuccess")).toBool(config.notifyOnTaskSuccess);
     config.notifyOnTaskFailure = obj.value(QStringLiteral("notifyOnTaskFailure")).toBool(config.notifyOnTaskFailure);
     config.enableSemanticRetrieval = obj.value(QStringLiteral("enableSemanticRetrieval")).toBool(config.enableSemanticRetrieval);
+    config.ollamaEmbeddingModel = obj.value(QStringLiteral("ollamaEmbeddingModel")).toString(config.ollamaEmbeddingModel).trimmed();
     config.preferOutlinePlanning = obj.value(QStringLiteral("preferOutlinePlanning")).toBool(config.preferOutlinePlanning);
     config.requireGroundingForProjectQuestions = obj.value(QStringLiteral("requireGroundingForProjectQuestions")).toBool(config.requireGroundingForProjectQuestions);
     config.includeAssistantHistoryInPrompt = obj.value(QStringLiteral("includeAssistantHistoryInPrompt")).toBool(config.includeAssistantHistoryInPrompt);
@@ -310,6 +317,7 @@ AppConfig AppConfigLoader::load(const QString &path, QString *errorMessage)
     config.maxRelevantMemories = obj.value(QStringLiteral("maxRelevantMemories")).toInt(config.maxRelevantMemories);
 
     config.externalSearchTimeoutMs = readTimeoutValue(obj, QStringLiteral("externalSearchTimeoutMs"), config.externalSearchTimeoutMs, 2000);
+    config.ollamaEmbeddingTimeoutMs = readTimeoutValue(obj, QStringLiteral("ollamaEmbeddingTimeoutMs"), config.ollamaEmbeddingTimeoutMs, 3000);
     config.ollamaProbeTimeoutMs = readTimeoutValue(obj, QStringLiteral("ollamaProbeTimeoutMs"), config.ollamaProbeTimeoutMs, 2000);
     config.ollamaResponseHeadersTimeoutMs = readTimeoutValue(obj, QStringLiteral("ollamaResponseHeadersTimeoutMs"), config.ollamaResponseHeadersTimeoutMs, 5000);
     config.ollamaFirstTokenTimeoutMs = readTimeoutValue(obj, QStringLiteral("ollamaFirstTokenTimeoutMs"), config.ollamaFirstTokenTimeoutMs, 5000);
@@ -318,6 +326,7 @@ AppConfig AppConfigLoader::load(const QString &path, QString *errorMessage)
     config.desktopNotificationTimeoutMs = readTimeoutValue(obj, QStringLiteral("desktopNotificationTimeoutMs"), config.desktopNotificationTimeoutMs, 1000);
 
     config.maxDiagnosticLines = obj.value(QStringLiteral("maxDiagnosticLines")).toInt(config.maxDiagnosticLines);
+    config.ollamaEmbeddingBatchSize = qMax(1, obj.value(QStringLiteral("ollamaEmbeddingBatchSize")).toInt(config.ollamaEmbeddingBatchSize));
     config.ollamaNumCtx = qMax(1024, obj.value(QStringLiteral("ollamaNumCtx")).toInt(config.ollamaNumCtx));
     config.ollamaTopK = qMax(1, obj.value(QStringLiteral("ollamaTopK")).toInt(config.ollamaTopK));
     config.ollamaTemperature = readDoubleValue(obj, QStringLiteral("ollamaTemperature"), config.ollamaTemperature, 0.0);

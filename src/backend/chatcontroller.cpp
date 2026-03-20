@@ -158,6 +158,14 @@ ChatController::ChatController(const AppConfig &config, QObject *parent)
     , m_outlinePlanner(new OutlinePlanner())
 {
     m_rag->setSemanticEnabled(m_config.enableSemanticRetrieval);
+    m_embeddingClient->configureOllama(m_config.ollamaBaseUrl,
+                                       m_config.ollamaEmbeddingModel,
+                                       m_config.ollamaEmbeddingTimeoutMs,
+                                       m_config.ollamaEmbeddingBatchSize);
+    m_rag->configureEmbeddingBackend(m_config.ollamaBaseUrl,
+                                     m_config.ollamaEmbeddingModel,
+                                     m_config.ollamaEmbeddingTimeoutMs,
+                                     m_config.ollamaEmbeddingBatchSize);
 
     m_startupLoadWatcher = new QFutureWatcher<StartupLoadResult>(this);
     connect(m_startupLoadWatcher, &QFutureWatcher<StartupLoadResult>::finished, this, [this]() {
@@ -1570,7 +1578,10 @@ QString ChatController::buildBackendSummary() const
     QStringList lines;
     lines << QStringLiteral("Configured base URL: %1").arg(m_config.ollamaBaseUrl);
     lines << QStringLiteral("Configured model: %1").arg(m_config.ollamaModel);
+    lines << QStringLiteral("Configured embedding model: %1").arg(m_config.ollamaEmbeddingModel);
     lines << QStringLiteral("External search timeout: %1 ms").arg(m_config.externalSearchTimeoutMs);
+    lines << QStringLiteral("Ollama embedding timeout: %1 ms").arg(m_config.ollamaEmbeddingTimeoutMs);
+    lines << QStringLiteral("Ollama embedding batch size: %1").arg(m_config.ollamaEmbeddingBatchSize);
     lines << QStringLiteral("Ollama probe timeout: %1 ms").arg(m_config.ollamaProbeTimeoutMs);
     lines << QStringLiteral("Ollama response-headers timeout: %1 ms").arg(m_config.ollamaResponseHeadersTimeoutMs);
     lines << QStringLiteral("Ollama first-token timeout: %1 ms").arg(m_config.ollamaFirstTokenTimeoutMs);
@@ -1598,7 +1609,7 @@ QString ChatController::buildBackendSummary() const
     lines << QStringLiteral("RAG chunks loaded: %1").arg(m_rag->chunkCount());
     lines << QStringLiteral("Semantic retrieval: %1").arg(m_config.enableSemanticRetrieval ? QStringLiteral("enabled") : QStringLiteral("disabled"));
     lines << QStringLiteral("Outline planning: %1").arg(m_config.preferOutlinePlanning ? QStringLiteral("enabled") : QStringLiteral("disabled"));
-    lines << QStringLiteral("Embedding backend: %1").arg(m_embeddingClient->backendName());
+    lines << QStringLiteral("Embedding backend: %1").arg(m_rag->embeddingBackendName());
     lines << QStringLiteral("External search default: %1").arg(m_config.enableExternalSearch ? QStringLiteral("enabled") : QStringLiteral("disabled"));
     lines << QStringLiteral("Desktop notifications: %1").arg(m_config.enableDesktopNotifications ? QStringLiteral("enabled") : QStringLiteral("disabled"));
     lines << QStringLiteral("Notify on task start/success/failure: %1/%2/%3").arg(m_config.notifyOnTaskStart ? QStringLiteral("yes") : QStringLiteral("no"),
