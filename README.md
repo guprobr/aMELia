@@ -1,53 +1,74 @@
-# Amelia Qt6 v6.99
+# Amelia Qt6 v7.0
 
 Amelia is a local-first Qt6/C++ coding and cloud assistant that talks to a local Ollama server, stores its state under `~/.amelia_qt6`, indexes a local knowledge base, and can optionally use sanitized external web search through SearXNG.
 
-This build keeps the earlier **bootstrap visibility**, **incremental indexing**, **responsive prompt preparation**, **transcript formatting**, and **Prompt Lab enhancements**, and adds **native desktop notifications** for meaningful task lifecycle events.
+This build rolls forward the existing bootstrap, indexing, transcript, Prompt Lab, notification, and progress-bar work, and adds a transcript-rendering hardening pass so mixed Markdown/HTML responses no longer corrupt the final formatted view.
 
-It also adds a **response lifecycle progress bar** in the status area, so Amelia now shows visual progress from prompt preparation through external search / backend wait time until the answer stream completes.
+## What's new in v7.0
 
-## What's new in v6.99
+### UI and workflow updates
 
-### Native desktop notifications
+- display version bumped to `7.0`
+- **Knowledge Base** moved to the second inspection tab
+- **Remember input** renamed to **Manual Memory**
+- **Allow sanitized external search** now defaults to off for fresh configs and fresh UI state
+- informative hover tooltips were added across the main interactive controls, tabs, and actions
 
-Amelia now emits desktop notifications for meaningful task lifecycle events through `QSystemTrayIcon`, with `QApplication::alert()` as a fallback when a native tray popup is unavailable.
+### Transcript formatting hardening
 
-Covered events include:
+The transcript renderer now sanitizes raw HTML-like tags before sending Markdown fragments into Qt's Markdown parser.
 
-- startup complete
-- prompt start / completion / failure / manual stop
-- knowledge import start / completion / failure
-- knowledge indexing start / completion / blocked state
-- external search start / completion / failure
-- Ollama probe start / completion / failure
-- model refresh start / completion
-- conversation create / restore
-- memory save / clear
-- active model change
+That prevents malformed assistant output such as literal `<br>` tags mixed into Markdown tables / fenced-code responses from breaking the rendered transcript.
 
-Fresh configs now default to:
+The transcript segment parser was also hardened so fenced code blocks with trailing content on the same line are preserved correctly instead of corrupting the surrounding message layout.
 
-- `enableDesktopNotifications: true`
-- `notifyOnTaskStart: true`
-- `notifyOnTaskSuccess: true`
-- `notifyOnTaskFailure: true`
-- `desktopNotificationTimeoutMs: 7000`
+### Existing improvements still present
 
-### Earlier v6.96 improvements still present
+This release keeps the improvements from the earlier 6.9x line, including:
 
-- Knowledge Base tab now includes live filename/path filtering with a visible match counter
-- bootstrap dialog appears immediately at startup
-- logo spinner + bootstrap log window remain in place until the main window shows
-- incremental KB refresh avoids rebuilding the whole cache for one changed or added asset
-- prompt context preparation remains off the main thread
-- PDF ingestion remains asynchronous with progress visible in the UI
-- Prompt Lab enhancements remain in place
-- transcript formatting / copy helpers remain in place
-- semantic retrieval / external search defaults remain enabled for fresh configs
+- native desktop notifications for startup, prompt lifecycle, indexing, memory, model refresh, and related events
+- status-area progress feedback from prompt preparation through answer completion
+- bootstrap dialog visibility at startup
+- incremental / asynchronous knowledge-base indexing
+- transcript formatting and copy helpers
+- Prompt Lab asset-aware recipe composition
+- semantic retrieval, external search integration, and outline-first planning
+
+## All aMELia Qt6 features
+
+- **Local-first desktop app** built with C++ and Qt6
+- **Local Ollama integration** for model generation, model refresh, backend probing, and model selection
+- **Persistent local state** under `~/.amelia_qt6` for config, conversations, memories, summaries, and KB cache
+- **Session management** with create, restore, list, and delete conversation workflows
+- **Rich transcript view** with colored role cards, Markdown rendering, fenced-code rendering, clickable code-copy links, and clipboard copy of the last answer
+- **Transcript sanitization** that neutralizes raw HTML-like tags before Markdown rendering to avoid broken layouts
+- **Manual Memory** capture plus persisted memory storage / clearing
+- **Knowledge Base ingestion** from files and folders
+- **Knowledge Base inspection** with source summary, searchable asset list, remove-selected, and clear-KB actions
+- **Knowledge Base prioritization** with **Use once** and **Pin** actions plus an active-priority panel near the prompt box
+- **Incremental indexing** so changed assets can be refreshed without rebuilding the entire cache
+- **Asynchronous PDF ingestion** and non-blocking KB analysis
+- **Semantic retrieval** for stronger local relevance ranking
+- **Grounded local-source panel** showing local evidence used for answers
+- **Sanitized external search** through SearXNG, with an explicit per-prompt allow checkbox
+- **External-source panel** showing sanitized external evidence
+- **Privacy preview panel** showing what context is being shared with the backend
+- **Outline planning** and outline-first document / procedure generation support
+- **Prompt Lab** with presets, local asset helpers, KB-asset references, notes / constraints, recipe composition, clipboard copy, and input injection
+- **Backend summary panel** for runtime/backend/config visibility
+- **Diagnostics panel** for operational logs and optional reasoning-trace capture
+- **Reasoning trace toggle** for backend thinking streams when exposed by the selected model/backend
+- **Desktop notifications** for meaningful task lifecycle events
+- **Busy indicator and response progress bar** for long-running operations and streamed answer progress
+- **Bootstrap dialog** shown immediately at startup while initialization completes
+- **Tooltips across the UI** for buttons, tabs, lists, and major controls
+- **Config-driven behavior** with user-overridable defaults in `~/.amelia_qt6/config.json`
+- **Optional external grounding controls** including domain allowlist and timeout configuration
+- **Operational diagnostics** for backend, search, RAG, startup, planner, memory, and related categories
 
 ## Versioning
 
-- Version is now `6.99`.
+- Version is now `7.0`.
 - The display version comes from one place only:
   - `src/appversion.h`
 
@@ -200,15 +221,7 @@ Amelia behaves better with large KBs because:
 
 ## Prompt Lab and transcript helpers still present
 
-This build keeps the existing UI enhancements already present in your tree, including:
-
-- richer Prompt Lab presets and KB-asset fields
-- Browse files / Browse folder helpers
-- Copy recipe
-- colored transcript rendering
-- fenced code formatting
-- Copy answer
-- Copy code block(s)
+This build keeps the existing Prompt Lab and transcript helpers, including richer presets, KB-asset references, browse helpers, recipe copy, colored transcript rendering, fenced code formatting, answer copy, and code-block copy actions.
 
 ## Troubleshooting
 
@@ -256,8 +269,10 @@ Main things to check:
 
 ## Recent UI additions
 
-- Knowledge Base tab now supports live filename/path filtering for indexed assets.
-- Diagnostics tab now includes an optional **Capture reasoning trace** toggle. When enabled, Amelia asks Ollama for backend thinking streams when supported and also records explicit tagged reasoning notes if the model emits them. This remains intentionally separate from any hidden internal chain-of-thought.
-- Session list now includes **Delete selected** to remove an individual saved conversation from history.
-- Knowledge Base now supports **Use once** and **Pin** actions so indexed assets can be prioritized for retrieval. One-shot priorities are consumed by the next prompt; pinned assets stay active until cleared. Active priorities are shown in a dedicated panel near the prompt box.
-- The **Privacy** tab was moved to the end of the inspection tabs for a cleaner flow.
+- Knowledge Base tab supports live filename/path filtering for indexed assets.
+- Diagnostics includes an optional **Capture reasoning trace** toggle. When enabled, Amelia asks Ollama for backend thinking streams when supported and also records explicit tagged reasoning notes if the model emits them. This remains intentionally separate from any hidden internal chain-of-thought.
+- Session list includes **Delete selected** to remove an individual saved conversation from history.
+- Knowledge Base supports **Use once** and **Pin** actions so indexed assets can be prioritized for retrieval. One-shot priorities are consumed by the next prompt; pinned assets stay active until cleared. Active priorities are shown in a dedicated panel near the prompt box.
+- **Knowledge Base** is now the second inspection tab for a faster review workflow.
+- The external-search checkbox now defaults to off on fresh installs/configs.
+- The transcript renderer now sanitizes raw HTML-like fragments before Markdown rendering.

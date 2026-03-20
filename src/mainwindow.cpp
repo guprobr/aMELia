@@ -34,6 +34,7 @@
 #include <QRegularExpression>
 #include <QSplitter>
 #include <QTabWidget>
+#include <QTabBar>
 #include <QTextBlockFormat>
 #include <QTextCharFormat>
 #include <QTextCursor>
@@ -155,48 +156,87 @@ struct TranscriptSegment {
 QVector<TranscriptSegment> splitTranscriptSegments(const QString &text)
 {
     QVector<TranscriptSegment> segments;
-    const QString fence = QStringLiteral("```");
-    int pos = 0;
-    bool inCode = false;
+    QString plainBuffer;
+    QString codeBuffer;
     QString currentLanguage;
-    while (pos < text.size()) {
-        const int fencePos = text.indexOf(fence, pos);
-        if (fencePos < 0) {
-            TranscriptSegment seg;
-            seg.isCode = inCode;
-            seg.language = currentLanguage;
-            seg.text = text.mid(pos);
-            if (!seg.text.isEmpty()) {
-                segments.push_back(seg);
-            }
-            break;
+    bool inCode = false;
+
+    const auto flushPlain = [&segments, &plainBuffer]() {
+        if (plainBuffer.isEmpty()) {
+            return;
         }
-        if (fencePos > pos) {
-            TranscriptSegment seg;
-            seg.isCode = inCode;
-            seg.language = currentLanguage;
-            seg.text = text.mid(pos, fencePos - pos);
-            if (!seg.text.isEmpty()) {
-                segments.push_back(seg);
-            }
-        }
-        const int afterFence = fencePos + fence.size();
-        const int lineEnd = text.indexOf(QLatin1Char('\n'), afterFence);
-        if (!inCode) {
-            if (lineEnd < 0) {
-                break;
-            }
-            currentLanguage = text.mid(afterFence, lineEnd - afterFence).trimmed();
-            inCode = true;
-            pos = lineEnd + 1;
-        } else {
-            inCode = false;
+        TranscriptSegment seg;
+        seg.isCode = false;
+        seg.text = plainBuffer;
+        segments.push_back(seg);
+        plainBuffer.clear();
+    };
+
+    const auto flushCode = [&segments, &codeBuffer, &currentLanguage]() {
+        if (codeBuffer.isEmpty()) {
             currentLanguage.clear();
-            pos = lineEnd < 0 ? afterFence : lineEnd + 1;
+            return;
         }
+        TranscriptSegment seg;
+        seg.isCode = true;
+        seg.language = currentLanguage;
+        seg.text = codeBuffer;
+        segments.push_back(seg);
+        codeBuffer.clear();
+        currentLanguage.clear();
+    };
+
+    const QStringList lines = text.split(QLatin1Char('\n'), Qt::KeepEmptyParts);
+    for (int i = 0; i < lines.size(); ++i) {
+        const QString &line = lines.at(i);
+        if (!inCode) {
+            const QString trimmed = line.trimmed();
+            if (trimmed.startsWith(QStringLiteral("```"))) {
+                flushPlain();
+                currentLanguage = trimmed.mid(3).trimmed();
+                inCode = true;
+            } else {
+                plainBuffer += line;
+                if (i + 1 < lines.size()) {
+                    plainBuffer += QLatin1Char('\n');
+                }
+            }
+            continue;
+        }
+
+        const int fencePos = line.indexOf(QStringLiteral("```"));
+        if (fencePos >= 0) {
+            const QString beforeFence = line.left(fencePos);
+            if (!beforeFence.isEmpty()) {
+                codeBuffer += beforeFence;
+            }
+            flushCode();
+            inCode = false;
+
+            const QString trailing = line.mid(fencePos + 3);
+            if (!trailing.isEmpty()) {
+                plainBuffer += trailing;
+                if (i + 1 < lines.size()) {
+                    plainBuffer += QLatin1Char('\n');
+                }
+            }
+            continue;
+        }
+
+        codeBuffer += line;
+        if (i + 1 < lines.size()) {
+            codeBuffer += QLatin1Char('\n');
+        }
+    }
+
+    if (inCode) {
+        flushCode();
+    } else {
+        flushPlain();
     }
     return segments;
 }
+
 
 QString extractCodeBlocks(const QString &text)
 {
@@ -225,6 +265,37 @@ QString bodyFragmentFromDocument(const QTextDocument &doc)
     return html;
 }
 
+QString escapeHtmlLikeTags(const QString &text)
+{
+    QString sanitized = text;
+    QRegularExpression tagPattern(QStringLiteral(R"(<(/?[A-Za-z!][^>\n]{0,200})>)"));
+    QRegularExpressionMatchIterator it = tagPattern.globalMatch(sanitized);
+
+    struct Replacement {
+        int start = 0;
+        int length = 0;
+        QString value;
+    };
+    QVector<Replacement> replacements;
+    while (it.hasNext()) {
+        const QRegularExpressionMatch match = it.next();
+        if (!match.hasMatch()) {
+            continue;
+        }
+        Replacement repl;
+        repl.start = match.capturedStart(0);
+        repl.length = match.capturedLength(0);
+        repl.value = match.captured(0).toHtmlEscaped();
+        replacements.push_back(repl);
+    }
+
+    for (int i = replacements.size() - 1; i >= 0; --i) {
+        const Replacement &repl = replacements.at(i);
+        sanitized.replace(repl.start, repl.length, repl.value);
+    }
+    return sanitized;
+}
+
 QString markdownFragmentToHtml(const QString &markdown)
 {
     const QString trimmed = markdown.trimmed();
@@ -234,7 +305,7 @@ QString markdownFragmentToHtml(const QString &markdown)
 
     QTextDocument doc;
     doc.setDocumentMargin(0.0);
-    doc.setMarkdown(trimmed);
+    doc.setMarkdown(escapeHtmlLikeTags(trimmed));
     QString html = bodyFragmentFromDocument(doc);
 
     html.replace(QStringLiteral("<pre"), QStringLiteral("<pre style=\"background:#0b1220;color:#e5e7eb;padding:12px;border-radius:10px;border:1px solid #243043;overflow:auto;\""));
@@ -433,7 +504,7 @@ MainWindow::MainWindow(QWidget *parent)
     m_reindexButton = new QPushButton(QStringLiteral("Reindex docs"), chatPane);
     m_testBackendButton = nullptr;
     m_refreshModelsButton = new QPushButton(QStringLiteral("List models"), chatPane);
-    m_rememberButton = new QPushButton(QStringLiteral("Remember input"), chatPane);
+    m_rememberButton = new QPushButton(QStringLiteral("Manual Memory"), chatPane);
     m_copyLastAnswerButton = new QPushButton(QStringLiteral("Copy answer"), chatPane);
     m_copyCodeBlocksButton = nullptr;
     m_importFilesButton = new QPushButton(QStringLiteral("Import files"), chatPane);
@@ -493,7 +564,6 @@ MainWindow::MainWindow(QWidget *parent)
     m_diagnostics->setStyleSheet(QStringLiteral("QTextEdit { background: #0b1220; color: #e5e7eb; }"));
     diagnosticsLayout->addLayout(diagnosticsHeader);
     diagnosticsLayout->addWidget(m_diagnostics, 1);
-    tabs->addTab(diagnosticsTab, QStringLiteral("Diagnostics"));
 
     auto *promptLabTab = new QWidget(tabs);
     auto *promptLabLayout = new QVBoxLayout(promptLabTab);
@@ -555,11 +625,9 @@ MainWindow::MainWindow(QWidget *parent)
     promptLabLayout->addWidget(m_promptLabNotes);
     promptLabLayout->addLayout(promptLabButtons);
     promptLabLayout->addWidget(m_promptLabPreview, 1);
-    tabs->addTab(promptLabTab, QStringLiteral("Prompt Lab"));
 
     m_backendSummary = new QPlainTextEdit(tabs);
     m_backendSummary->setReadOnly(true);
-    tabs->addTab(m_backendSummary, QStringLiteral("Backend"));
 
     auto *kbTab = new QWidget(tabs);
     auto *kbLayout = new QVBoxLayout(kbTab);
@@ -592,7 +660,11 @@ MainWindow::MainWindow(QWidget *parent)
     kbLayout->addLayout(kbFilterLayout);
     kbLayout->addWidget(m_sourceInventoryList, 1);
     kbLayout->addLayout(kbButtons);
+
+    tabs->addTab(diagnosticsTab, QStringLiteral("Diagnostics"));
     tabs->addTab(kbTab, QStringLiteral("Knowledge Base"));
+    tabs->addTab(promptLabTab, QStringLiteral("Prompt Lab"));
+    tabs->addTab(m_backendSummary, QStringLiteral("Backend"));
 
     m_outlinePlan = new QPlainTextEdit(tabs);
     m_outlinePlan->setReadOnly(true);
@@ -640,6 +712,87 @@ MainWindow::MainWindow(QWidget *parent)
     m_taskProgressBar->setValue(0);
     m_taskProgressBar->setFormat(QStringLiteral("%p%"));
     statusBar()->addPermanentWidget(m_taskProgressBar, 1);
+
+    const auto setActionTip = [](QAction *action, const QString &tip) {
+        if (action != nullptr) {
+            action->setToolTip(tip);
+            action->setStatusTip(tip);
+        }
+    };
+    const auto setWidgetTip = [](QWidget *widget, const QString &tip) {
+        if (widget != nullptr) {
+            widget->setToolTip(tip);
+            widget->setStatusTip(tip);
+        }
+    };
+
+    setActionTip(newConversationAction, QStringLiteral("Create a fresh conversation and keep the current history saved."));
+    setActionTip(m_clearMemoriesAction, QStringLiteral("Remove all persisted memories saved by Amelia."));
+    setActionTip(quitAction, QStringLiteral("Close Amelia Qt6."));
+    setActionTip(m_aboutAmeliaAction, QStringLiteral("Show version and build details for Amelia Qt6."));
+    setActionTip(m_aboutQtAction, QStringLiteral("Show the Qt version and licensing information."));
+
+    setWidgetTip(m_conversationsList, QStringLiteral("Saved conversations. Select one to restore its transcript and summary."));
+    setWidgetTip(m_newConversationButton, QStringLiteral("Start a new conversation without deleting older ones."));
+    setWidgetTip(m_deleteConversationButton, QStringLiteral("Delete the selected saved conversation from local storage."));
+    setWidgetTip(m_transcript, QStringLiteral("Formatted transcript view with clickable copy links for code blocks."));
+    setWidgetTip(m_input, QStringLiteral("Write your prompt here. Shift+Enter adds a new line; send when ready."));
+    setWidgetTip(m_prioritizedAssetsList, QStringLiteral("Knowledge Base assets currently prioritized for the next prompt or pinned across prompts."));
+    setWidgetTip(m_removePrioritizedAssetButton, QStringLiteral("Remove the selected prioritized assets from the active retrieval list."));
+    setWidgetTip(m_clearPrioritizedAssetsButton, QStringLiteral("Clear all one-shot and pinned Knowledge Base priorities."));
+    setWidgetTip(m_externalSearchCheck, QStringLiteral("Allow Amelia to use sanitized external web search for the current prompt."));
+    setWidgetTip(m_modelCombo, QStringLiteral("Choose which Ollama model Amelia should use for generation."));
+    setWidgetTip(m_sendButton, QStringLiteral("Submit the current prompt to Amelia."));
+    setWidgetTip(m_stopButton, QStringLiteral("Stop the current generation, indexing, or long-running task."));
+    setWidgetTip(m_reindexButton, QStringLiteral("Refresh the indexed Knowledge Base and rebuild changed assets."));
+    setWidgetTip(m_refreshModelsButton, QStringLiteral("Query Ollama and refresh the available local model list."));
+    setWidgetTip(m_rememberButton, QStringLiteral("Save the current input as a manual memory for future grounded prompts."));
+    setWidgetTip(m_copyLastAnswerButton, QStringLiteral("Copy the most recent full assistant answer to the clipboard."));
+    setWidgetTip(m_importFilesButton, QStringLiteral("Import one or more files into the local Knowledge Base."));
+    setWidgetTip(m_importFolderButton, QStringLiteral("Import an entire folder into the local Knowledge Base."));
+    setWidgetTip(m_statusLabel, QStringLiteral("Current high-level status for prompt preparation, indexing, and generation."));
+    setWidgetTip(m_reasoningTraceToggleButton, QStringLiteral("Toggle capture of backend reasoning traces when the model exposes them."));
+    setWidgetTip(m_diagnostics, QStringLiteral("Operational diagnostics, backend events, and optional reasoning trace output."));
+    setWidgetTip(m_promptLabPresetCombo, QStringLiteral("Choose a Prompt Lab recipe preset as a starting point."));
+    setWidgetTip(m_promptLabGoal, QStringLiteral("Describe the task the recipe should optimize for."));
+    setWidgetTip(m_promptLabAssets, QStringLiteral("Local files or folders to include or import for the task."));
+    setWidgetTip(m_promptLabBrowseFilesButton, QStringLiteral("Pick one or more local files for the Prompt Lab recipe."));
+    setWidgetTip(m_promptLabBrowseFolderButton, QStringLiteral("Pick a local folder for the Prompt Lab recipe."));
+    setWidgetTip(m_promptLabKbAssets, QStringLiteral("Reference existing Knowledge Base assets by name, path, tag, or topic."));
+    setWidgetTip(m_promptLabNotes, QStringLiteral("Add optional constraints, audience details, schemas, or output formatting notes."));
+    setWidgetTip(m_promptLabGenerateButton, QStringLiteral("Generate a Prompt Lab recipe preview from the current fields."));
+    setWidgetTip(m_promptLabUseButton, QStringLiteral("Copy the composed Prompt Lab recipe into the main input box."));
+    setWidgetTip(m_promptLabCopyRecipeButton, QStringLiteral("Copy the composed Prompt Lab recipe to the clipboard."));
+    setWidgetTip(m_promptLabImportButton, QStringLiteral("Import the Prompt Lab local assets directly into the Knowledge Base."));
+    setWidgetTip(m_promptLabPreview, QStringLiteral("Preview of the generated Prompt Lab recipe and JSONL helper output."));
+    setWidgetTip(m_backendSummary, QStringLiteral("Snapshot of active backend configuration, models, and runtime settings."));
+    setWidgetTip(m_sourceInventory, QStringLiteral("Summary of indexed Knowledge Base sources and cache state."));
+    setWidgetTip(m_sourceInventoryFilter, QStringLiteral("Filter indexed Knowledge Base assets by filename or path."));
+    setWidgetTip(m_sourceInventoryList, QStringLiteral("Indexed Knowledge Base assets. Select items to prioritize, pin, or remove."));
+    setWidgetTip(m_prioritizeSelectedAssetButton, QStringLiteral("Use the selected Knowledge Base assets for the next prompt only."));
+    setWidgetTip(m_pinSelectedAssetButton, QStringLiteral("Keep the selected Knowledge Base assets pinned across prompts until cleared."));
+    setWidgetTip(m_removeSelectedAssetButton, QStringLiteral("Remove the selected assets from the Knowledge Base index and storage."));
+    setWidgetTip(m_clearKnowledgeBaseButton, QStringLiteral("Remove all imported assets from the Knowledge Base."));
+    setWidgetTip(m_outlinePlan, QStringLiteral("Outline-first planning and structured execution drafts."));
+    setWidgetTip(m_localSources, QStringLiteral("Grounding excerpts and citations retrieved from local Knowledge Base assets."));
+    setWidgetTip(m_externalSources, QStringLiteral("Sanitized snippets collected from external web search results."));
+    setWidgetTip(m_memoriesView, QStringLiteral("Persisted memories Amelia can reuse across conversations."));
+    setWidgetTip(m_sessionSummary, QStringLiteral("Rolling summary for the current conversation."));
+    setWidgetTip(m_privacyPreview, QStringLiteral("Preview of what local and external context will be shared with the model."));
+    setWidgetTip(m_taskProgressBar, QStringLiteral("Progress for prompt preparation, external search, indexing, and answer generation."));
+
+    if (tabs->tabBar() != nullptr) {
+        tabs->tabBar()->setTabToolTip(0, QStringLiteral("Diagnostics, backend events, and optional reasoning traces."));
+        tabs->tabBar()->setTabToolTip(1, QStringLiteral("Indexed assets, filtering, prioritization, and Knowledge Base maintenance."));
+        tabs->tabBar()->setTabToolTip(2, QStringLiteral("Recipe builder for structured prompts and asset-aware workflows."));
+        tabs->tabBar()->setTabToolTip(3, QStringLiteral("Backend summary including models and runtime configuration."));
+        tabs->tabBar()->setTabToolTip(4, QStringLiteral("Outline planning and structured execution drafts."));
+        tabs->tabBar()->setTabToolTip(5, QStringLiteral("Local retrieval evidence used to ground answers."));
+        tabs->tabBar()->setTabToolTip(6, QStringLiteral("External sanitized search evidence used to enrich answers."));
+        tabs->tabBar()->setTabToolTip(7, QStringLiteral("Long-term memory entries saved by Amelia."));
+        tabs->tabBar()->setTabToolTip(8, QStringLiteral("Conversation summary for the active session."));
+        tabs->tabBar()->setTabToolTip(9, QStringLiteral("Privacy and data-sharing preview for prompt submission."));
+    }
 
     connect(m_sendButton, &QPushButton::clicked, this, &MainWindow::onSendClicked);
     connect(m_stopButton, &QPushButton::clicked, this, &MainWindow::stopRequested);
@@ -969,21 +1122,62 @@ void MainWindow::rebuildTranscriptFromPlainText(const QString &text)
     m_lastAssistantMessage.clear();
     m_transcriptCodeBlocks.clear();
 
-    const QStringList blocks = text.split(QRegularExpression(QStringLiteral("\n\\s*\n")), Qt::SkipEmptyParts);
-    for (const QString &block : blocks) {
-        const QString trimmed = block.trimmed();
-        if (trimmed.startsWith(QStringLiteral("USER> "))) {
-            appendTranscriptEntry(QStringLiteral("user"), trimmed.mid(6));
-        } else if (trimmed.startsWith(QStringLiteral("ASSISTANT> "))) {
-            const QString message = trimmed.mid(11);
+    QString currentRole;
+    QStringList currentLines;
+
+    const auto flushMessage = [this, &currentRole, &currentLines]() {
+        if (currentRole.isEmpty()) {
+            currentLines.clear();
+            return;
+        }
+
+        QString message = currentLines.join(QStringLiteral("\n"));
+        while (message.startsWith(QLatin1Char('\n'))) {
+            message.remove(0, 1);
+        }
+        while (message.endsWith(QLatin1Char('\n'))) {
+            message.chop(1);
+        }
+        if (message.trimmed().isEmpty()) {
+            currentRole.clear();
+            currentLines.clear();
+            return;
+        }
+
+        if (currentRole == QStringLiteral("assistant")) {
             m_lastAssistantMessage = message;
-            appendTranscriptEntry(QStringLiteral("assistant"), message);
-        } else if (trimmed.startsWith(QStringLiteral("[system] "))) {
-            appendTranscriptEntry(QStringLiteral("system"), trimmed.mid(9));
-        } else if (!trimmed.isEmpty()) {
-            appendTranscriptEntry(QStringLiteral("system"), trimmed);
+        }
+        appendTranscriptEntry(currentRole, message);
+        currentRole.clear();
+        currentLines.clear();
+    };
+
+    const QStringList lines = text.split(QLatin1Char('\n'), Qt::KeepEmptyParts);
+    for (const QString &line : lines) {
+        if (line.startsWith(QStringLiteral("USER> "))) {
+            flushMessage();
+            currentRole = QStringLiteral("user");
+            currentLines << line.mid(6);
+        } else if (line.startsWith(QStringLiteral("ASSISTANT> "))) {
+            flushMessage();
+            currentRole = QStringLiteral("assistant");
+            currentLines << line.mid(11);
+        } else if (line.startsWith(QStringLiteral("[system] "))) {
+            flushMessage();
+            currentRole = QStringLiteral("system");
+            currentLines << line.mid(9);
+        } else if (line.startsWith(QStringLiteral("[status] "))) {
+            flushMessage();
+            currentRole = QStringLiteral("status");
+            currentLines << line.mid(9);
+        } else if (!currentRole.isEmpty()) {
+            currentLines << line;
+        } else if (!line.trimmed().isEmpty()) {
+            currentRole = QStringLiteral("system");
+            currentLines << line;
         }
     }
+    flushMessage();
 }
 
 void MainWindow::setTranscript(const QString &text)

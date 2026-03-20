@@ -17,7 +17,7 @@ struct AppConfig {
     QString knowledgeRoot;
 
     // --- RAG / retrieval ---
-    bool enableExternalSearch = true;
+    bool enableExternalSearch = false;
     bool autoSuggestExternalSearch = true;
     bool probeOllamaOnStartup = true;
     bool restoreLastConversationOnStartup = true;

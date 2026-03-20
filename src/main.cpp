@@ -31,7 +31,7 @@ R"JSON({
   "docsRoot": "${HOME}/.amelia_qt6/docs/sample",
   "dataRoot": "${HOME}/.amelia_qt6",
   "knowledgeRoot": "${HOME}/.amelia_qt6/knowledge",
-  "enableExternalSearch": true,
+  "enableExternalSearch": false,
   "autoSuggestExternalSearch": true,
   "probeOllamaOnStartup": true,
   "restoreLastConversationOnStartup": true,
