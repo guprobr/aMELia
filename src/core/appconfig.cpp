@@ -32,7 +32,7 @@ R"JSON({
   "autoSuggestExternalSearch": true,
   "probeOllamaOnStartup": true,
   "restoreLastConversationOnStartup": true,
-  "autoPersistMemories": true,
+  "autoPersistMemories": false,
   "autoSaveSessionSummary": true,
   "seedDocsIntoKnowledge": true,
   "enableSemanticRetrieval": true,
@@ -297,7 +297,11 @@ AppConfig AppConfigLoader::load(const QString &path, QString *errorMessage)
     config.autoSuggestExternalSearch = obj.value(QStringLiteral("autoSuggestExternalSearch")).toBool(config.autoSuggestExternalSearch);
     config.probeOllamaOnStartup = obj.value(QStringLiteral("probeOllamaOnStartup")).toBool(config.probeOllamaOnStartup);
     config.restoreLastConversationOnStartup = obj.value(QStringLiteral("restoreLastConversationOnStartup")).toBool(config.restoreLastConversationOnStartup);
-    config.autoPersistMemories = obj.value(QStringLiteral("autoPersistMemories")).toBool(config.autoPersistMemories);
+    const bool requestedAutoPersistMemories = obj.value(QStringLiteral("autoPersistMemories")).toBool(config.autoPersistMemories);
+    config.autoPersistMemories = false;
+    if (requestedAutoPersistMemories) {
+        notices << QStringLiteral("autoPersistMemories is temporarily disabled in this build to prevent prompt-loop feedback. Manual Memory remains available.");
+    }
     config.autoSaveSessionSummary = obj.value(QStringLiteral("autoSaveSessionSummary")).toBool(config.autoSaveSessionSummary);
     config.seedDocsIntoKnowledge = obj.value(QStringLiteral("seedDocsIntoKnowledge")).toBool(config.seedDocsIntoKnowledge);
     config.enableDesktopNotifications = obj.value(QStringLiteral("enableDesktopNotifications")).toBool(config.enableDesktopNotifications);

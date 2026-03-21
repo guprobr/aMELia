@@ -57,6 +57,7 @@ public:
 
     QVector<MemoryRecord> loadMemories(QString *errorMessage = nullptr) const;
     bool saveMemory(const MemoryRecord &memory, QString *errorMessage = nullptr);
+    bool deleteMemoryById(const QString &memoryId, QString *errorMessage = nullptr);
     bool clearMemories(QString *errorMessage = nullptr);
 
 private:

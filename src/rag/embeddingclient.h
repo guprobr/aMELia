@@ -5,8 +5,8 @@
 #include <QVector>
 #include <QtGlobal>
 
-#include <functional>
 #include <atomic>
+#include <functional>
 
 class EmbeddingClient {
 public:
@@ -24,6 +24,7 @@ public:
                          const QString &model,
                          int timeoutMs = 120000,
                          int batchSize = 12);
+    void setDiagnosticCallback(const std::function<void(const QString &, const QString &)> &callback);
 
     QString backendName() const;
     QString cacheKey() const;
@@ -42,8 +43,11 @@ public:
     static float cosineSimilarity(const QVector<float> &a, const QVector<float> &b);
 
 private:
+    void logDiagnostic(const QString &category, const QString &message) const;
     NeuralAttemptResult tryOllamaEmbeddings(const QStringList &texts, const std::atomic_bool *cancelRequested = nullptr) const;
-    NeuralAttemptResult tryOllamaEmbeddingsViaEndpoint(const QStringList &texts, const QString &endpointPath, const std::atomic_bool *cancelRequested = nullptr) const;
+    NeuralAttemptResult tryOllamaEmbeddingsViaEndpoint(const QStringList &texts,
+                                                       const QString &endpointPath,
+                                                       const std::atomic_bool *cancelRequested = nullptr) const;
 
     QString m_ollamaBaseUrl;
     QString m_embeddingModel;
@@ -54,4 +58,5 @@ private:
     mutable qint64 m_disableNeuralUntilMs = 0;
     mutable QString m_lastSuccessfulEndpoint = QStringLiteral("/api/embed");
     mutable QString m_lastErrorSummary;
+    std::function<void(const QString &, const QString &)> m_diagnosticCallback;
 };

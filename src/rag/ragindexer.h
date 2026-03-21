@@ -31,6 +31,7 @@ public:
     void setCachePath(const QString &cachePath);
     void setSemanticEnabled(bool enabled);
     void configureEmbeddingBackend(const QString &baseUrl, const QString &model, int timeoutMs, int batchSize);
+    void setDiagnosticCallback(const std::function<void(const QString &, const QString &)> &callback);
     void requestCancel();
 
     int reindex(const std::function<void(int, int, const QString &)> &progressCallback = {});
@@ -120,4 +121,5 @@ private:
     bool m_semanticEnabled = true;
     std::atomic_bool m_cancelRequested{false};
     bool m_lastReindexCanceled = false;
+    std::function<void(const QString &, const QString &)> m_diagnosticCallback;
 };

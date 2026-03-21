@@ -342,39 +342,39 @@ ChunkingProfile chooseChunkingProfile(const QString &sourceType,
 {
     ChunkingProfile profile;
     if (sourceType == QStringLiteral("code") || sourceType == QStringLiteral("config")) {
-        profile.targetChunkChars = semanticReady ? 1200 : 2100;
-        profile.minimumChunkChars = semanticReady ? 420 : 780;
-        profile.hardChunkChars = semanticReady ? 1650 : 2850;
-        profile.overlapChars = semanticReady ? 110 : 220;
+        profile.targetChunkChars = semanticReady ? 1000 : 2100;
+        profile.minimumChunkChars = semanticReady ? 380 : 780;
+        profile.hardChunkChars = semanticReady ? 1300 : 2850;
+        profile.overlapChars = semanticReady ? 90 : 220;
         profile.label = semanticReady ? QStringLiteral("code-compact-semantic") : QStringLiteral("code-wide-lexical");
     } else if (sourceType == QStringLiteral("log")) {
-        profile.targetChunkChars = semanticReady ? 1300 : 2200;
-        profile.minimumChunkChars = semanticReady ? 480 : 900;
-        profile.hardChunkChars = semanticReady ? 1700 : 3000;
-        profile.overlapChars = semanticReady ? 100 : 220;
+        profile.targetChunkChars = semanticReady ? 1050 : 2200;
+        profile.minimumChunkChars = semanticReady ? 420 : 900;
+        profile.hardChunkChars = semanticReady ? 1350 : 3000;
+        profile.overlapChars = semanticReady ? 90 : 220;
         profile.label = semanticReady ? QStringLiteral("log-compact-semantic") : QStringLiteral("log-wide-lexical");
     } else {
-        profile.targetChunkChars = semanticReady ? 1450 : 2400;
-        profile.minimumChunkChars = semanticReady ? 650 : 1100;
-        profile.hardChunkChars = semanticReady ? 1850 : 3200;
-        profile.overlapChars = semanticReady ? 140 : 360;
+        profile.targetChunkChars = semanticReady ? 1200 : 2400;
+        profile.minimumChunkChars = semanticReady ? 520 : 1100;
+        profile.hardChunkChars = semanticReady ? 1500 : 3200;
+        profile.overlapChars = semanticReady ? 110 : 360;
         profile.label = semanticReady ? QStringLiteral("doc-balanced-semantic") : QStringLiteral("doc-wide-lexical");
     }
 
     const bool largeFile = fileSizeBytes >= 1024 * 1024;
     const bool veryLargeFile = fileSizeBytes >= 4 * 1024 * 1024 || blockCount >= 450;
     if (largeFile) {
-        profile.targetChunkChars += semanticReady ? 250 : 300;
-        profile.minimumChunkChars += semanticReady ? 120 : 140;
-        profile.hardChunkChars += semanticReady ? 450 : 500;
-        profile.overlapChars += semanticReady ? 40 : 60;
+        profile.targetChunkChars += semanticReady ? 120 : 300;
+        profile.minimumChunkChars += semanticReady ? 80 : 140;
+        profile.hardChunkChars += semanticReady ? 180 : 500;
+        profile.overlapChars += semanticReady ? 20 : 60;
         profile.label += QStringLiteral("-large");
     }
     if (veryLargeFile) {
-        profile.targetChunkChars += semanticReady ? 250 : 300;
-        profile.minimumChunkChars += semanticReady ? 100 : 140;
-        profile.hardChunkChars += semanticReady ? 350 : 450;
-        profile.overlapChars += semanticReady ? 30 : 50;
+        profile.targetChunkChars += semanticReady ? 80 : 300;
+        profile.minimumChunkChars += semanticReady ? 60 : 140;
+        profile.hardChunkChars += semanticReady ? 120 : 450;
+        profile.overlapChars += semanticReady ? 15 : 50;
         profile.label += QStringLiteral("-xlarge");
     }
     return profile;
@@ -1394,6 +1394,12 @@ void RagIndexer::setSemanticEnabled(bool enabled)
 void RagIndexer::configureEmbeddingBackend(const QString &baseUrl, const QString &model, int timeoutMs, int batchSize)
 {
     m_embeddingClient.configureOllama(baseUrl, model, timeoutMs, batchSize);
+}
+
+void RagIndexer::setDiagnosticCallback(const std::function<void(const QString &, const QString &)> &callback)
+{
+    m_diagnosticCallback = callback;
+    m_embeddingClient.setDiagnosticCallback(callback);
 }
 
 void RagIndexer::requestCancel()

@@ -35,7 +35,7 @@ struct AppConfig {
     bool autoSuggestExternalSearch = true;
     bool probeOllamaOnStartup = true;
     bool restoreLastConversationOnStartup = true;
-    bool autoPersistMemories = true;
+    bool autoPersistMemories = false;
     bool autoSaveSessionSummary = true;
     bool seedDocsIntoKnowledge = true;
     bool enableDesktopNotifications = true;

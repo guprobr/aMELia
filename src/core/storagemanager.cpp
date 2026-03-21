@@ -541,6 +541,38 @@ bool StorageManager::saveMemory(const MemoryRecord &memory, QString *errorMessag
     return writeJsonFile(memoriesPath(), QJsonDocument(array).toJson(QJsonDocument::Indented), errorMessage);
 }
 
+bool StorageManager::deleteMemoryById(const QString &memoryId, QString *errorMessage)
+{
+    const QString trimmedId = memoryId.trimmed();
+    if (trimmedId.isEmpty()) {
+        if (errorMessage != nullptr) {
+            *errorMessage = QStringLiteral("Memory id is empty.");
+        }
+        return false;
+    }
+
+    QVector<MemoryRecord> memories = loadMemories(errorMessage);
+    const auto newEnd = std::remove_if(memories.begin(), memories.end(), [&](const MemoryRecord &memory) {
+        return memory.id.trimmed() == trimmedId;
+    });
+
+    if (newEnd == memories.end()) {
+        if (errorMessage != nullptr) {
+            *errorMessage = QStringLiteral("Memory not found.");
+        }
+        return false;
+    }
+
+    memories.erase(newEnd, memories.end());
+
+    QJsonArray array;
+    for (const MemoryRecord &entry : memories) {
+        array.push_back(memoryToJson(entry));
+    }
+
+    return writeJsonFile(memoriesPath(), QJsonDocument(array).toJson(QJsonDocument::Indented), errorMessage);
+}
+
 bool StorageManager::clearMemories(QString *errorMessage)
 {
     return writeJsonFile(memoriesPath(), QJsonDocument(QJsonArray()).toJson(QJsonDocument::Indented), errorMessage);

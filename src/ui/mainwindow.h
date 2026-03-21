@@ -25,6 +25,7 @@ class QTextEdit;
 class QTimer;
 class QUrl;
 class QWidget;
+class QScrollBar;
 
 class MainWindow : public QMainWindow {
     Q_OBJECT
@@ -67,6 +68,7 @@ signals:
     void newConversationRequested();
     void conversationSelected(const QString &conversationId);
     void rememberRequested(const QString &text);
+    void deleteMemoryRequested(const QString &memoryId);
     void backendModelSelected(const QString &model);
     void importPathsRequested(const QStringList &paths, const QString &label);
     void addPathsToKnowledgeCollectionRequested(const QStringList &paths, const QString &collectionId);
@@ -79,6 +81,7 @@ signals:
     void clearKnowledgeBaseRequested();
     void deleteConversationRequested(const QString &conversationId);
     void reasoningTraceCaptureToggled(bool enabled);
+    void verboseDiagnosticsToggled(bool enabled);
     void prioritizedKnowledgeAssetsChanged(const QStringList &paths);
     void renameKnowledgeCollectionRequested(const QString &collectionId, const QString &newLabel);
 
@@ -94,6 +97,7 @@ private slots:
     void showAboutAmelia();
     void showAboutQtDialog();
     void onClearMemoriesTriggered();
+    void onDeleteSelectedMemoryClicked();
     void onPromptLabGenerateClicked();
     void onPromptLabUseClicked();
     void onPromptLabImportAssetsClicked();
@@ -109,6 +113,7 @@ private slots:
     void onTranscriptAnchorClicked(const QUrl &url);
     void onDeleteConversationClicked();
     void onReasoningTraceToggleToggled(bool checked);
+    void onVerboseDiagnosticsToggleToggled(bool checked);
     void onPrioritizeSelectedKnowledgeAssetsClicked();
     void onPinSelectedKnowledgeAssetsClicked();
     void onRemoveSelectedPrioritizedAssetsClicked();
@@ -141,6 +146,7 @@ private:
     void showKnowledgePropertiesDialog(const QString &title, const QJsonObject &properties, const QString &nodeType);
     bool confirmKnowledgeBaseReindexAction(const QString &action, const QString &details = QString()) const;
     void setKnowledgeInventoryRefreshVisible(bool visible, const QString &label = QString());
+    void updateSelectedMemoryDetails();
     void beginResponseProgress(const QString &label = QString());
     void setResponseProgressStage(int value, const QString &label);
     void setResponseProgressBusy(const QString &label);
@@ -159,7 +165,8 @@ private:
     QPlainTextEdit *m_externalSources = nullptr;
     QPlainTextEdit *m_outlinePlan = nullptr;
     QPlainTextEdit *m_backendSummary = nullptr;
-    QPlainTextEdit *m_memoriesView = nullptr;
+    QTreeWidget *m_memoriesView = nullptr;
+    QPlainTextEdit *m_memoryDetails = nullptr;
     QPlainTextEdit *m_sessionSummary = nullptr;
     QTextEdit *m_diagnostics = nullptr;
     QPlainTextEdit *m_sourceInventory = nullptr;
@@ -188,6 +195,7 @@ private:
     QPushButton *m_refreshModelsButton = nullptr;
     QPushButton *m_newConversationButton = nullptr;
     QPushButton *m_rememberButton = nullptr;
+    QPushButton *m_deleteMemoryButton = nullptr;
     QPushButton *m_importFilesButton = nullptr;
     QPushButton *m_importFolderButton = nullptr;
     QPushButton *m_promptLabGenerateButton = nullptr;
@@ -199,7 +207,9 @@ private:
     QPushButton *m_copyLastAnswerButton = nullptr;
     QPushButton *m_copyCodeBlocksButton = nullptr;
     QPushButton *m_reasoningTraceToggleButton = nullptr;
+    QPushButton *m_verboseDiagnosticsToggleButton = nullptr;
     QLabel *m_reasoningTraceInfoLabel = nullptr;
+    QLabel *m_verboseDiagnosticsInfoLabel = nullptr;
     QPushButton *m_prioritizeSelectedAssetButton = nullptr;
     QPushButton *m_pinSelectedAssetButton = nullptr;
     QPushButton *m_removePrioritizedAssetButton = nullptr;
@@ -227,6 +237,8 @@ private:
     QString m_knowledgeInventoryRefreshBaseLabel;
     bool m_updatingConversationList = false;
     bool m_updatingModelList = false;
+    bool m_transcriptAutoScroll = true;
+    QAction *m_newConversationAction = nullptr;
     QAction *m_aboutAmeliaAction = nullptr;
     QAction *m_configurationAction = nullptr;
     QAction *m_aboutQtAction = nullptr;

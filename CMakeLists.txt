@@ -19,6 +19,8 @@ qt_add_executable(amelia_qt6
     src/core/appconfig.h
     src/core/appconfig.cpp
     src/core/appversion.h
+    src/core/transcriptformatter.h
+    src/core/transcriptformatter.cpp
     src/ui/bootstrapdialog.h
     src/ui/bootstrapdialog.cpp
     src/ui/mainwindow.h

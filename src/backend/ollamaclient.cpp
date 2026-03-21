@@ -5,12 +5,14 @@
 #include <QJsonObject>
 #include <QNetworkReply>
 #include <QNetworkRequest>
+#include <QPointer>
 #include <QRegularExpression>
 #include <QUrl>
 
 namespace {
 constexpr auto kAmeliaThinkingOpenTag = "<amelia_thinking>";
 constexpr auto kAmeliaThinkingCloseTag = "</amelia_thinking>";
+constexpr int kDiagnosticPreviewChars = 520;
 
 int trailingPrefixOverlap(const QString &text, const QString &tag)
 {
@@ -21,6 +23,22 @@ int trailingPrefixOverlap(const QString &text, const QString &tag)
         }
     }
     return 0;
+}
+
+QString previewForDiagnostics(QString text)
+{
+    text.replace(QStringLiteral("\r\n"), QStringLiteral("\n"));
+    text.replace(QLatin1Char('\r'), QLatin1Char('\n'));
+    text = text.simplified();
+    if (text.size() <= kDiagnosticPreviewChars) {
+        return text;
+    }
+    return text.left(kDiagnosticPreviewChars).trimmed() + QStringLiteral("...");
+}
+
+bool modelIsGptOss(const QString &model)
+{
+    return model.trimmed().toLower().contains(QStringLiteral("gpt-oss"));
 }
 }
 
@@ -43,6 +61,7 @@ void OllamaClient::generate(const QString &baseUrl,
 
     m_activeBaseUrl = baseUrl.trimmed();
     m_activeModel = model.trimmed();
+    m_requestedThinkMode = thinkRequestModeForModel(model);
 
     const QUrl url = buildEndpointUrl(baseUrl, QStringLiteral("/api/chat"));
     QNetworkRequest request(url);
@@ -80,13 +99,27 @@ void OllamaClient::generate(const QString &baseUrl,
     }
     payload.insert(QStringLiteral("options"), options);
 
-    // When Diagnostics reasoning capture is enabled, ask Ollama for the
-    // model's explicit thinking stream when the backend/model supports it.
-    // Otherwise keep thinking suppressed to reduce latency and avoid stray
-    // hidden reasoning text bleeding into the visible answer.
-    payload.insert(QStringLiteral("think"), m_reasoningTraceEnabled);
+    if (modelIsGptOss(model)) {
+        payload.insert(QStringLiteral("think"), QStringLiteral("low"));
+        if (!m_reasoningTraceEnabled) {
+            emit diagnosticMessage(QStringLiteral("backend"),
+                                   QStringLiteral("GPT-OSS defaults to backend thinking; Amelia now requests think=low even when trace capture is off, suppresses surfaced reasoning locally, and only treats visible answer text as real stream progress."));
+        }
+    } else {
+        payload.insert(QStringLiteral("think"), m_reasoningTraceEnabled);
+    }
 
-    m_reply = m_network.post(request, QJsonDocument(payload).toJson(QJsonDocument::Compact));
+    const QByteArray requestBody = QJsonDocument(payload).toJson(QJsonDocument::Compact);
+    emit diagnosticMessage(QStringLiteral("backend"),
+                           QStringLiteral("Ollama request %1 | model=%2 | messages=%3 | think=%4 | body_bytes=%5 | preview=%6")
+                               .arg(url.toString(),
+                                    model,
+                                    QString::number(messages.size()),
+                                    m_requestedThinkMode,
+                                    QString::number(requestBody.size()),
+                                    summarizePayloadForDiagnostics(payload)));
+
+    m_reply = m_network.post(request, requestBody);
     if (m_reply == nullptr) {
         emit responseError(QStringLiteral("Failed to create Ollama network request."));
         return;
@@ -108,13 +141,25 @@ void OllamaClient::generate(const QString &baseUrl,
 
 void OllamaClient::probe(const QString &baseUrl, const QString &expectedModel)
 {
-    QNetworkRequest request(buildEndpointUrl(baseUrl, QStringLiteral("/api/tags")));
+    const QUrl url = buildEndpointUrl(baseUrl, QStringLiteral("/api/tags"));
+    QNetworkRequest request(url);
     request.setTransferTimeout(m_probeTimeoutMs);
+    emit diagnosticMessage(QStringLiteral("backend"),
+                           QStringLiteral("Ollama probe request %1 | timeout_ms=%2")
+                               .arg(url.toString())
+                               .arg(m_probeTimeoutMs));
     auto *reply = m_network.get(request);
 
-    connect(reply, &QNetworkReply::finished, this, [this, reply, baseUrl, expectedModel]() {
+    connect(reply, &QNetworkReply::finished, this, [this, reply, url, baseUrl, expectedModel]() {
         const QNetworkReply::NetworkError error = reply->error();
         const QByteArray body = reply->readAll();
+        const int httpStatus = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+        emit diagnosticMessage(QStringLiteral("backend"),
+                               QStringLiteral("Ollama probe response %1 | http=%2 | bytes=%3 | preview=%4")
+                                   .arg(url.toString())
+                                   .arg(httpStatus)
+                                   .arg(body.size())
+                                   .arg(previewForDiagnostics(QString::fromUtf8(body))));
 
         if (error != QNetworkReply::NoError) {
             const QString message = describeNetworkFailure(reply,
@@ -162,13 +207,25 @@ void OllamaClient::probe(const QString &baseUrl, const QString &expectedModel)
 
 void OllamaClient::listModels(const QString &baseUrl)
 {
-    QNetworkRequest request(buildEndpointUrl(baseUrl, QStringLiteral("/api/tags")));
+    const QUrl url = buildEndpointUrl(baseUrl, QStringLiteral("/api/tags"));
+    QNetworkRequest request(url);
     request.setTransferTimeout(m_probeTimeoutMs);
+    emit diagnosticMessage(QStringLiteral("backend"),
+                           QStringLiteral("Ollama model-list request %1 | timeout_ms=%2")
+                               .arg(url.toString())
+                               .arg(m_probeTimeoutMs));
     auto *reply = m_network.get(request);
 
-    connect(reply, &QNetworkReply::finished, this, [this, reply, baseUrl]() {
+    connect(reply, &QNetworkReply::finished, this, [this, reply, url, baseUrl]() {
         const QNetworkReply::NetworkError error = reply->error();
         const QByteArray body = reply->readAll();
+        const int httpStatus = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+        emit diagnosticMessage(QStringLiteral("backend"),
+                               QStringLiteral("Ollama model-list response %1 | http=%2 | bytes=%3 | preview=%4")
+                                   .arg(url.toString())
+                                   .arg(httpStatus)
+                                   .arg(body.size())
+                                   .arg(previewForDiagnostics(QString::fromUtf8(body))));
 
         if (error != QNetworkReply::NoError) {
             const QString message = describeNetworkFailure(reply,
@@ -280,15 +337,17 @@ void OllamaClient::onReadyRead()
         beginWaitingForFirstToken();
     }
 
-    m_buffer += m_reply->readAll();
-    const bool hadAnyOutput = m_receivedAnyOutput;
+    const QByteArray chunk = m_reply->readAll();
+    m_totalBytesReceived += chunk.size();
+    m_buffer += chunk;
+    const bool hadVisibleOutput = m_receivedVisibleOutput;
     parseBufferedLines(false);
     flushPendingUiDelta(false);
     flushPendingReasoningDelta(false);
 
-    if (!m_receivedFirstToken && !hadAnyOutput && m_receivedAnyOutput) {
+    if (!m_receivedFirstToken && !hadVisibleOutput && m_receivedVisibleOutput) {
         beginStreaming();
-    } else if (m_streamPhase == StreamPhase::Streaming) {
+    } else if (m_streamPhase == StreamPhase::Streaming && m_receivedVisibleOutput) {
         armPhaseTimer(m_inactivityTimeoutMs);
     }
 }
@@ -301,21 +360,33 @@ void OllamaClient::onFinished()
 
     stopTimers();
 
-    m_buffer += m_reply->readAll();
-    const bool hadAnyOutput = m_receivedAnyOutput;
+    const QByteArray tail = m_reply->readAll();
+    m_totalBytesReceived += tail.size();
+    m_buffer += tail;
+    const bool hadVisibleOutput = m_receivedVisibleOutput;
     parseBufferedLines(true);
     processTaggedOutput(true);
-    if (!m_receivedFirstToken && (!hadAnyOutput && m_receivedAnyOutput)) {
+    if (!m_receivedFirstToken && (!hadVisibleOutput && m_receivedVisibleOutput)) {
         m_receivedFirstToken = true;
     }
     flushPendingUiDelta(true);
     flushPendingReasoningDelta(true);
 
     const QNetworkReply::NetworkError error = m_reply->error();
+    const int httpStatus = m_reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
     const QString errorText = describeNetworkFailure(m_reply,
                                                      QStringLiteral("generate text with Ollama"),
                                                      m_activeBaseUrl,
                                                      m_activeModel);
+
+    emit diagnosticMessage(QStringLiteral("backend"),
+                           QStringLiteral("Ollama chat response complete | http=%1 | bytes=%2 | think=%3 | reasoning_chars=%4 | done_reason=%5 | logical_error=%6")
+                               .arg(httpStatus)
+                               .arg(m_totalBytesReceived)
+                               .arg(m_requestedThinkMode.isEmpty() ? QStringLiteral("<unset>") : m_requestedThinkMode)
+                               .arg(m_reasoningCharsObserved)
+                               .arg(m_lastDoneReason.isEmpty() ? QStringLiteral("<unset>") : m_lastDoneReason)
+                               .arg(m_streamLogicalError.isEmpty() ? QStringLiteral("<none>") : m_streamLogicalError));
 
     m_reply->deleteLater();
     m_reply = nullptr;
@@ -330,7 +401,20 @@ void OllamaClient::onFinished()
         return;
     }
 
-    emit responseFinished(sanitizeVisibleText(m_accumulated).trimmed());
+    if (!m_streamLogicalError.trimmed().isEmpty()) {
+        emit responseError(QStringLiteral("Ollama returned an application-level error on a successful HTTP response: %1")
+                               .arg(m_streamLogicalError));
+        return;
+    }
+
+    const QString visibleAnswer = sanitizeVisibleText(m_accumulated).trimmed();
+    if (visibleAnswer.isEmpty() && m_reasoningCharsObserved > 0) {
+        emit responseError(QStringLiteral("Ollama produced %1 hidden reasoning chars but no visible answer. Amelia treated this as a reasoning-only loop.")
+                               .arg(m_reasoningCharsObserved));
+        return;
+    }
+
+    emit responseFinished(visibleAnswer);
 }
 
 void OllamaClient::onMetaDataChanged()
@@ -339,6 +423,11 @@ void OllamaClient::onMetaDataChanged()
         return;
     }
 
+    m_httpStatusCode = m_reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+    emit diagnosticMessage(QStringLiteral("backend"),
+                           QStringLiteral("Ollama response headers received | http=%1 | content_type=%2")
+                               .arg(m_httpStatusCode)
+                               .arg(QString::fromUtf8(m_reply->header(QNetworkRequest::ContentTypeHeader).toByteArray())));
     beginWaitingForFirstToken();
 }
 
@@ -400,7 +489,15 @@ void OllamaClient::resetState()
     m_receivedHeaders = false;
     m_receivedFirstToken = false;
     m_receivedAnyOutput = false;
+    m_receivedVisibleOutput = false;
     m_insideReasoningTrace = false;
+    m_hiddenThinkingNoticeEmitted = false;
+    m_httpStatusCode = 0;
+    m_totalBytesReceived = 0;
+    m_reasoningCharsObserved = 0;
+    m_requestedThinkMode.clear();
+    m_streamLogicalError.clear();
+    m_lastDoneReason.clear();
     m_streamPhase = StreamPhase::Idle;
 }
 
@@ -414,11 +511,27 @@ void OllamaClient::parseBufferedLines(bool flushRemainder)
 
         const QJsonDocument doc = QJsonDocument::fromJson(line);
         if (!doc.isObject()) {
+            emit diagnosticMessage(QStringLiteral("backend"),
+                                   QStringLiteral("Ollama chat emitted a non-JSON stream fragment: %1")
+                                       .arg(previewForDiagnostics(QString::fromUtf8(line))));
             return;
         }
 
         const QJsonObject obj = doc.object();
         const QJsonObject messageObj = obj.value(QStringLiteral("message")).toObject();
+
+        const QString logicalError = obj.value(QStringLiteral("error")).toString().trimmed();
+        if (!logicalError.isEmpty()) {
+            m_streamLogicalError = logicalError;
+            emit diagnosticMessage(QStringLiteral("backend"),
+                                   QStringLiteral("Ollama chat stream reported logical error: %1").arg(logicalError));
+            return;
+        }
+
+        const QString doneReason = obj.value(QStringLiteral("done_reason")).toString().trimmed();
+        if (!doneReason.isEmpty()) {
+            m_lastDoneReason = doneReason;
+        }
 
         QString delta = obj.value(QStringLiteral("response")).toString();
         if (delta.isEmpty()) {
@@ -468,7 +581,13 @@ void OllamaClient::appendReasoningDelta(const QString &delta)
         return;
     }
 
-    m_receivedAnyOutput = true;
+    if (!m_reasoningTraceEnabled && !m_hiddenThinkingNoticeEmitted) {
+        m_hiddenThinkingNoticeEmitted = true;
+        emit diagnosticMessage(QStringLiteral("backend"),
+                               QStringLiteral("The backend emitted a separate thinking stream even though reasoning capture is off. Amelia is hiding it from the UI, and only visible answer text now counts as real stream progress."));
+    }
+
+    m_reasoningCharsObserved += sanitized.size();
     m_pendingReasoningDelta += sanitized;
 }
 
@@ -567,7 +686,12 @@ void OllamaClient::processTaggedOutput(bool flushRemainder)
 
         const QString note = sanitizeReasoningText(m_reasoningBuffer).trimmed();
         if (!note.isEmpty()) {
-            m_receivedAnyOutput = true;
+            if (!m_reasoningTraceEnabled && !m_hiddenThinkingNoticeEmitted) {
+                m_hiddenThinkingNoticeEmitted = true;
+                emit diagnosticMessage(QStringLiteral("backend"),
+                                       QStringLiteral("The model emitted <think>-style tagged reasoning while reasoning capture is off. Amelia is stripping it from the visible answer and still using it for loop detection."));
+            }
+            m_reasoningCharsObserved += note.size();
             emit reasoningTrace(note);
         }
 
@@ -583,7 +707,12 @@ void OllamaClient::processTaggedOutput(bool flushRemainder)
     if (m_insideReasoningTrace) {
         const QString note = sanitizeReasoningText(m_reasoningBuffer + m_taggedOutputBuffer).trimmed();
         if (!note.isEmpty()) {
-            m_receivedAnyOutput = true;
+            if (!m_reasoningTraceEnabled && !m_hiddenThinkingNoticeEmitted) {
+                m_hiddenThinkingNoticeEmitted = true;
+                emit diagnosticMessage(QStringLiteral("backend"),
+                                       QStringLiteral("The model ended with hidden reasoning text while reasoning capture is off. Amelia is hiding it from the UI and still using it for loop detection."));
+            }
+            m_reasoningCharsObserved += note.size();
             emit reasoningTrace(note);
         }
         m_reasoningBuffer.clear();
@@ -606,6 +735,7 @@ void OllamaClient::appendVisibleDelta(const QString &delta)
         return;
     }
     m_receivedAnyOutput = true;
+    m_receivedVisibleOutput = true;
     m_accumulated += sanitized;
     m_pendingUiDelta += sanitized;
 }
@@ -710,7 +840,21 @@ void OllamaClient::abortForTimeout(const QString &message)
     if (reply != nullptr) {
         reply->deleteLater();
     }
+    emit diagnosticMessage(QStringLiteral("backend"), message);
     emit responseError(message);
+}
+
+QString OllamaClient::thinkRequestModeForModel(const QString &model) const
+{
+    if (modelIsGptOss(model)) {
+        return QStringLiteral("low");
+    }
+    return m_reasoningTraceEnabled ? QStringLiteral("true") : QStringLiteral("false");
+}
+
+QString OllamaClient::summarizePayloadForDiagnostics(const QJsonObject &payload) const
+{
+    return previewForDiagnostics(QString::fromUtf8(QJsonDocument(payload).toJson(QJsonDocument::Compact)));
 }
 
 QUrl OllamaClient::buildEndpointUrl(const QString &baseUrl, const QString &endpointPath) const

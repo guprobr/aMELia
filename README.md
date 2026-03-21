@@ -1,4 +1,4 @@
-# aMELia Qt6 v7.9
+# aMELia Qt6 v9.06
 
 Amelia is a local-first Qt6/C++ coding and cloud assistant that talks to a local Ollama server, stores its state under `~/.amelia_qt6`, indexes a local knowledge base, and can optionally use sanitized external web search through SearXNG.
 
@@ -6,7 +6,56 @@ This build rolls forward the existing bootstrap, indexing, transcript, Prompt La
 
 NOTE: prompt transcripts are first generated in markdown but after it finishes, they should be properly formatted.
 
-## What's new in v7.9
+## What's new in v9.06
+
+### Transform-mode prompt shaping, safer conversation switching, and sticky transcript scroll
+
+- Amelia now detects **rewrite / expand / transform** requests that include a large pasted source block and automatically switches into a safer prompt layout with separate **TASK_INSTRUCTION** and **SOURCE_MATERIAL** sections
+- in this mode, the model is told to **transform** the pasted material instead of continuing it verbatim, which prevents the common failure mode where Amelia simply repeats the pasted prior answer
+- transform-mode turns also skip prompt-time **RECENT_CONVERSATION** and **SESSION_SUMMARY** reinjection, reducing contamination when the pasted source already contains assistant-like text
+- changing conversations is now blocked while a generation is active, both in the UI and in the controller safety path, so streamed chunks cannot land in the wrong conversation anymore
+- the transcript view now respects manual scrolling during generation: if the user scrolls up to inspect earlier content, incoming streamed lines no longer force the viewport back down until the user returns to the bottom
+
+## What's new in v9.05
+
+### Conversation-overlap anti-loop fix and quieter model events
+
+- prompt assembly now suppresses **RECENT_CONVERSATION** entries whose content substantially overlaps the current user request, which prevents the same answer text from being fed twice under different sections
+- session summaries that substantially overlap the current prompt are also skipped for that turn, reducing self-conditioning when the user quotes or pastes part of a previous answer
+- the overlap check is stronger than exact-match deduplication: it catches large quoted excerpts and long shared substrings, not just byte-for-byte duplicates
+- desktop notifications are now quiet for **model refresh** and **model change** events; the information still appears in the UI and diagnostics without spamming system toasts
+
+### Token-aware embedding recovery and reasoning root-cause fix
+
+- embedding calls are now guarded by both **character** and **estimated token** budgets instead of a character cap alone
+- batched `/api/embed` requests now obey a conservative batch token budget and automatically fall back to **single-item retries** when Ollama reports `input length exceeds the context length`
+- single-item retries now re-clip aggressively before falling back, which prevents one pathological chunk from poisoning a whole indexing batch
+- GPT-OSS requests now explicitly use `think=low`, because a boolean `think=false` is not a reliable way to suppress hidden thinking on that family
+- hidden reasoning no longer counts as real stream progress: only **visible answer text** can satisfy Amelia's first-token / active-stream logic now
+- if Ollama finishes after producing hidden reasoning but **no visible answer**, Amelia treats that as a reasoning-only failure and retries once instead of accepting an empty completion
+- prompt assembly now strips loop-prone markers (`<END>`, `<think>`, `<amelia_thinking>`) and deduplicates repeated prompt/history sections before they are re-fed into the model
+
+
+### Embedding overflow guard and full Ollama response diagnostics
+
+- Amelia now applies a conservative hard cap before every embedding call, so oversized chunks and giant prompts are clipped before they hit Ollama's embedding context window
+- semantic chunking profiles were tightened for indexing, which reduces the chance of `input length exceeds the context length` during `/api/embed`
+- embedding diagnostics now capture every Ollama embedding request/response internally, but the verbose request/response summaries are only shown when **Verbose diagnostics** is enabled in the UI; logical `HTTP 200` errors are still surfaced as essential diagnostics
+- chat diagnostics now capture Ollama request / header / completion summaries for troubleshooting, while the noisy request/response summaries stay hidden unless **Verbose diagnostics** is enabled
+
+### GPT-OSS hidden thinking mitigation
+
+- Amelia now treats GPT-OSS specially when building the `think` request field: it asks for `low` when trace capture is enabled and records that GPT-OSS may still think server-side when capture is off
+- when the backend emits hidden `thinking` or `<think>` content while the UI toggle is off, Amelia suppresses it from the visible answer and diagnostics trace panel but still uses it internally to detect pre-answer loops
+- the reasoning-only stall guard is now more aggressive, so repeated hidden thinking before the first visible answer is retried sooner
+
+### Memory anti-loop safeguards and Memory tab actions
+
+- auto-persisted memories are now normalized into shorter preference / fact snippets instead of replaying large raw prompt fragments verbatim
+- prompt assembly now filters out memories that look like meta-instructions, prompt scaffolding, or near-copies of the current user prompt
+- this reduces self-reinforcing prompt behavior where an older instruction-like memory keeps getting re-fed into later turns
+- the **Memory** tab now shows persisted entries in a structured table instead of one flat text dump
+- individual persisted memories can now be deleted directly from the UI with **Delete selected**
 
 ### Cancel / queue handling and safer KB refresh
 
@@ -32,6 +81,15 @@ NOTE: prompt transcripts are first generated in markdown but after it finishes, 
 - collection and asset property dialogs now expose more relevant stored metadata, and asset properties can include a chunk preview dump
 - tree drag/drop now behaves more safely when moving assets, and failed moves force an immediate inventory refresh instead of leaving items visually missing until another manual refresh
 - manifest persistence for move operations is now rollback-aware, so a failed save is less likely to leave the KB in an inconsistent state
+
+### Finalize-only transcript sanitize funnel
+
+- completed assistant answers now pass through a single finalize-only transcript sanitize funnel before they are persisted and rendered
+- the funnel is intentionally **not** applied during streaming, which avoids breaking partially emitted Markdown or half-open code fences mid-generation
+- obvious escaped code patterns such as `cpp\n#include ...` are repaired into proper fenced code blocks once the full answer is available
+- escaped layout markers are decoded outside quoted strings only, so code like `"Hello\n"` keeps its string escape while the surrounding broken line structure is repaired
+- sanitized completed answers now flow consistently into transcript rendering, conversation persistence, and code-copy extraction
+- Amelia's rendered **Copy code** controls are preserved because the funnel operates on final model text, not on the transcript HTML widgets
 
 ### Transcript table/code-block safety and model defaults
 
@@ -79,7 +137,7 @@ NOTE: prompt transcripts are first generated in markdown but after it finishes, 
 
 ### Knowledge Base collections and safer structure handling
 
-- display version bumped to `7.9`
+- display version bumped to `9.05`
 - imported files and folders are now stored as **collections** with:
   - an immutable collection hash / ID
   - a user-visible **label** that can be renamed later
@@ -127,7 +185,8 @@ NOTE: prompt transcripts are first generated in markdown but after it finishes, 
 
 This release keeps the improvements from the earlier 6.9x line, including:
 
-- native desktop notifications for startup, prompt lifecycle, indexing, memory, model refresh, and related events
+- native desktop notifications for startup, prompt lifecycle, indexing, memory, and related events, while model refresh/change updates stay in-app without desktop toasts
+- restoring a saved conversation updates the UI quietly without a desktop toast
 - status-area progress feedback from prompt preparation through answer completion
 - bootstrap dialog visibility at startup
 - incremental / asynchronous knowledge-base indexing
@@ -146,6 +205,10 @@ This release keeps the improvements from the earlier 6.9x line, including:
 - **Transcript sanitization** that neutralizes raw HTML-like tags before Markdown rendering to avoid broken layouts
 - **Exact code-block transcript handling** with stable copy links and stronger indentation preservation
 - **Manual Memory** capture plus persisted memory storage / clearing
+- **Prompt-safe memory reuse** for stored memories that you save manually, so reused memory text is trimmed and filtered before it is re-injected into later prompts
+- **Per-memory deletion UI** from the structured **Memory** tab
+- **Memory details panel** with description, confidence, pin state, and timestamps for the selected memory
+- **Auto-memory disabled** by default in this build to avoid prompt-loop feedback; use **Manual Memory** when you want to persist something intentionally
 - **Knowledge Base ingestion** from files and folders with preserved collection structure
 - **Knowledge Base collections** with immutable IDs, user-facing unique labels, rename support, manifest-backed grouping, and a KB root locked under Amelia's data root
 - **Knowledge Base inspection** with source summary, searchable tree view, collection/folder expanders, sorting by name or file type, remove-selected, and clear-KB actions
@@ -165,7 +228,7 @@ This release keeps the improvements from the earlier 6.9x line, including:
 - **Backend summary panel** for runtime/backend/config visibility
 - **Diagnostics panel** for operational logs and optional reasoning-trace capture
 - **Reasoning trace toggle** for backend thinking streams when exposed by the selected model/backend
-- **Desktop notifications** for meaningful task lifecycle events
+- **Desktop notifications** for meaningful task lifecycle events, excluding model refresh/change toasts
 - **System tray controls** with Show / Hide / Exit actions
 - **Busy indicator and response progress bar** for long-running operations and streamed answer progress
 - **Bootstrap dialog** shown immediately at startup while initialization completes
@@ -176,7 +239,7 @@ This release keeps the improvements from the earlier 6.9x line, including:
 
 ## Versioning
 
-- Version is now `7.9`.
+- Version is now `9.05`.
 - The display version comes from one place only:
   - `src/core/appversion.h`
 
@@ -402,6 +465,7 @@ Main things to check:
 
 ## Recent UI additions
 
+- The **Memory** tab now shows persisted entries in a structured table and supports **Delete selected** for one-at-a-time cleanup.
 - Knowledge Base tab supports live filename/path filtering for indexed assets.
 - Diagnostics includes an optional **Capture reasoning trace** toggle. When enabled, Amelia asks Ollama for backend thinking streams when supported and also records explicit tagged reasoning notes if the model emits them. This remains intentionally separate from any hidden internal chain-of-thought.
 - Session list includes **Delete selected** to remove an individual saved conversation from history.
@@ -413,8 +477,18 @@ Main things to check:
 
 ## Recent changes
 
+- 7.903 embedding overflow guard: Amelia now clips oversized embedding inputs before `/api/embed`, tightens semantic chunk sizes, and captures every embedding request/response so silent HTTP-200 logical failures are visible when needed.
+- 7.903 diagnostics refinement: verbose Ollama request/response summaries now stay hidden unless **Verbose diagnostics** is enabled in the UI, while essential errors remain visible by default.
+- 7.903 auto-memory safety: automatic memory capture is disabled in this build to avoid prompt-loop feedback; manual memory remains available.
+- 7.903 GPT-OSS hidden-thinking mitigation: hidden backend thinking is suppressed from the UI when trace capture is off, but Amelia still watches it internally to catch pre-answer loops earlier.
+- 7.903 reasoning loop guard refinement: the hidden-thinking guard now prefers repetition / low-diversity detection over a blunt timeout, raises the pure stall threshold for complex prompts, and records the dominant repeated hidden note when a retry is triggered.
+- 7.903 restore-notification cleanup: restoring a saved conversation no longer raises a desktop notification.
+- 7.903 memory inspection panel: the Memory tab now includes a details box with a human-readable description plus confidence / pin / timestamp metadata for the selected memory.
+- 7.902 memory anti-loop guard: auto-persisted memories are normalized and prompt-safe filtered before they are re-used in later prompts, reducing self-reinforcing prompt behavior.
+- 7.902 Memory tab actions: persisted memories are shown in a structured table and can be deleted individually from the UI.
 - 7.9 cancel / queue clearing: canceling indexing now drops the remaining queued files from that run instead of continuing to re-index assets the user explicitly canceled.
 - 7.9 safer KB refresh UX: the Knowledge Base tree now switches to a locked refresh view with an animated status line while stale inventory is being rebuilt.
+- 7.901 finalize-only transcript sanitize funnel: completed assistant answers are repaired once at the end of generation, which fixes broken escaped code blocks like `cpp\n...` without risking mid-stream formatting corruption or breaking Amelia's **Copy code** controls.
 - 7.9 collection shortcuts: collection context menus now include **Add file to collection** and **Add folder to collection**, and reindex-triggering actions warn the user before they proceed.
 - 7.8 large-asset ingestion: adaptive chunking, repeated-boilerplate reduction, duplicate-chunk filtering, richer ingestion metadata, and bounded chunk previews make large KB assets cheaper to inspect and better covered during indexing.
 - 7.8 Knowledge Base context menus: collections now support create/delete/rename/properties and assets now support rename/delete/properties directly from the tree.

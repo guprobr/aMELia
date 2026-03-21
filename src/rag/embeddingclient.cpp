@@ -18,7 +18,13 @@ namespace {
 constexpr int kFallbackEmbeddingDims = 192;
 constexpr int kTemporaryDisableAfterFailures = 2;
 constexpr qint64 kTemporaryDisableWindowMs = 5LL * 60LL * 1000LL;
-constexpr int kNeuralBatchCharBudget = 3200;
+constexpr int kNeuralBatchCharBudget = 1800;
+constexpr int kNeuralBatchTokenBudget = 520;
+constexpr int kSafeEmbeddingInputChars = 1200;
+constexpr int kSafeEmbeddingInputTokenBudget = 320;
+constexpr int kStrictEmbeddingInputChars = 760;
+constexpr int kStrictEmbeddingInputTokenBudget = 200;
+constexpr int kErrorPreviewChars = 360;
 
 QStringList normalizeTokens(const QString &input)
 {
@@ -130,6 +136,14 @@ bool isProbablyPermanentOllamaFailure(const QString &message)
             || lower.contains(QStringLiteral("invalid model"));
 }
 
+bool isContextLengthFailure(const QString &message)
+{
+    const QString lower = message.toLower();
+    return lower.contains(QStringLiteral("context length"))
+            || lower.contains(QStringLiteral("input length exceeds"))
+            || lower.contains(QStringLiteral("prompt is too long"));
+}
+
 QString normalizedBaseUrl(QString url)
 {
     url = url.trimmed();
@@ -153,6 +167,142 @@ bool isCancelRequested(const std::atomic_bool *cancelRequested)
     return cancelRequested != nullptr && cancelRequested->load(std::memory_order_relaxed);
 }
 
+QString sanitizeForEmbedding(QString text)
+{
+    text.replace(QStringLiteral("\r\n"), QStringLiteral("\n"));
+    text.replace(QLatin1Char('\r'), QLatin1Char('\n'));
+    text.replace(QChar(0x00A0), QLatin1Char(' '));
+    text.replace(QRegularExpression(QStringLiteral("[\x00-\x08\x0B\x0C\x0E-\x1F]")), QStringLiteral(" "));
+    text.replace(QRegularExpression(QStringLiteral("[ \t]{2,}")), QStringLiteral(" "));
+    text.replace(QRegularExpression(QStringLiteral("\n{4,}")), QStringLiteral("\n\n\n"));
+    return text.trimmed();
+}
+
+int estimateEmbeddingTokens(const QString &text)
+{
+    if (text.trimmed().isEmpty()) {
+        return 0;
+    }
+
+    int tokenUnits = 0;
+    bool inAlnum = false;
+    static const QString denseTokenChars = QStringLiteral("{}[]()<>:=/\\|@#%&*_+-;,.!?\"");
+
+    for (const QChar ch : text) {
+        if (ch.isLetterOrNumber()) {
+            tokenUnits += 1;
+            inAlnum = true;
+            continue;
+        }
+
+        if (inAlnum) {
+            tokenUnits += 1;
+            inAlnum = false;
+        }
+
+        if (ch == QLatin1Char('\n')) {
+            tokenUnits += 3;
+        } else if (ch.isSpace()) {
+            tokenUnits += 1;
+        } else if (denseTokenChars.contains(ch)) {
+            tokenUnits += 4;
+        } else {
+            tokenUnits += 2;
+        }
+    }
+
+    if (inAlnum) {
+        tokenUnits += 1;
+    }
+
+    return qMax(1, static_cast<int>(qCeil(static_cast<double>(tokenUnits) / 4.0)));
+}
+
+int chooseEmbeddingSplit(const QString &text, int preferredMaxChars)
+{
+    const int hardEnd = qMin(text.size(), preferredMaxChars);
+    const int minimumSplit = qMax(180, hardEnd / 2);
+
+    int split = text.lastIndexOf(QStringLiteral("\n\n"), hardEnd);
+    if (split < minimumSplit) {
+        split = text.lastIndexOf(QLatin1Char('\n'), hardEnd);
+    }
+    if (split < minimumSplit) {
+        split = text.lastIndexOf(QRegularExpression(QStringLiteral("[.!?]\\s")), hardEnd);
+        if (split >= minimumSplit) {
+            split += 1;
+        }
+    }
+    if (split < minimumSplit) {
+        split = text.lastIndexOf(QLatin1Char(' '), hardEnd);
+    }
+    if (split < minimumSplit) {
+        split = hardEnd;
+    }
+    return qMax(minimumSplit, split);
+}
+
+QString clipForEmbedding(const QString &text, bool *wasClipped)
+{
+    QString normalized = sanitizeForEmbedding(text);
+    bool clipped = false;
+
+    while (!normalized.isEmpty()
+           && (normalized.size() > kSafeEmbeddingInputChars
+               || estimateEmbeddingTokens(normalized) > kSafeEmbeddingInputTokenBudget)) {
+        const int preferredMaxChars = qMin(normalized.size(), kSafeEmbeddingInputChars);
+        const int split = chooseEmbeddingSplit(normalized, preferredMaxChars);
+        QString next = normalized.left(split).trimmed();
+        if (next == normalized) {
+            const int fallbackChars = qMax(180, normalized.size() - qMax(80, normalized.size() / 6));
+            next = normalized.left(fallbackChars).trimmed();
+        }
+        if (next.isEmpty() || next == normalized) {
+            break;
+        }
+        normalized = next;
+        clipped = true;
+    }
+
+    if (wasClipped != nullptr) {
+        *wasClipped = clipped;
+    }
+    return normalized;
+}
+
+QString previewText(QString text, int maxChars = kErrorPreviewChars)
+{
+    text.replace(QStringLiteral("\r\n"), QStringLiteral("\n"));
+    text.replace(QLatin1Char('\r'), QLatin1Char('\n'));
+    text = text.simplified();
+    if (text.size() <= maxChars) {
+        return text;
+    }
+    return text.left(qMax(120, maxChars)).trimmed() + QStringLiteral("...");
+}
+
+QString extractJsonErrorMessage(const QByteArray &raw)
+{
+    const QJsonDocument doc = QJsonDocument::fromJson(raw);
+    if (!doc.isObject()) {
+        return QString();
+    }
+
+    const QJsonObject root = doc.object();
+    const QString rootError = root.value(QStringLiteral("error")).toString().trimmed();
+    if (!rootError.isEmpty()) {
+        return rootError;
+    }
+
+    const QJsonObject messageObj = root.value(QStringLiteral("message")).toObject();
+    const QString messageError = messageObj.value(QStringLiteral("error")).toString().trimmed();
+    if (!messageError.isEmpty()) {
+        return messageError;
+    }
+
+    return QString();
+}
+
 EmbeddingClient::NeuralAttemptResult parseModernEmbeddingResponse(const QByteArray &raw)
 {
     EmbeddingClient::NeuralAttemptResult result;
@@ -163,6 +313,12 @@ EmbeddingClient::NeuralAttemptResult parseModernEmbeddingResponse(const QByteArr
     }
 
     const QJsonObject root = doc.object();
+    const QString logicalError = root.value(QStringLiteral("error")).toString().trimmed();
+    if (!logicalError.isEmpty()) {
+        result.errorMessage = logicalError;
+        return result;
+    }
+
     const QJsonArray embeddingsArray = root.value(QStringLiteral("embeddings")).toArray();
     if (embeddingsArray.isEmpty()) {
         result.errorMessage = QStringLiteral("embedding response did not contain an embeddings array");
@@ -199,6 +355,12 @@ EmbeddingClient::NeuralAttemptResult parseLegacyEmbeddingResponse(const QByteArr
     }
 
     const QJsonObject root = doc.object();
+    const QString logicalError = root.value(QStringLiteral("error")).toString().trimmed();
+    if (!logicalError.isEmpty()) {
+        result.errorMessage = logicalError;
+        return result;
+    }
+
     const QJsonArray embeddingArray = root.value(QStringLiteral("embedding")).toArray();
     if (embeddingArray.isEmpty()) {
         result.errorMessage = QStringLiteral("legacy embedding response did not contain an embedding vector");
@@ -241,6 +403,11 @@ void EmbeddingClient::configureOllama(const QString &baseUrl,
     m_disableNeuralUntilMs = 0;
     m_lastSuccessfulEndpoint = QStringLiteral("/api/embed");
     m_lastErrorSummary.clear();
+}
+
+void EmbeddingClient::setDiagnosticCallback(const std::function<void(const QString &, const QString &)> &callback)
+{
+    m_diagnosticCallback = callback;
 }
 
 QString EmbeddingClient::backendName() const
@@ -302,6 +469,13 @@ QVector<float> EmbeddingClient::embedTextLocalFallback(const QString &text) cons
     return embedTextWithHashFallback(text);
 }
 
+void EmbeddingClient::logDiagnostic(const QString &category, const QString &message) const
+{
+    if (m_diagnosticCallback) {
+        m_diagnosticCallback(category, message);
+    }
+}
+
 EmbeddingClient::NeuralAttemptResult EmbeddingClient::tryOllamaEmbeddingsViaEndpoint(const QStringList &texts,
                                                                                       const QString &endpointPath,
                                                                                       const std::atomic_bool *cancelRequested) const
@@ -315,7 +489,8 @@ EmbeddingClient::NeuralAttemptResult EmbeddingClient::tryOllamaEmbeddingsViaEndp
     }
 
     QNetworkAccessManager manager;
-    QNetworkRequest request(QUrl(normalizedBaseUrl(m_ollamaBaseUrl) + endpointPath));
+    const QUrl requestUrl(normalizedBaseUrl(m_ollamaBaseUrl) + endpointPath);
+    QNetworkRequest request(requestUrl);
     request.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
 
     auto executeRequest = [&](const QJsonObject &payload) -> QByteArray {
@@ -324,13 +499,30 @@ EmbeddingClient::NeuralAttemptResult EmbeddingClient::tryOllamaEmbeddingsViaEndp
             return {};
         }
 
+        const QByteArray requestBody = QJsonDocument(payload).toJson(QJsonDocument::Compact);
+        int estimatedTotalTokens = 0;
+        int longestInputChars = 0;
+        for (const QString &item : texts) {
+            estimatedTotalTokens += estimateEmbeddingTokens(item);
+            longestInputChars = qMax(longestInputChars, item.size());
+        }
+        logDiagnostic(QStringLiteral("rag"),
+                      QStringLiteral("Ollama embedding request %1 | model=%2 | inputs=%3 | est_tokens=%4 | longest_input_chars=%5 | body_bytes=%6 | timeout_ms=%7")
+                          .arg(requestUrl.toString(),
+                               m_embeddingModel,
+                               QString::number(texts.size()),
+                               QString::number(estimatedTotalTokens),
+                               QString::number(longestInputChars),
+                               QString::number(requestBody.size()),
+                               QString::number(m_timeoutMs)));
+
         QEventLoop loop;
         QTimer timer;
         QTimer cancelPoll;
         timer.setSingleShot(true);
         cancelPoll.setInterval(50);
 
-        QNetworkReply *reply = manager.post(request, QJsonDocument(payload).toJson(QJsonDocument::Compact));
+        QNetworkReply *reply = manager.post(request, requestBody);
         bool canceled = false;
         QObject::connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
         QObject::connect(&timer, &QTimer::timeout, &loop, [&]() {
@@ -364,13 +556,27 @@ EmbeddingClient::NeuralAttemptResult EmbeddingClient::tryOllamaEmbeddingsViaEndp
         const int httpStatus = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
         const bool ok = reply->error() == QNetworkReply::NoError;
         const QString transportError = reply->errorString();
+        const QString logicalError = extractJsonErrorMessage(raw);
+        const QString preview = previewText(QString::fromUtf8(raw));
         reply->deleteLater();
+
+        logDiagnostic(QStringLiteral("rag"),
+                      QStringLiteral("Ollama embedding response %1 | http=%2 | bytes=%3 | preview=%4")
+                          .arg(requestUrl.toString(),
+                               QString::number(httpStatus),
+                               QString::number(raw.size()),
+                               preview.isEmpty() ? QStringLiteral("<empty>") : preview));
 
         if (!ok) {
             result.errorMessage = transportError + QStringLiteral(" | ") + QString::fromUtf8(raw);
             if (endpointPath == QStringLiteral("/api/embed") && httpStatus == 404) {
                 result.shouldRetryLegacyEndpoint = true;
             }
+            return {};
+        }
+
+        if (!logicalError.isEmpty()) {
+            result.errorMessage = logicalError;
             return {};
         }
 
@@ -439,7 +645,7 @@ EmbeddingClient::NeuralAttemptResult EmbeddingClient::tryOllamaEmbeddingsViaEndp
 }
 
 EmbeddingClient::NeuralAttemptResult EmbeddingClient::tryOllamaEmbeddings(const QStringList &texts,
-                                                                            const std::atomic_bool *cancelRequested) const
+                                                                           const std::atomic_bool *cancelRequested) const
 {
     NeuralAttemptResult result;
     if (texts.isEmpty() || !isConfigured()) {
@@ -450,6 +656,7 @@ EmbeddingClient::NeuralAttemptResult EmbeddingClient::tryOllamaEmbeddings(const 
     const qint64 now = QDateTime::currentMSecsSinceEpoch();
     if (m_disableNeuralUntilMs > now) {
         result.errorMessage = QStringLiteral("neural embeddings are temporarily disabled after repeated failures");
+        logDiagnostic(QStringLiteral("rag"), result.errorMessage);
         return result;
     }
 
@@ -463,6 +670,7 @@ EmbeddingClient::NeuralAttemptResult EmbeddingClient::tryOllamaEmbeddings(const 
     }
 
     if (result.shouldRetryLegacyEndpoint) {
+        logDiagnostic(QStringLiteral("rag"), QStringLiteral("Modern Ollama embedding endpoint returned 404; retrying legacy /api/embeddings."));
         const NeuralAttemptResult legacy = tryOllamaEmbeddingsViaEndpoint(texts, QStringLiteral("/api/embeddings"), cancelRequested);
         if (legacy.usedNeuralBackend) {
             m_lastSuccessfulEndpoint = legacy.endpointName;
@@ -476,9 +684,13 @@ EmbeddingClient::NeuralAttemptResult EmbeddingClient::tryOllamaEmbeddings(const 
 
     ++m_consecutiveNeuralFailures;
     m_lastErrorSummary = result.errorMessage;
+    logDiagnostic(QStringLiteral("rag"), QStringLiteral("Ollama embedding failure: %1").arg(simplifiedError(result.errorMessage)));
     if (isProbablyPermanentOllamaFailure(result.errorMessage)
             || m_consecutiveNeuralFailures >= kTemporaryDisableAfterFailures) {
         m_disableNeuralUntilMs = now + kTemporaryDisableWindowMs;
+        logDiagnostic(QStringLiteral("rag"),
+                      QStringLiteral("Neural embeddings temporarily disabled for %1 ms after repeated failures.")
+                          .arg(QString::number(kTemporaryDisableWindowMs)));
     }
     return result;
 }
@@ -508,32 +720,59 @@ QVector<QVector<float>> EmbeddingClient::embedTexts(const QStringList &texts,
         return embeddings;
     }
 
+    QStringList preparedTexts;
+    preparedTexts.reserve(texts.size());
+    QVector<int> preparedTokenEstimates;
+    preparedTokenEstimates.reserve(texts.size());
+    int clippedCount = 0;
+    for (const QString &text : texts) {
+        bool clipped = false;
+        const QString prepared = clipForEmbedding(text, &clipped);
+        if (clipped) {
+            ++clippedCount;
+        }
+        preparedTexts.push_back(prepared);
+        preparedTokenEstimates.push_back(estimateEmbeddingTokens(prepared));
+    }
+    if (clippedCount > 0) {
+        logDiagnostic(QStringLiteral("rag"),
+                      QStringLiteral("Embedding hard cap applied to %1/%2 input(s); each input is clipped to <= %3 chars and ~= %4 tokens before calling Ollama.")
+                          .arg(clippedCount)
+                          .arg(texts.size())
+                          .arg(kSafeEmbeddingInputChars)
+                          .arg(kSafeEmbeddingInputTokenBudget));
+    }
+
     if (isConfigured()) {
         const int batchSizeLimit = qMax(1, m_batchSize);
         QVector<QStringList> batches;
-        batches.reserve((texts.size() / batchSizeLimit) + 2);
+        batches.reserve((preparedTexts.size() / batchSizeLimit) + 2);
 
         int offset = 0;
-        while (offset < texts.size()) {
+        while (offset < preparedTexts.size()) {
             if (isCancelRequested(cancelRequested)) {
                 m_lastRequestUsedNeural = false;
                 return {};
             }
             QStringList batch;
             int batchChars = 0;
-            while (offset < texts.size() && batch.size() < batchSizeLimit) {
-                const QString candidate = texts.at(offset);
+            int batchTokens = 0;
+            while (offset < preparedTexts.size() && batch.size() < batchSizeLimit) {
+                const QString candidate = preparedTexts.at(offset);
                 const int candidateChars = candidate.size();
+                const int candidateTokens = preparedTokenEstimates.at(offset);
                 const int projectedChars = batchChars + (batch.isEmpty() ? 0 : 1) + candidateChars;
-                if (!batch.isEmpty() && projectedChars > kNeuralBatchCharBudget) {
+                const int projectedTokens = batchTokens + (batch.isEmpty() ? 0 : 4) + candidateTokens;
+                if (!batch.isEmpty() && (projectedChars > kNeuralBatchCharBudget || projectedTokens > kNeuralBatchTokenBudget)) {
                     break;
                 }
                 batch.push_back(candidate);
                 batchChars = projectedChars;
+                batchTokens = projectedTokens;
                 ++offset;
             }
             if (batch.isEmpty()) {
-                batch.push_back(texts.at(offset));
+                batch.push_back(preparedTexts.at(offset));
                 ++offset;
             }
             batches.push_back(batch);
@@ -541,15 +780,64 @@ QVector<QVector<float>> EmbeddingClient::embedTexts(const QStringList &texts,
 
         bool allBatchesSucceeded = true;
         QVector<QVector<float>> neuralEmbeddings;
-        neuralEmbeddings.reserve(texts.size());
+        neuralEmbeddings.reserve(preparedTexts.size());
         int completed = 0;
-        for (const QStringList &batch : batches) {
+        for (QStringList batch : batches) {
             if (isCancelRequested(cancelRequested)) {
                 neuralEmbeddings.clear();
                 m_lastRequestUsedNeural = false;
                 return {};
             }
-            const NeuralAttemptResult attempt = tryOllamaEmbeddings(batch, cancelRequested);
+
+            NeuralAttemptResult attempt = tryOllamaEmbeddings(batch, cancelRequested);
+            if (!attempt.usedNeuralBackend && isContextLengthFailure(attempt.errorMessage)) {
+                logDiagnostic(QStringLiteral("rag"),
+                              QStringLiteral("Ollama reported context-length overflow during batched embeddings; retrying each input individually with stricter token-aware clipping."));
+                QVector<QVector<float>> recoveredEmbeddings;
+                recoveredEmbeddings.reserve(batch.size());
+                bool recovered = true;
+                for (const QString &item : batch) {
+                    if (isCancelRequested(cancelRequested)) {
+                        m_lastRequestUsedNeural = false;
+                        return {};
+                    }
+
+                    NeuralAttemptResult singleAttempt = tryOllamaEmbeddings({item}, cancelRequested);
+                    if (!singleAttempt.usedNeuralBackend && isContextLengthFailure(singleAttempt.errorMessage)) {
+                        QString strictItem = sanitizeForEmbedding(item);
+                        while (!strictItem.isEmpty()
+                               && (strictItem.size() > kStrictEmbeddingInputChars
+                                   || estimateEmbeddingTokens(strictItem) > kStrictEmbeddingInputTokenBudget)) {
+                            const int split = chooseEmbeddingSplit(strictItem, qMin(strictItem.size(), kStrictEmbeddingInputChars));
+                            const QString next = strictItem.left(split).trimmed();
+                            if (next.isEmpty() || next == strictItem) {
+                                strictItem = strictItem.left(qMax(160, kStrictEmbeddingInputChars / 2)).trimmed();
+                                break;
+                            }
+                            strictItem = next;
+                        }
+                        logDiagnostic(QStringLiteral("rag"),
+                                      QStringLiteral("Retrying a single embedding input with a stricter cap | chars=%1 | est_tokens=%2")
+                                          .arg(strictItem.size())
+                                          .arg(estimateEmbeddingTokens(strictItem)));
+                        singleAttempt = tryOllamaEmbeddings({strictItem}, cancelRequested);
+                    }
+
+                    if (!singleAttempt.usedNeuralBackend || singleAttempt.embeddings.size() != 1) {
+                        recovered = false;
+                        attempt = singleAttempt;
+                        break;
+                    }
+                    recoveredEmbeddings.push_back(singleAttempt.embeddings.constFirst());
+                }
+
+                if (recovered) {
+                    attempt.embeddings = recoveredEmbeddings;
+                    attempt.usedNeuralBackend = recoveredEmbeddings.size() == batch.size();
+                    attempt.errorMessage.clear();
+                }
+            }
+
             if (!attempt.usedNeuralBackend || attempt.embeddings.size() != batch.size()) {
                 allBatchesSucceeded = false;
                 neuralEmbeddings.clear();

@@ -5,6 +5,7 @@
 #include <QStringList>
 #include <QVector>
 #include <QFutureWatcher>
+#include <QHash>
 
 #include "core/appconfig.h"
 #include "backend/llmclient.h"
@@ -37,6 +38,7 @@ public:
     void newConversation();
     void loadConversationById(const QString &conversationId);
     void rememberNote(const QString &text);
+    void deleteMemoryById(const QString &memoryId);
     void clearMemories();
     void setBackendModel(const QString &model);
     void importKnowledgePaths(const QStringList &paths, const QString &label);
@@ -52,6 +54,7 @@ public:
     void startBootstrap();
     void deleteConversationById(const QString &conversationId);
     void setReasoningTraceEnabled(bool enabled);
+    void setVerboseDiagnosticsEnabled(bool enabled);
     void setPrioritizedKnowledgeAssets(const QStringList &paths);
 
 signals:
@@ -128,8 +131,16 @@ private:
     void persistMessage(const QString &role, const QString &content);
     void updateCurrentSummary();
     QString titleFromPrompt(const QString &prompt) const;
+    struct DiagnosticEntry {
+        QString category;
+        QString message;
+        QString line;
+        bool verbose = false;
+    };
+
     void addDiagnostic(const QString &category, const QString &message);
     void emitDiagnostics();
+    bool isVerboseDiagnostic(const QString &category, const QString &message) const;
     void seedInitialKnowledge();
 
     void notifyTaskStarted(const QString &title, const QString &message);
@@ -139,6 +150,11 @@ private:
     void maybeRecoverFromReasoningOnlyLoop(const QString &text);
     void restartActiveGenerationWithoutReasoning();
     QString normalizeReasoningTraceForLoopDetection(const QString &text) const;
+    QString buildReasoningLoopEvidence() const;
+    QString sanitizePromptSection(const QString &text) const;
+    QString deduplicatePromptSection(const QString &text, int maxRepeatedParagraphs = 1) const;
+    bool hasSubstantialPromptOverlap(const QString &a, const QString &b) const;
+    bool shouldSkipHistoryMessageForPrompt(const Message &message, const QString &userPrompt) const;
 
     struct PromptPreparationResult {
         quint64 serial = 0;
@@ -181,7 +197,7 @@ private:
     QStringList m_availableModels;
     QStringList m_prioritizedKnowledgeAssets;
     QStringList m_currentRequestPrioritizedKnowledgeAssets;
-    QStringList m_diagnostics;
+    QVector<DiagnosticEntry> m_diagnosticEntries;
     int m_startupChunkCount = 0;
     int m_streamChunkCount = 0;
     qint64 m_requestStartedMs = 0;
@@ -204,6 +220,7 @@ private:
     bool m_busy = false;
     bool m_indexing = false;
     bool m_reasoningTraceEnabled = false;
+    bool m_verboseDiagnosticsEnabled = false;
     int m_reasoningTraceNoteCount = 0;
     bool m_outlineOnlyFirstPass = false;
     bool m_shuttingDown = false;
@@ -213,6 +230,8 @@ private:
     QString m_activeExternalContext;
     QString m_activeMemoryContext;
     QString m_lastReasoningTraceNormalized;
+    QStringList m_recentReasoningTraceNormalized;
+    QHash<QString, int> m_reasoningTraceFrequency;
     qint64 m_firstReasoningTraceMs = 0;
     int m_reasoningCharsBeforeAnswer = 0;
     int m_reasoningRepeatStreak = 0;

@@ -1,5 +1,5 @@
 #pragma once
 
 namespace AmeliaVersion {
-inline constexpr const char kDisplayVersion[] = "7.9";
+inline constexpr const char kDisplayVersion[] = "9.06";
 }

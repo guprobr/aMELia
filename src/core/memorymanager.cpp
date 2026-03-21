@@ -4,6 +4,9 @@
 #include "core/storagemanager.h"
 
 #include <QDateTime>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QRegularExpression>
 #include <QSet>
 
@@ -20,6 +23,39 @@ QString compact(const QString &text, int maxLen)
         result = result.left(maxLen - 3).trimmed() + QStringLiteral("...");
     }
     return result;
+}
+
+QString stripLeadingDirective(const QString &text, const QStringList &patterns)
+{
+    QString candidate = text.trimmed();
+    for (const QString &pattern : patterns) {
+        const QRegularExpression regex(pattern, QRegularExpression::CaseInsensitiveOption);
+        const QRegularExpressionMatch match = regex.match(candidate);
+        if (match.hasMatch()) {
+            candidate = candidate.mid(match.capturedLength()).trimmed();
+            break;
+        }
+    }
+    return candidate;
+}
+
+QString describeMemoryForUi(const MemoryRecord &memory)
+{
+    const QString category = memory.category.trimmed().isEmpty() ? QStringLiteral("general") : memory.category.trimmed();
+    const QString key = memory.key.trimmed();
+    const QString valuePreview = compact(memory.value, 96);
+
+    QString description = QStringLiteral("Stored as a %1 memory").arg(category);
+    if (!key.isEmpty()) {
+        description += QStringLiteral(" under key '%1'").arg(key);
+    }
+    description += QStringLiteral(" so Amelia can reuse it when later prompts match this topic.");
+
+    if (!valuePreview.isEmpty()) {
+        description += QStringLiteral(" Value preview: %1").arg(valuePreview);
+    }
+
+    return description;
 }
 }
 
@@ -154,6 +190,25 @@ QVector<MemoryRecord> MemoryManager::findRelevant(const QString &query, int limi
     return relevant;
 }
 
+QVector<MemoryRecord> MemoryManager::findRelevantForPrompt(const QString &query, int limit) const
+{
+    const QVector<MemoryRecord> relevant = findRelevant(query, limit * 2);
+    QVector<MemoryRecord> filtered;
+    filtered.reserve(qMin(relevant.size(), limit));
+
+    for (const MemoryRecord &memory : relevant) {
+        if (!isPromptSafeMemory(memory, query)) {
+            continue;
+        }
+        filtered.push_back(memory);
+        if (filtered.size() >= limit) {
+            break;
+        }
+    }
+
+    return filtered;
+}
+
 QString MemoryManager::formatForPrompt(const QVector<MemoryRecord> &memories) const
 {
     if (memories.isEmpty()) {
@@ -168,6 +223,26 @@ QString MemoryManager::formatForPrompt(const QVector<MemoryRecord> &memories) co
                           memory.value);
     }
     return lines.join(QStringLiteral("\n"));
+}
+
+QString MemoryManager::formatForUiJson(const QVector<MemoryRecord> &memories) const
+{
+    QJsonArray array;
+    for (const MemoryRecord &memory : memories) {
+        QJsonObject obj;
+        obj.insert(QStringLiteral("id"), memory.id);
+        obj.insert(QStringLiteral("category"), memory.category);
+        obj.insert(QStringLiteral("key"), memory.key);
+        obj.insert(QStringLiteral("value"), memory.value);
+        obj.insert(QStringLiteral("updatedAt"), memory.updatedAt);
+        obj.insert(QStringLiteral("createdAt"), memory.createdAt);
+        obj.insert(QStringLiteral("confidence"), memory.confidence);
+        obj.insert(QStringLiteral("pinned"), memory.pinned);
+        obj.insert(QStringLiteral("description"), describeMemoryForUi(memory));
+        array.push_back(obj);
+    }
+
+    return QString::fromUtf8(QJsonDocument(array).toJson(QJsonDocument::Compact));
 }
 
 QString MemoryManager::formatForUi(const QVector<MemoryRecord> &memories) const
@@ -224,6 +299,51 @@ bool MemoryManager::saveExplicitNote(const QString &text, QString *savedDescript
     return true;
 }
 
+bool MemoryManager::deleteMemoryById(const QString &memoryId, QString *deletedDescription, QString *errorMessage) const
+{
+    if (m_storage == nullptr) {
+        if (errorMessage != nullptr) {
+            *errorMessage = QStringLiteral("Memory storage is not configured.");
+        }
+        return false;
+    }
+
+    const QString trimmedId = memoryId.trimmed();
+    if (trimmedId.isEmpty()) {
+        if (errorMessage != nullptr) {
+            *errorMessage = QStringLiteral("Memory id is empty.");
+        }
+        return false;
+    }
+
+    const QVector<MemoryRecord> memories = m_storage->loadMemories(nullptr);
+    MemoryRecord deleted;
+    bool found = false;
+    for (const MemoryRecord &memory : memories) {
+        if (memory.id.trimmed() == trimmedId) {
+            deleted = memory;
+            found = true;
+            break;
+        }
+    }
+
+    if (!found) {
+        if (errorMessage != nullptr) {
+            *errorMessage = QStringLiteral("Memory not found.");
+        }
+        return false;
+    }
+
+    if (!m_storage->deleteMemoryById(trimmedId, errorMessage)) {
+        return false;
+    }
+
+    if (deletedDescription != nullptr) {
+        *deletedDescription = QStringLiteral("Deleted memory: %1").arg(compact(deleted.value, 120));
+    }
+    return true;
+}
+
 bool MemoryManager::clearAll(QString *errorMessage) const
 {
     if (m_storage == nullptr) {
@@ -246,30 +366,55 @@ QVector<MemoryRecord> MemoryManager::extractAutoMemories(const QString &userText
     const QString lower = trimmed.toLower();
     const QString now = nowIso();
 
-    if (lower.contains(QStringLiteral("remember ")) || lower.startsWith(QStringLiteral("remember that"))) {
+    const auto pushMemory = [&](const QString &rawValue,
+                                const QString &category,
+                                const QString &keyPrefix,
+                                double confidence) {
+        const QString normalizedValue = normalizedCandidateValue(rawValue);
+        if (!isPromptSafeCandidate(normalizedValue)) {
+            return;
+        }
+
         MemoryRecord memory;
-        memory.key = normalizeKey(trimmed.left(48));
-        memory.value = compact(trimmed, 400);
-        memory.category = QStringLiteral("explicit-memory");
-        memory.confidence = 1.0;
+        memory.key = keyPrefix.isEmpty()
+            ? normalizeKey(normalizedValue.left(48))
+            : QStringLiteral("%1-%2").arg(keyPrefix, normalizeKey(normalizedValue.left(40)));
+        memory.value = normalizedValue;
+        memory.category = category;
+        memory.confidence = confidence;
         memory.createdAt = now;
         memory.updatedAt = now;
         items.push_back(memory);
+    };
+
+    if (lower.startsWith(QStringLiteral("remember"))
+        || lower.startsWith(QStringLiteral("please remember"))
+        || lower.startsWith(QStringLiteral("note that"))) {
+        const QString explicitValue = stripLeadingDirective(
+            trimmed,
+            {
+                QStringLiteral(R"(^\s*(?:please\s+)?remember(?:\s+that)?\s*[:,\-]*\s*)"),
+                QStringLiteral(R"(^\s*note\s+that\s*[:,\-]*\s*)")
+            });
+        pushMemory(explicitValue, QStringLiteral("explicit-memory"), QString(), 1.0);
     }
 
     if (lower.contains(QStringLiteral("from now on"))
-        || lower.contains(QStringLiteral("i prefer"))
-        || lower.contains(QStringLiteral("prefer "))
-        || lower.contains(QStringLiteral("always "))
-        || lower.contains(QStringLiteral("default to"))) {
-        MemoryRecord memory;
-        memory.key = QStringLiteral("preference-%1").arg(normalizeKey(trimmed.left(40)));
-        memory.value = compact(trimmed, 280);
-        memory.category = QStringLiteral("preference");
-        memory.confidence = 0.95;
-        memory.createdAt = now;
-        memory.updatedAt = now;
-        items.push_back(memory);
+        || lower.startsWith(QStringLiteral("i prefer"))
+        || lower.startsWith(QStringLiteral("prefer "))
+        || lower.startsWith(QStringLiteral("default to"))
+        || lower.startsWith(QStringLiteral("always "))
+        || lower.startsWith(QStringLiteral("please always "))) {
+        const QString preferenceValue = stripLeadingDirective(
+            trimmed,
+            {
+                QStringLiteral(R"(^\s*from\s+now\s+on\s*[:,\-]*\s*)"),
+                QStringLiteral(R"(^\s*i\s+prefer\s*[:,\-]*\s*)"),
+                QStringLiteral(R"(^\s*prefer\s*[:,\-]*\s*)"),
+                QStringLiteral(R"(^\s*(?:please\s+)?always\s*[:,\-]*\s*)"),
+                QStringLiteral(R"(^\s*default\s+to\s*[:,\-]*\s*)")
+            });
+        pushMemory(preferenceValue, QStringLiteral("preference"), QStringLiteral("preference"), 0.95);
     }
 
     const QRegularExpression platformRegex(
@@ -331,4 +476,96 @@ QString MemoryManager::normalizeKey(const QString &text)
         key = QStringLiteral("memory-note");
     }
     return key.left(64);
+}
+
+QString MemoryManager::normalizedCandidateValue(QString text)
+{
+    text.replace(QRegularExpression(QStringLiteral(R"(^["'`\s]+|["'`\s]+$)")), QString());
+    text.replace(QRegularExpression(QStringLiteral(R"(\s+)")), QStringLiteral(" "));
+    text = text.trimmed();
+
+    if (!text.isEmpty() && !text.endsWith(QLatin1Char('.'))
+        && !text.endsWith(QLatin1Char('!')) && !text.endsWith(QLatin1Char('?'))) {
+        text += QLatin1Char('.');
+    }
+
+    return compact(text, 220);
+}
+
+bool MemoryManager::isPromptSafeCandidate(const QString &value)
+{
+    const QString trimmed = value.trimmed();
+    if (trimmed.isEmpty()) {
+        return false;
+    }
+
+    if (trimmed.size() < 3 || trimmed.size() > 220) {
+        return false;
+    }
+
+    if (trimmed.contains(QLatin1Char('\n')) || trimmed.contains(QStringLiteral("```"))) {
+        return false;
+    }
+
+    if (trimmed.endsWith(QLatin1Char('?'))) {
+        return false;
+    }
+
+    const QString lower = trimmed.toLower();
+    static const QStringList blockedPhrases = {
+        QStringLiteral("assistant"),
+        QStringLiteral("system prompt"),
+        QStringLiteral("developer"),
+        QStringLiteral("local_context"),
+        QStringLiteral("external_context"),
+        QStringLiteral("relevant_memories"),
+        QStringLiteral("session_summary"),
+        QStringLiteral("hidden reasoning"),
+        QStringLiteral("chain of thought"),
+        QStringLiteral("next prompt"),
+        QStringLiteral("prompt loop"),
+        QStringLiteral("memory loop"),
+        QStringLiteral("user prompt"),
+        QStringLiteral("instruction block"),
+        QStringLiteral("role:"),
+        QStringLiteral("assistant>")
+    };
+    for (const QString &phrase : blockedPhrases) {
+        if (lower.contains(phrase)) {
+            return false;
+        }
+    }
+
+    const int punctuationCount = lower.count(QLatin1Char('{')) + lower.count(QLatin1Char('}'))
+        + lower.count(QLatin1Char('[')) + lower.count(QLatin1Char(']'))
+        + lower.count(QLatin1Char('<')) + lower.count(QLatin1Char('>'));
+    if (punctuationCount >= 4) {
+        return false;
+    }
+
+    const QStringList terms = lower.split(QRegularExpression(QStringLiteral("[^a-z0-9]+")), Qt::SkipEmptyParts);
+    if (terms.size() > 32) {
+        return false;
+    }
+
+    return true;
+}
+
+bool MemoryManager::isPromptSafeMemory(const MemoryRecord &memory, const QString &query)
+{
+    if (!isPromptSafeCandidate(memory.value)) {
+        return false;
+    }
+
+    const QString normalizedQuery = normalizeKey(query);
+    const QString normalizedValue = normalizeKey(memory.value);
+    if (!normalizedQuery.isEmpty()
+        && !normalizedValue.isEmpty()
+        && (normalizedQuery == normalizedValue
+            || normalizedQuery.contains(normalizedValue)
+            || normalizedValue.contains(normalizedQuery))) {
+        return false;
+    }
+
+    return true;
 }

@@ -4,6 +4,7 @@
 #include "backend/llmclient.h"
 
 #include <QByteArray>
+#include <QJsonObject>
 #include <QNetworkAccessManager>
 #include <QPointer>
 #include <QStringList>
@@ -37,6 +38,7 @@ signals:
     void backendProbeFinished(bool ok, const QString &message);
     void modelsListed(const QStringList &models, const QString &message);
     void reasoningTrace(const QString &text);
+    void diagnosticMessage(const QString &category, const QString &message);
 
 private slots:
     void onReadyRead();
@@ -68,6 +70,8 @@ private:
     void beginWaitingForFirstToken();
     void beginStreaming();
     void abortForTimeout(const QString &message);
+    QString thinkRequestModeForModel(const QString &model) const;
+    QString summarizePayloadForDiagnostics(const QJsonObject &payload) const;
     QUrl buildEndpointUrl(const QString &baseUrl, const QString &endpointPath) const;
     QString describeNetworkFailure(QNetworkReply *reply,
                                    const QString &action,
@@ -94,9 +98,12 @@ private:
     bool m_receivedHeaders = false;
     bool m_receivedFirstToken = false;
     bool m_receivedAnyOutput = false;
+    bool m_receivedVisibleOutput = false;
     bool m_insideReasoningTrace = false;
     bool m_reasoningTraceEnabled = false;
+    bool m_hiddenThinkingNoticeEmitted = false;
     int m_probeTimeoutMs = 10000;
+    int m_httpStatusCode = 0;
     int m_responseHeadersTimeoutMs = 180000;
     int m_firstTokenTimeoutMs = 600000;
     int m_inactivityTimeoutMs = 300000;
@@ -109,6 +116,11 @@ private:
     double m_presencePenalty = 0.0;
     double m_frequencyPenalty = 0.0;
     StreamPhase m_streamPhase = StreamPhase::Idle;
+    qint64 m_totalBytesReceived = 0;
+    qint64 m_reasoningCharsObserved = 0;
+    QString m_requestedThinkMode;
+    QString m_streamLogicalError;
+    QString m_lastDoneReason;
     QTimer m_phaseTimer;
     QTimer m_totalTimer;
 };

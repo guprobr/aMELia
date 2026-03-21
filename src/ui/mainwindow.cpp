@@ -1,6 +1,7 @@
 #include "ui/mainwindow.h"
 #include "core/appconfig.h"
 #include "core/appversion.h"
+#include "core/transcriptformatter.h"
 
 #include <algorithm>
 #include <functional>
@@ -25,6 +26,7 @@
 #include <QFileInfo>
 #include <QFont>
 #include <QFormLayout>
+#include <QHeaderView>
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QInputDialog>
@@ -46,6 +48,7 @@
 #include <QProgressBar>
 #include <QStatusBar>
 #include <QRegularExpression>
+#include <QScrollBar>
 #include <QSet>
 #include <QSplitter>
 #include <QStackedLayout>
@@ -793,9 +796,9 @@ MainWindow::MainWindow(const QString &configPath,
     auto *memoryMenu = menuBar()->addMenu(QStringLiteral("&Memory"));
     auto *helpMenu = menuBar()->addMenu(QStringLiteral("&Help"));
 
-    auto *newConversationAction = fileMenu->addAction(QStringLiteral("New conversation"));
-    newConversationAction->setShortcut(QKeySequence::New);
-    connect(newConversationAction, &QAction::triggered, this, &MainWindow::newConversationRequested);
+    m_newConversationAction = fileMenu->addAction(QStringLiteral("New conversation"));
+    m_newConversationAction->setShortcut(QKeySequence::New);
+    connect(m_newConversationAction, &QAction::triggered, this, &MainWindow::newConversationRequested);
 
     m_configurationAction = settingsMenu->addAction(QStringLiteral("Configuration..."));
     connect(m_configurationAction, &QAction::triggered, this, &MainWindow::onOpenConfigurationDialog);
@@ -853,6 +856,16 @@ MainWindow::MainWindow(const QString &configPath,
     m_transcript->setPlaceholderText(QStringLiteral("Conversation transcript..."));
     m_transcript->setStyleSheet(QStringLiteral("QTextEdit { background: #0f172a; color: #e5e7eb; }"));
     connect(transcriptBrowser, &QTextBrowser::anchorClicked, this, &MainWindow::onTranscriptAnchorClicked);
+    if (QScrollBar *transcriptScrollBar = transcriptBrowser->verticalScrollBar()) {
+        connect(transcriptScrollBar, &QScrollBar::valueChanged, this, [this, transcriptScrollBar](int value) {
+            m_transcriptAutoScroll = value >= transcriptScrollBar->maximum() - 4;
+        });
+        connect(transcriptScrollBar, &QScrollBar::rangeChanged, this, [this, transcriptScrollBar](int, int) {
+            if (m_transcriptAutoScroll) {
+                transcriptScrollBar->setValue(transcriptScrollBar->maximum());
+            }
+        });
+    }
 
     m_input = new QPlainTextEdit(chatPane);
     m_input->setPlaceholderText(QStringLiteral("Type your prompt here..."));
@@ -956,14 +969,24 @@ MainWindow::MainWindow(const QString &configPath,
 
     auto *diagnosticsTab = new QWidget(tabs);
     auto *diagnosticsLayout = new QVBoxLayout(diagnosticsTab);
-    auto *diagnosticsHeader = new QHBoxLayout();
+    auto *diagnosticsHeader = new QVBoxLayout();
+    auto *diagnosticsToggleRow = new QHBoxLayout();
     m_reasoningTraceToggleButton = new QPushButton(QStringLiteral("Capture reasoning trace: OFF"), diagnosticsTab);
     m_reasoningTraceToggleButton->setCheckable(true);
+    m_verboseDiagnosticsToggleButton = new QPushButton(QStringLiteral("Verbose diagnostics: OFF"), diagnosticsTab);
+    m_verboseDiagnosticsToggleButton->setCheckable(true);
+    diagnosticsToggleRow->addWidget(m_reasoningTraceToggleButton, 0);
+    diagnosticsToggleRow->addWidget(m_verboseDiagnosticsToggleButton, 0);
+    diagnosticsToggleRow->addStretch(1);
     m_reasoningTraceInfoLabel = new QLabel(QStringLiteral("Off by default. When enabled, Amelia requests backend thinking streams when available and logs them here, along with any explicit model-authored reasoning notes."), diagnosticsTab);
     m_reasoningTraceInfoLabel->setWordWrap(true);
     m_reasoningTraceInfoLabel->setStyleSheet(QStringLiteral("color: #94a3b8;"));
-    diagnosticsHeader->addWidget(m_reasoningTraceToggleButton, 0);
-    diagnosticsHeader->addWidget(m_reasoningTraceInfoLabel, 1);
+    m_verboseDiagnosticsInfoLabel = new QLabel(QStringLiteral("Off by default. When enabled, Amelia shows verbose request/response summaries from Ollama. Essential errors still appear even when this stays off."), diagnosticsTab);
+    m_verboseDiagnosticsInfoLabel->setWordWrap(true);
+    m_verboseDiagnosticsInfoLabel->setStyleSheet(QStringLiteral("color: #94a3b8;"));
+    diagnosticsHeader->addLayout(diagnosticsToggleRow);
+    diagnosticsHeader->addWidget(m_reasoningTraceInfoLabel);
+    diagnosticsHeader->addWidget(m_verboseDiagnosticsInfoLabel);
     m_diagnostics = new QTextEdit(diagnosticsTab);
     m_diagnostics->setReadOnly(true);
     m_diagnostics->setStyleSheet(QStringLiteral("QTextEdit { background: #0b1220; color: #e5e7eb; }"));
@@ -1119,9 +1142,41 @@ MainWindow::MainWindow(const QString &configPath,
     m_externalSources->setReadOnly(true);
     tabs->addTab(m_externalSources, QStringLiteral("External Sources"));
 
-    m_memoriesView = new QPlainTextEdit(tabs);
-    m_memoriesView->setReadOnly(true);
-    tabs->addTab(m_memoriesView, QStringLiteral("Memory"));
+    auto *memoryTab = new QWidget(tabs);
+    auto *memoryLayout = new QVBoxLayout(memoryTab);
+    m_memoriesView = new QTreeWidget(memoryTab);
+    m_memoriesView->setColumnCount(4);
+    m_memoriesView->setHeaderLabels({QStringLiteral("Category"),
+                                     QStringLiteral("Key"),
+                                     QStringLiteral("Value"),
+                                     QStringLiteral("Updated")});
+    m_memoriesView->setRootIsDecorated(false);
+    m_memoriesView->setAlternatingRowColors(true);
+    m_memoriesView->setSelectionMode(QAbstractItemView::SingleSelection);
+    m_memoriesView->setSelectionBehavior(QAbstractItemView::SelectRows);
+    m_memoriesView->setUniformRowHeights(true);
+    m_memoriesView->setWordWrap(false);
+    m_memoriesView->setTextElideMode(Qt::ElideMiddle);
+    m_memoriesView->header()->setStretchLastSection(false);
+    m_memoriesView->header()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
+    m_memoriesView->header()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
+    m_memoriesView->header()->setSectionResizeMode(2, QHeaderView::Stretch);
+    m_memoriesView->header()->setSectionResizeMode(3, QHeaderView::ResizeToContents);
+    m_memoryDetails = new QPlainTextEdit(memoryTab);
+    m_memoryDetails->setReadOnly(true);
+    m_memoryDetails->setPlaceholderText(QStringLiteral("Select a memory to inspect its full details and description."));
+    m_memoryDetails->setMaximumHeight(180);
+    m_deleteMemoryButton = new QPushButton(QStringLiteral("Delete selected"), memoryTab);
+    m_deleteMemoryButton->setEnabled(false);
+
+    auto *memoryButtons = new QHBoxLayout();
+    memoryButtons->addWidget(m_deleteMemoryButton);
+    memoryButtons->addStretch(1);
+
+    memoryLayout->addWidget(m_memoriesView, 1);
+    memoryLayout->addWidget(m_memoryDetails);
+    memoryLayout->addLayout(memoryButtons);
+    tabs->addTab(memoryTab, QStringLiteral("Memory"));
 
     m_sessionSummary = new QPlainTextEdit(tabs);
     m_sessionSummary->setReadOnly(true);
@@ -1167,7 +1222,7 @@ MainWindow::MainWindow(const QString &configPath,
         }
     };
 
-    setActionTip(newConversationAction, QStringLiteral("Create a fresh conversation and keep the current history saved."));
+    setActionTip(m_newConversationAction, QStringLiteral("Create a fresh conversation and keep the current history saved."));
     setActionTip(m_configurationAction, QStringLiteral("Open Amelia's JSON configuration editor and save, cancel, or revert to factory defaults."));
     setActionTip(m_clearMemoriesAction, QStringLiteral("Remove all persisted memories saved by Amelia."));
     setActionTip(quitAction, QStringLiteral("Close Amelia Qt6."));
@@ -1189,11 +1244,13 @@ MainWindow::MainWindow(const QString &configPath,
     setWidgetTip(m_reindexButton, QStringLiteral("Refresh the indexed Knowledge Base and rebuild changed assets."));
     setWidgetTip(m_refreshModelsButton, QStringLiteral("Query Ollama and refresh the available local model list."));
     setWidgetTip(m_rememberButton, QStringLiteral("Save the current input as a manual memory for future grounded prompts."));
+    setWidgetTip(m_deleteMemoryButton, QStringLiteral("Delete the selected persisted memory entry."));
     setWidgetTip(m_copyLastAnswerButton, QStringLiteral("Copy the most recent full assistant answer to the clipboard."));
     setWidgetTip(m_importFilesButton, QStringLiteral("Import one or more files into the local Knowledge Base."));
     setWidgetTip(m_importFolderButton, QStringLiteral("Import an entire folder into the local Knowledge Base."));
     setWidgetTip(m_statusLabel, QStringLiteral("Current high-level status for prompt preparation, indexing, and generation."));
     setWidgetTip(m_reasoningTraceToggleButton, QStringLiteral("Toggle capture of backend reasoning traces when the model exposes them."));
+    setWidgetTip(m_verboseDiagnosticsToggleButton, QStringLiteral("Show or hide verbose Ollama request/response diagnostics. Essential errors remain visible either way."));
     setWidgetTip(m_diagnostics, QStringLiteral("Operational diagnostics, backend events, and optional reasoning trace output."));
     setWidgetTip(m_promptLabPresetCombo, QStringLiteral("Choose a Prompt Lab recipe preset as a starting point."));
     setWidgetTip(m_promptLabGoal, QStringLiteral("Describe the task the recipe should optimize for."));
@@ -1221,7 +1278,7 @@ MainWindow::MainWindow(const QString &configPath,
     setWidgetTip(m_outlinePlan, QStringLiteral("Outline-first planning and structured execution drafts."));
     setWidgetTip(m_localSources, QStringLiteral("Grounding excerpts and citations retrieved from local Knowledge Base assets."));
     setWidgetTip(m_externalSources, QStringLiteral("Sanitized snippets collected from external web search results."));
-    setWidgetTip(m_memoriesView, QStringLiteral("Persisted memories Amelia can reuse across conversations."));
+    setWidgetTip(m_memoriesView, QStringLiteral("Persisted memories Amelia can reuse across conversations. Select one to inspect its description and metadata."));
     setWidgetTip(m_sessionSummary, QStringLiteral("Rolling summary for the current conversation."));
     setWidgetTip(m_privacyPreview, QStringLiteral("Preview of what local and external context will be shared with the model."));
     setWidgetTip(m_taskProgressBar, QStringLiteral("Progress for prompt preparation, external search, indexing, and answer generation."));
@@ -1247,10 +1304,18 @@ MainWindow::MainWindow(const QString &configPath,
     connect(m_newConversationButton, &QPushButton::clicked, this, &MainWindow::newConversationRequested);
     connect(m_deleteConversationButton, &QPushButton::clicked, this, &MainWindow::onDeleteConversationClicked);
     connect(m_rememberButton, &QPushButton::clicked, this, &MainWindow::onRememberClicked);
+    connect(m_deleteMemoryButton, &QPushButton::clicked, this, &MainWindow::onDeleteSelectedMemoryClicked);
     connect(m_importFilesButton, &QPushButton::clicked, this, &MainWindow::onImportFilesClicked);
     connect(m_importFolderButton, &QPushButton::clicked, this, &MainWindow::onImportFolderClicked);
     connect(m_modelCombo, &QComboBox::currentTextChanged, this, &MainWindow::onModelSelectionChanged);
     connect(m_conversationsList, &QListWidget::currentItemChanged, this, &MainWindow::onConversationItemChanged);
+    connect(m_memoriesView, &QTreeWidget::itemSelectionChanged, this, [this]() {
+        const bool hasSelection = m_memoriesView != nullptr && !m_memoriesView->selectedItems().isEmpty();
+        if (m_deleteMemoryButton != nullptr) {
+            m_deleteMemoryButton->setEnabled(hasSelection);
+        }
+        updateSelectedMemoryDetails();
+    });
     connect(m_busyIndicatorTimer, &QTimer::timeout, this, &MainWindow::updateBusyIndicator);
     connect(m_promptLabGenerateButton, &QPushButton::clicked, this, &MainWindow::onPromptLabGenerateClicked);
     connect(m_promptLabUseButton, &QPushButton::clicked, this, &MainWindow::onPromptLabUseClicked);
@@ -1269,6 +1334,7 @@ MainWindow::MainWindow(const QString &configPath,
     connect(m_removePrioritizedAssetButton, &QPushButton::clicked, this, &MainWindow::onRemoveSelectedPrioritizedAssetsClicked);
     connect(m_clearPrioritizedAssetsButton, &QPushButton::clicked, this, &MainWindow::onClearPrioritizedAssetsClicked);
     connect(m_reasoningTraceToggleButton, &QPushButton::toggled, this, &MainWindow::onReasoningTraceToggleToggled);
+    connect(m_verboseDiagnosticsToggleButton, &QPushButton::toggled, this, &MainWindow::onVerboseDiagnosticsToggleToggled);
     if (auto *knowledgeTree = qobject_cast<KnowledgeTreeWidget *>(m_sourceInventoryTree)) {
         connect(knowledgeTree, &KnowledgeTreeWidget::knowledgeAssetsDropped, this, &MainWindow::onKnowledgeAssetsDropped);
         connect(knowledgeTree, &QTreeWidget::customContextMenuRequested, this, &MainWindow::onKnowledgeTreeContextMenuRequested);
@@ -1313,7 +1379,10 @@ void MainWindow::insertTranscriptMessage(const QString &role, const QString &tex
         cursor.insertHtml(QStringLiteral("<div style=\"height:6px\"></div>"));
     }
 
-    const QString html = messageToRichHtml(role, text, &m_transcriptCodeBlocks);
+    const QString renderText = role == QStringLiteral("assistant")
+            ? TranscriptFormatter::sanitizeFinalAssistantMarkdown(text)
+            : text;
+    const QString html = messageToRichHtml(role, renderText, &m_transcriptCodeBlocks);
     cursor.insertHtml(html);
     cursor.insertBlock();
     m_transcript->setTextCursor(cursor);
@@ -1550,6 +1619,10 @@ void MainWindow::appendUserMessage(const QString &text)
 
 void MainWindow::appendAssistantChunk(const QString &text)
 {
+    QScrollBar *scrollBar = m_transcript != nullptr ? m_transcript->verticalScrollBar() : nullptr;
+    const bool preserveScroll = scrollBar != nullptr && !m_transcriptAutoScroll;
+    const int previousScrollValue = preserveScroll ? scrollBar->value() : 0;
+
     QTextCursor cursor = m_transcript->textCursor();
     cursor.movePosition(QTextCursor::End);
 
@@ -1571,13 +1644,21 @@ void MainWindow::appendAssistantChunk(const QString &text)
 
     cursor.insertText(text, bodyFormat);
     m_transcript->setTextCursor(cursor);
-    m_transcript->ensureCursorVisible();
+    if (preserveScroll && scrollBar != nullptr) {
+        scrollBar->setValue(previousScrollValue);
+    } else {
+        m_transcript->ensureCursorVisible();
+    }
     updateResponseStreamingProgress(text);
 }
 
 void MainWindow::finalizeAssistantMessage(const QString &text)
 {
-    m_lastAssistantMessage = text;
+    const QString cleaned = TranscriptFormatter::sanitizeFinalAssistantMarkdown(text);
+    m_lastAssistantMessage = cleaned;
+    QScrollBar *scrollBar = m_transcript != nullptr ? m_transcript->verticalScrollBar() : nullptr;
+    const bool preserveScroll = scrollBar != nullptr && !m_transcriptAutoScroll;
+    const int previousScrollValue = preserveScroll ? scrollBar->value() : 0;
 
     if (m_streamingAssistant && m_streamingAssistantStartPosition >= 0) {
         QTextCursor cursor(m_transcript->document());
@@ -1585,7 +1666,10 @@ void MainWindow::finalizeAssistantMessage(const QString &text)
         cursor.movePosition(QTextCursor::End, QTextCursor::KeepAnchor);
         cursor.removeSelectedText();
         m_transcript->setTextCursor(cursor);
-        insertTranscriptMessage(QStringLiteral("assistant"), text);
+        insertTranscriptMessage(QStringLiteral("assistant"), cleaned);
+        if (preserveScroll && scrollBar != nullptr) {
+            scrollBar->setValue(previousScrollValue);
+        }
     }
 
     m_streamingAssistant = false;
@@ -1625,7 +1709,113 @@ void MainWindow::setOutlinePlan(const QString &text)
 
 void MainWindow::setMemoriesView(const QString &text)
 {
-    m_memoriesView->setPlainText(text);
+    if (m_memoriesView == nullptr) {
+        return;
+    }
+
+    m_memoriesView->clear();
+
+    const QJsonDocument doc = QJsonDocument::fromJson(text.toUtf8());
+    if (doc.isArray()) {
+        const QJsonArray array = doc.array();
+        for (const QJsonValue &value : array) {
+            if (!value.isObject()) {
+                continue;
+            }
+
+            const QJsonObject obj = value.toObject();
+            auto *item = new QTreeWidgetItem(m_memoriesView);
+            const QString category = obj.value(QStringLiteral("category")).toString();
+            const QString key = obj.value(QStringLiteral("key")).toString();
+            const QString memoryValue = obj.value(QStringLiteral("value")).toString();
+            const QString updatedAt = obj.value(QStringLiteral("updatedAt")).toString();
+            const QString createdAt = obj.value(QStringLiteral("createdAt")).toString();
+            const double confidence = obj.value(QStringLiteral("confidence")).toDouble(1.0);
+            const bool pinned = obj.value(QStringLiteral("pinned")).toBool(false);
+            QString description = obj.value(QStringLiteral("description")).toString().trimmed();
+            if (description.isEmpty()) {
+                description = QStringLiteral("Stored as a %1 memory%2. Amelia can reuse it later when the prompt matches.")
+                        .arg(category.isEmpty() ? QStringLiteral("general") : category,
+                             key.trimmed().isEmpty() ? QString() : QStringLiteral(" under key '%1'").arg(key));
+            }
+
+            item->setText(0, category);
+            item->setText(1, key);
+            item->setText(2, memoryValue);
+            item->setText(3, updatedAt);
+            item->setData(0, Qt::UserRole, obj.value(QStringLiteral("id")).toString());
+            item->setData(0, Qt::UserRole + 1, createdAt);
+            item->setData(0, Qt::UserRole + 2, updatedAt);
+            item->setData(0, Qt::UserRole + 3, confidence);
+            item->setData(0, Qt::UserRole + 4, pinned);
+            item->setData(0, Qt::UserRole + 5, description);
+            item->setToolTip(2, memoryValue);
+        }
+
+        if (m_memoriesView->topLevelItemCount() == 0) {
+            auto *emptyItem = new QTreeWidgetItem(m_memoriesView);
+            emptyItem->setText(0, QStringLiteral("<none>"));
+            emptyItem->setFlags(emptyItem->flags() & ~Qt::ItemIsSelectable);
+        }
+    } else {
+        auto *item = new QTreeWidgetItem(m_memoriesView);
+        item->setText(0, QStringLiteral("raw"));
+        item->setText(2, text.trimmed().isEmpty() ? QStringLiteral("<none>") : text.trimmed());
+        item->setFlags(item->flags() & ~Qt::ItemIsSelectable);
+    }
+
+    m_memoriesView->resizeColumnToContents(0);
+    m_memoriesView->resizeColumnToContents(1);
+    m_memoriesView->resizeColumnToContents(3);
+    if (m_deleteMemoryButton != nullptr) {
+        m_deleteMemoryButton->setEnabled(false);
+    }
+    updateSelectedMemoryDetails();
+}
+
+void MainWindow::updateSelectedMemoryDetails()
+{
+    if (m_memoryDetails == nullptr) {
+        return;
+    }
+
+    if (m_memoriesView == nullptr) {
+        m_memoryDetails->clear();
+        return;
+    }
+
+    const QList<QTreeWidgetItem *> selectedItems = m_memoriesView->selectedItems();
+    if (selectedItems.isEmpty()) {
+        m_memoryDetails->setPlainText(QStringLiteral("Select a memory to inspect its full details and description."));
+        return;
+    }
+
+    const QTreeWidgetItem *item = selectedItems.constFirst();
+    if (item == nullptr) {
+        m_memoryDetails->setPlainText(QStringLiteral("Select a memory to inspect its full details and description."));
+        return;
+    }
+
+    const QString category = item->text(0).trimmed();
+    const QString key = item->text(1).trimmed();
+    const QString value = item->text(2).trimmed();
+    const QString updatedAt = item->data(0, Qt::UserRole + 2).toString().trimmed();
+    const QString createdAt = item->data(0, Qt::UserRole + 1).toString().trimmed();
+    const double confidence = item->data(0, Qt::UserRole + 3).toDouble();
+    const bool pinned = item->data(0, Qt::UserRole + 4).toBool();
+    const QString description = item->data(0, Qt::UserRole + 5).toString().trimmed();
+
+    QStringList lines;
+    lines << QStringLiteral("Description: %1").arg(description.isEmpty() ? QStringLiteral("<none>") : description);
+    lines << QStringLiteral("Category: %1").arg(category.isEmpty() ? QStringLiteral("<none>") : category);
+    lines << QStringLiteral("Key: %1").arg(key.isEmpty() ? QStringLiteral("<note>") : key);
+    lines << QStringLiteral("Value: %1").arg(value.isEmpty() ? QStringLiteral("<empty>") : value);
+    lines << QStringLiteral("Pinned: %1").arg(pinned ? QStringLiteral("yes") : QStringLiteral("no"));
+    lines << QStringLiteral("Confidence: %1").arg(QString::number(confidence, 'f', 2));
+    lines << QStringLiteral("Created: %1").arg(createdAt.isEmpty() ? QStringLiteral("<unknown>") : createdAt);
+    lines << QStringLiteral("Updated: %1").arg(updatedAt.isEmpty() ? QStringLiteral("<unknown>") : updatedAt);
+
+    m_memoryDetails->setPlainText(lines.join(QStringLiteral("\n")));
 }
 
 void MainWindow::setSessionSummary(const QString &text)
@@ -1636,6 +1826,7 @@ void MainWindow::setSessionSummary(const QString &text)
 void MainWindow::rebuildTranscriptFromPlainText(const QString &text)
 {
     m_transcript->clear();
+    m_transcriptAutoScroll = true;
     m_streamingAssistant = false;
     m_streamingAssistantStartPosition = -1;
     m_lastAssistantMessage.clear();
@@ -1664,7 +1855,7 @@ void MainWindow::rebuildTranscriptFromPlainText(const QString &text)
         }
 
         if (currentRole == QStringLiteral("assistant")) {
-            m_lastAssistantMessage = message;
+            m_lastAssistantMessage = TranscriptFormatter::sanitizeFinalAssistantMarkdown(message);
         }
         appendTranscriptEntry(currentRole, message);
         currentRole.clear();
@@ -1697,6 +1888,9 @@ void MainWindow::rebuildTranscriptFromPlainText(const QString &text)
         }
     }
     flushMessage();
+    if (QScrollBar *scrollBar = m_transcript->verticalScrollBar()) {
+        scrollBar->setValue(scrollBar->maximum());
+    }
 }
 
 void MainWindow::setTranscript(const QString &text)
@@ -1755,6 +1949,8 @@ void MainWindow::setBusy(bool busy)
     m_sendButton->setEnabled(!busy && !m_indexingActive);
     m_stopButton->setEnabled(busy);
     m_input->setReadOnly(busy || m_indexingActive);
+    if (m_newConversationAction != nullptr) m_newConversationAction->setEnabled(!busy);
+    if (m_conversationsList != nullptr) m_conversationsList->setEnabled(!busy);
     m_newConversationButton->setEnabled(!busy);
     if (m_deleteConversationButton != nullptr) m_deleteConversationButton->setEnabled(!busy);
     m_importFilesButton->setEnabled(!busy && !m_indexingActive);
@@ -2917,6 +3113,23 @@ void MainWindow::onReasoningTraceToggleToggled(bool checked)
     emit reasoningTraceCaptureToggled(checked);
 }
 
+void MainWindow::onVerboseDiagnosticsToggleToggled(bool checked)
+{
+    if (m_verboseDiagnosticsToggleButton != nullptr) {
+        m_verboseDiagnosticsToggleButton->setText(checked
+                                                  ? QStringLiteral("Verbose diagnostics: ON")
+                                                  : QStringLiteral("Verbose diagnostics: OFF"));
+    }
+
+    if (m_verboseDiagnosticsInfoLabel != nullptr) {
+        m_verboseDiagnosticsInfoLabel->setText(checked
+                                               ? QStringLiteral("Enabled. Amelia will show verbose Ollama request/response summaries in the Diagnostics panel and console.")
+                                               : QStringLiteral("Off by default. Amelia hides verbose request/response summaries, while still keeping essential diagnostics visible."));
+    }
+
+    emit verboseDiagnosticsToggled(checked);
+}
+
 void MainWindow::onTranscriptAnchorClicked(const QUrl &url)
 {
     if (url.scheme() == QStringLiteral("copycode")) {
@@ -2987,7 +3200,7 @@ void MainWindow::onSendClicked()
 void MainWindow::onConversationItemChanged(QListWidgetItem *current, QListWidgetItem *previous)
 {
     Q_UNUSED(previous)
-    if (m_updatingConversationList || current == nullptr) {
+    if (m_updatingConversationList || current == nullptr || (m_stopButton != nullptr && m_stopButton->isEnabled())) {
         return;
     }
     emit conversationSelected(current->data(Qt::UserRole).toString());
@@ -3000,6 +3213,41 @@ void MainWindow::onRememberClicked()
         return;
     }
     emit rememberRequested(candidate);
+}
+
+void MainWindow::onDeleteSelectedMemoryClicked()
+{
+    if (m_memoriesView == nullptr) {
+        return;
+    }
+
+    const QList<QTreeWidgetItem *> selectedItems = m_memoriesView->selectedItems();
+    if (selectedItems.isEmpty()) {
+        return;
+    }
+
+    QTreeWidgetItem *item = selectedItems.constFirst();
+    if (item == nullptr) {
+        return;
+    }
+
+    const QString memoryId = item->data(0, Qt::UserRole).toString().trimmed();
+    if (memoryId.isEmpty()) {
+        return;
+    }
+
+    const QString preview = item->text(2).trimmed();
+    const auto answer = QMessageBox::question(
+        this,
+        QStringLiteral("Delete memory"),
+        QStringLiteral("Delete this persisted memory?\n\n%1").arg(preview.isEmpty() ? QStringLiteral("<empty>") : preview),
+        QMessageBox::Yes | QMessageBox::No,
+        QMessageBox::No);
+    if (answer != QMessageBox::Yes) {
+        return;
+    }
+
+    emit deleteMemoryRequested(memoryId);
 }
 
 void MainWindow::onImportFilesClicked()
