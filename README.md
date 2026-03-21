@@ -1,4 +1,4 @@
-# aMELia Qt6 v7.7
+# aMELia Qt6 v7.9
 
 Amelia is a local-first Qt6/C++ coding and cloud assistant that talks to a local Ollama server, stores its state under `~/.amelia_qt6`, indexes a local knowledge base, and can optionally use sanitized external web search through SearXNG.
 
@@ -6,7 +6,32 @@ This build rolls forward the existing bootstrap, indexing, transcript, Prompt La
 
 NOTE: prompt transcripts are first generated in markdown but after it finishes, they should be properly formatted.
 
-## What's new in v7.7
+## What's new in v7.9
+
+### Cancel / queue handling and safer KB refresh
+
+- canceling indexing now also drops the remaining queued files from that run, so Amelia does not immediately continue re-indexing assets the user explicitly canceled
+- the Knowledge Base tree now switches into a locked refresh view while inventory is being rebuilt, with an animated status line instead of leaving stale rows visible
+- Knowledge Base tree controls are disabled while the refreshed inventory is pending, which reduces stale drag/drop and stale-selection mistakes during reindex-triggering operations
+- operations that require a Knowledge Base rebuild now ask for confirmation up front and explicitly explain that Amelia will refresh and reindex afterwards
+- collection right-click menus now include **Add file to collection** and **Add folder to collection** shortcuts
+
+### Large-asset ingestion, parsing, and chunk coverage
+
+- large assets now use a more adaptive chunking profile instead of one fixed chunk shape for everything
+- chunk sizing now scales by source type and asset size, which improves large-document coverage while reducing wasted overlap on huge files
+- duplicate chunk bodies from repeated boilerplate are now filtered before embedding so oversized manuals and exported docs waste less embedding time
+- PDF ingestion now strips repeated page headers / footers more aggressively and can fall back to a raw `pdftotext` pass when the layout pass yields thin coverage
+- imported assets now track extra ingestion metadata including text chars, line count, word count, and the chunking profile used
+- asset properties can now show a bounded chunk-dump preview so large assets are easier to inspect without flooding the UI
+
+### Knowledge Base tree actions and safer move behavior
+
+- Knowledge Base collections now support **Create / Delete / Rename / Properties** from the right-click menu
+- individual Knowledge Base assets now support **Rename / Delete / Properties** from the right-click menu
+- collection and asset property dialogs now expose more relevant stored metadata, and asset properties can include a chunk preview dump
+- tree drag/drop now behaves more safely when moving assets, and failed moves force an immediate inventory refresh instead of leaving items visually missing until another manual refresh
+- manifest persistence for move operations is now rollback-aware, so a failed save is less likely to leave the KB in an inconsistent state
 
 ### Transcript table/code-block safety and model defaults
 
@@ -54,7 +79,7 @@ NOTE: prompt transcripts are first generated in markdown but after it finishes, 
 
 ### Knowledge Base collections and safer structure handling
 
-- display version bumped to `7.7`
+- display version bumped to `7.9`
 - imported files and folders are now stored as **collections** with:
   - an immutable collection hash / ID
   - a user-visible **label** that can be renamed later
@@ -151,15 +176,15 @@ This release keeps the improvements from the earlier 6.9x line, including:
 
 ## Versioning
 
-- Version is now `7.7`.
+- Version is now `7.9`.
 - The display version comes from one place only:
   - `src/core/appversion.h`
 
 ## Cache / index regeneration notes
 
-- These code changes do **not** require a forced global cache wipe or full Knowledge Base rebuild just because the application was upgraded.
-- Moving assets between collections **does** change their stored path / collection metadata, so Amelia refreshes the KB index after a move.
-- Cancel-index support is backward-compatible with the current cache format; it changes the write behavior, not the cache schema.
+- These code changes do **not** require a manual forced cache wipe, but Amelia will automatically invalidate older KB caches when the chunking strategy changes.
+- Moving or renaming assets inside the Knowledge Base **does** change their stored path / collection metadata, so Amelia refreshes the KB index after those operations.
+- Cancel-index support remains backward-compatible with the partial-safe cache write path.
 
 ## Ubuntu packages
 
@@ -388,7 +413,10 @@ Main things to check:
 
 ## Recent changes
 
-- 7.7 indexing cancellation: the Knowledge Base shows a dedicated **Cancel index** button while indexing. Canceling now commits already-finished files, preserves the previous cache state for the in-flight file, and writes a partial-safe cache instead of treating the whole run as all-or-nothing.
-- 7.7 Knowledge Base drag-and-drop moves: assets can now be dragged from the current tree view and dropped onto another collection or folder node to move them. Amelia updates the manifest, moves the stored files, and then refreshes the index.
-- 7.7 shutdown cleanup: closing Amelia during indexing now requests cancellation and waits for the worker/process shutdown path cleanly so hidden leftover processes are less likely to remain consuming CPU.
+- 7.9 cancel / queue clearing: canceling indexing now drops the remaining queued files from that run instead of continuing to re-index assets the user explicitly canceled.
+- 7.9 safer KB refresh UX: the Knowledge Base tree now switches to a locked refresh view with an animated status line while stale inventory is being rebuilt.
+- 7.9 collection shortcuts: collection context menus now include **Add file to collection** and **Add folder to collection**, and reindex-triggering actions warn the user before they proceed.
+- 7.8 large-asset ingestion: adaptive chunking, repeated-boilerplate reduction, duplicate-chunk filtering, richer ingestion metadata, and bounded chunk previews make large KB assets cheaper to inspect and better covered during indexing.
+- 7.8 Knowledge Base context menus: collections now support create/delete/rename/properties and assets now support rename/delete/properties directly from the tree.
+- 7.8 safer KB moves: failed drag/drop moves now refresh the inventory immediately, and manifest-save failures are rolled back more defensively.
 - 7.1e1 transcript rendering hotfix: unsafe markdown tables containing fenced code or HTML line breaks are automatically rewritten into stacked sections before rendering, preventing the rest of the transcript from breaking.

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QHash>
+#include <QJsonObject>
 #include <QMainWindow>
 #include <QCloseEvent>
 #include <QString>
@@ -19,9 +20,11 @@ class QPlainTextEdit;
 class QPoint;
 class QProgressBar;
 class QPushButton;
+class QStackedLayout;
 class QTextEdit;
 class QTimer;
 class QUrl;
+class QWidget;
 
 class MainWindow : public QMainWindow {
     Q_OBJECT
@@ -66,9 +69,13 @@ signals:
     void rememberRequested(const QString &text);
     void backendModelSelected(const QString &model);
     void importPathsRequested(const QStringList &paths, const QString &label);
+    void addPathsToKnowledgeCollectionRequested(const QStringList &paths, const QString &collectionId);
+    void createKnowledgeCollectionRequested(const QString &label);
+    void deleteKnowledgeCollectionRequested(const QString &collectionId);
     void clearMemoriesRequested();
     void removeKnowledgeAssetsRequested(const QStringList &paths);
     void moveKnowledgeAssetsRequested(const QStringList &paths, const QString &targetCollectionId, const QString &targetGroupLabel);
+    void renameKnowledgeAssetRequested(const QString &path, const QString &newFileName);
     void clearKnowledgeBaseRequested();
     void deleteConversationRequested(const QString &conversationId);
     void reasoningTraceCaptureToggled(bool enabled);
@@ -81,6 +88,7 @@ private slots:
     void onRememberClicked();
     void onImportFilesClicked();
     void onImportFolderClicked();
+    void onReindexClicked();
     void onModelSelectionChanged(const QString &model);
     void updateBusyIndicator();
     void showAboutAmelia();
@@ -107,6 +115,7 @@ private slots:
     void onClearPrioritizedAssetsClicked();
     void onRenameSelectedKnowledgeGroupClicked();
     void onKnowledgeAssetsDropped(const QStringList &paths, const QString &targetCollectionId, const QString &targetGroupLabel);
+    void onKnowledgeTreeContextMenuRequested(const QPoint &pos);
     void onOpenConfigurationDialog();
 
 protected:
@@ -128,6 +137,10 @@ private:
     QString promptForKnowledgeLabel(const QString &title, const QString &suggestedLabel) const;
     void rebuildPrioritizedKnowledgeAssetsUi();
     void emitPrioritizedKnowledgeAssetsState();
+    QTreeWidgetItem *knowledgeContextItem(const QPoint *treePos = nullptr) const;
+    void showKnowledgePropertiesDialog(const QString &title, const QJsonObject &properties, const QString &nodeType);
+    bool confirmKnowledgeBaseReindexAction(const QString &action, const QString &details = QString()) const;
+    void setKnowledgeInventoryRefreshVisible(bool visible, const QString &label = QString());
     void beginResponseProgress(const QString &label = QString());
     void setResponseProgressStage(int value, const QString &label);
     void setResponseProgressBusy(const QString &label);
@@ -154,6 +167,8 @@ private:
     QLineEdit *m_sourceInventoryFilter = nullptr;
     QLabel *m_sourceInventoryFilterStatus = nullptr;
     QTreeWidget *m_sourceInventoryTree = nullptr;
+    QStackedLayout *m_sourceInventoryStack = nullptr;
+    QLabel *m_sourceInventoryRefreshLabel = nullptr;
     QListWidget *m_conversationsList = nullptr;
     QPushButton *m_deleteConversationButton = nullptr;
     QCheckBox *m_externalSearchCheck = nullptr;
@@ -208,6 +223,8 @@ private:
     int m_streamEstimatedChars = 1400;
     bool m_indexingActive = false;
     bool m_closePendingAfterIndexCancel = false;
+    bool m_knowledgeInventoryRefreshVisible = false;
+    QString m_knowledgeInventoryRefreshBaseLabel;
     bool m_updatingConversationList = false;
     bool m_updatingModelList = false;
     QAction *m_aboutAmeliaAction = nullptr;

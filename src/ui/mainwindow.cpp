@@ -14,6 +14,7 @@
 #include <QTextDocument>
 #include <QTextBrowser>
 #include <QDesktopServices>
+#include <QDateTime>
 #include <QDragMoveEvent>
 #include <QDialogButtonBox>
 #include <QDialog>
@@ -47,6 +48,7 @@
 #include <QRegularExpression>
 #include <QSet>
 #include <QSplitter>
+#include <QStackedLayout>
 #include <QTabWidget>
 #include <QTabBar>
 #include <QTextBlockFormat>
@@ -150,6 +152,7 @@ constexpr int kKnowledgePathRole = Qt::UserRole + 21;
 constexpr int kKnowledgeCollectionIdRole = Qt::UserRole + 22;
 constexpr int kKnowledgeSearchBlobRole = Qt::UserRole + 23;
 constexpr int kKnowledgeGroupLabelRole = Qt::UserRole + 24;
+constexpr int kKnowledgePropertiesRole = Qt::UserRole + 25;
 constexpr char kKnowledgeMoveMimeType[] = "application/x-amelia-kb-paths";
 
 class KnowledgeTreeWidget final : public QTreeWidget {
@@ -162,7 +165,7 @@ public:
         setAcceptDrops(true);
         setDropIndicatorShown(true);
         setDragDropMode(QAbstractItemView::DragDrop);
-        setDefaultDropAction(Qt::MoveAction);
+        setDefaultDropAction(Qt::CopyAction);
         setDragDropOverwriteMode(false);
     }
 
@@ -216,7 +219,7 @@ protected:
 
     Qt::DropActions supportedDropActions() const override
     {
-        return Qt::MoveAction;
+        return Qt::CopyAction;
     }
 
     void dragMoveEvent(QDragMoveEvent *event) override
@@ -229,7 +232,8 @@ protected:
             event->ignore();
             return;
         }
-        event->acceptProposedAction();
+        event->setDropAction(Qt::CopyAction);
+        event->accept();
     }
 
     void dropEvent(QDropEvent *event) override
@@ -262,7 +266,8 @@ protected:
         }
 
         emit knowledgeAssetsDropped(paths, targetCollectionId, target.second);
-        event->acceptProposedAction();
+        event->setDropAction(Qt::CopyAction);
+        event->accept();
     }
 
 private:
@@ -1058,7 +1063,26 @@ MainWindow::MainWindow(const QString &configPath,
     m_sourceInventoryTree->setAlternatingRowColors(true);
     m_sourceInventoryTree->setSortingEnabled(true);
     m_sourceInventoryTree->setHeaderLabels({QStringLiteral("Knowledge asset"), QStringLiteral("Kind"), QStringLiteral("Location / notes")});
+    m_sourceInventoryTree->setContextMenuPolicy(Qt::CustomContextMenu);
     m_sourceInventoryTree->viewport()->setAcceptDrops(true);
+
+    auto *kbInventoryOverlay = new QWidget(kbTab);
+    auto *kbInventoryOverlayLayout = new QVBoxLayout(kbInventoryOverlay);
+    kbInventoryOverlayLayout->setContentsMargins(24, 24, 24, 24);
+    kbInventoryOverlayLayout->addStretch(1);
+    m_sourceInventoryRefreshLabel = new QLabel(QStringLiteral("Refreshing Knowledge Base..."), kbInventoryOverlay);
+    m_sourceInventoryRefreshLabel->setAlignment(Qt::AlignCenter);
+    m_sourceInventoryRefreshLabel->setWordWrap(true);
+    m_sourceInventoryRefreshLabel->setStyleSheet(QStringLiteral("font-weight: 700; font-size: 16px;"));
+    kbInventoryOverlayLayout->addWidget(m_sourceInventoryRefreshLabel, 0, Qt::AlignCenter);
+    kbInventoryOverlayLayout->addStretch(1);
+
+    auto *kbInventoryHost = new QWidget(kbTab);
+    m_sourceInventoryStack = new QStackedLayout(kbInventoryHost);
+    m_sourceInventoryStack->setContentsMargins(0, 0, 0, 0);
+    m_sourceInventoryStack->addWidget(m_sourceInventoryTree);
+    m_sourceInventoryStack->addWidget(kbInventoryOverlay);
+    m_sourceInventoryStack->setCurrentIndex(0);
 
     auto *kbButtons = new QHBoxLayout();
     m_prioritizeSelectedAssetButton = new QPushButton(QStringLiteral("Use once"), kbTab);
@@ -1075,7 +1099,7 @@ MainWindow::MainWindow(const QString &configPath,
     kbLayout->addWidget(m_sourceInventory);
     kbLayout->addWidget(m_sourceInventoryStats);
     kbLayout->addLayout(kbFilterLayout);
-    kbLayout->addWidget(m_sourceInventoryTree, 1);
+    kbLayout->addWidget(kbInventoryHost, 1);
     kbLayout->addLayout(kbButtons);
 
     tabs->addTab(diagnosticsTab, QStringLiteral("Diagnostics"));
@@ -1217,7 +1241,7 @@ MainWindow::MainWindow(const QString &configPath,
 
     connect(m_sendButton, &QPushButton::clicked, this, &MainWindow::onSendClicked);
     connect(m_stopButton, &QPushButton::clicked, this, &MainWindow::stopRequested);
-    connect(m_reindexButton, &QPushButton::clicked, this, &MainWindow::reindexRequested);
+    connect(m_reindexButton, &QPushButton::clicked, this, &MainWindow::onReindexClicked);
     connect(m_cancelIndexingButton, &QPushButton::clicked, this, &MainWindow::cancelIndexingRequested);
     connect(m_refreshModelsButton, &QPushButton::clicked, this, &MainWindow::refreshModelsRequested);
     connect(m_newConversationButton, &QPushButton::clicked, this, &MainWindow::newConversationRequested);
@@ -1247,6 +1271,7 @@ MainWindow::MainWindow(const QString &configPath,
     connect(m_reasoningTraceToggleButton, &QPushButton::toggled, this, &MainWindow::onReasoningTraceToggleToggled);
     if (auto *knowledgeTree = qobject_cast<KnowledgeTreeWidget *>(m_sourceInventoryTree)) {
         connect(knowledgeTree, &KnowledgeTreeWidget::knowledgeAssetsDropped, this, &MainWindow::onKnowledgeAssetsDropped);
+        connect(knowledgeTree, &QTreeWidget::customContextMenuRequested, this, &MainWindow::onKnowledgeTreeContextMenuRequested);
     }
 
     if (m_promptLabPreview != nullptr) {
@@ -1336,6 +1361,58 @@ void MainWindow::resetTaskProgressBar()
     m_taskProgressBar->setRange(0, 100);
     m_taskProgressBar->setValue(0);
     m_taskProgressBar->setFormat(QStringLiteral("%p%"));
+}
+
+bool MainWindow::confirmKnowledgeBaseReindexAction(const QString &action, const QString &details) const
+{
+    QString prompt = action.trimmed();
+    if (!details.trimmed().isEmpty()) {
+        prompt += QStringLiteral("\n\n") + details.trimmed();
+    }
+    prompt += QStringLiteral("\n\nAmelia will need to refresh and reindex the Knowledge Base after this change.");
+    prompt += QStringLiteral("\nThe Knowledge Base tree will be temporarily locked while the refreshed inventory is rebuilt.");
+    prompt += QStringLiteral("\n\nContinue?");
+    return QMessageBox::question(const_cast<MainWindow *>(this),
+                                 QStringLiteral("Knowledge Base reindex required"),
+                                 prompt,
+                                 QMessageBox::Yes | QMessageBox::No,
+                                 QMessageBox::No) == QMessageBox::Yes;
+}
+
+void MainWindow::setKnowledgeInventoryRefreshVisible(bool visible, const QString &label)
+{
+    m_knowledgeInventoryRefreshVisible = visible;
+    if (!label.trimmed().isEmpty()) {
+        m_knowledgeInventoryRefreshBaseLabel = label.trimmed();
+    } else if (m_knowledgeInventoryRefreshBaseLabel.trimmed().isEmpty()) {
+        m_knowledgeInventoryRefreshBaseLabel = QStringLiteral("Refreshing Knowledge Base...");
+    }
+
+    if (m_sourceInventoryStack != nullptr) {
+        m_sourceInventoryStack->setCurrentIndex(visible ? 1 : 0);
+    }
+    if (m_sourceInventoryRefreshLabel != nullptr) {
+        const QString frame = m_busyFrames.isEmpty() ? QStringLiteral("•") : m_busyFrames.at(m_busyFrameIndex % m_busyFrames.size());
+        m_sourceInventoryRefreshLabel->setText(visible ? QStringLiteral("%1 %2").arg(frame, m_knowledgeInventoryRefreshBaseLabel) : QString());
+    }
+
+    const bool enableKbControls = !visible && !m_indexingActive && (m_stopButton == nullptr || !m_stopButton->isEnabled());
+    if (m_sourceInventoryFilter != nullptr) m_sourceInventoryFilter->setEnabled(enableKbControls);
+    if (m_sourceInventorySortCombo != nullptr) m_sourceInventorySortCombo->setEnabled(enableKbControls);
+    if (m_sourceInventoryTree != nullptr) m_sourceInventoryTree->setEnabled(enableKbControls);
+    if (m_prioritizeSelectedAssetButton != nullptr) m_prioritizeSelectedAssetButton->setEnabled(enableKbControls);
+    if (m_pinSelectedAssetButton != nullptr) m_pinSelectedAssetButton->setEnabled(enableKbControls);
+    if (m_renameKnowledgeLabelButton != nullptr) m_renameKnowledgeLabelButton->setEnabled(enableKbControls);
+    if (m_removeSelectedAssetButton != nullptr) m_removeSelectedAssetButton->setEnabled(enableKbControls);
+    if (m_clearKnowledgeBaseButton != nullptr) m_clearKnowledgeBaseButton->setEnabled(enableKbControls);
+
+    if (visible) {
+        if (m_busyIndicatorTimer != nullptr && !m_busyIndicatorTimer->isActive()) {
+            m_busyIndicatorTimer->start();
+        }
+    } else if (m_busyIndicatorTimer != nullptr && (m_stopButton == nullptr || !m_stopButton->isEnabled())) {
+        m_busyIndicatorTimer->stop();
+    }
 }
 
 void MainWindow::beginResponseProgress(const QString &label)
@@ -1706,9 +1783,11 @@ void MainWindow::setBusy(bool busy)
         m_busyIndicatorLabel->show();
         m_busyIndicatorTimer->start();
     } else {
-        m_busyIndicatorTimer->stop();
         m_busyIndicatorLabel->hide();
         m_busyIndicatorLabel->clear();
+        if (!m_knowledgeInventoryRefreshVisible && m_busyIndicatorTimer != nullptr) {
+            m_busyIndicatorTimer->stop();
+        }
     }
 }
 
@@ -1747,11 +1826,13 @@ void MainWindow::setIndexingActive(bool active)
     }
 
     if (active) {
+        setKnowledgeInventoryRefreshVisible(true, QStringLiteral("Refreshing Knowledge Base index..."));
         m_taskProgressBar->setVisible(true);
         m_taskProgressBar->setRange(0, 0);
         m_taskProgressBar->setFormat(QStringLiteral("Indexing local docs..."));
         m_statusLabel->setText(QStringLiteral("Indexing local docs..."));
     } else {
+        setKnowledgeInventoryRefreshVisible(true, QStringLiteral("Refreshing Knowledge Base view..."));
         if (m_cancelIndexingButton != nullptr) {
             m_cancelIndexingButton->hide();
             m_cancelIndexingButton->setEnabled(false);
@@ -1790,6 +1871,9 @@ void MainWindow::setIndexingProgress(int value, int maximum, const QString &labe
 
     if (!label.isEmpty()) {
         m_statusLabel->setText(label);
+        if (m_knowledgeInventoryRefreshVisible) {
+            setKnowledgeInventoryRefreshVisible(true, label);
+        }
     }
 }
 
@@ -1841,6 +1925,9 @@ void MainWindow::setSourceInventory(const QString &text)
             m_sourceInventoryStats->setPlainText(QStringLiteral("No imported Knowledge Base assets."));
         }
         updateKnowledgeBaseFilterStatus();
+        if (!m_indexingActive) {
+            setKnowledgeInventoryRefreshVisible(false);
+        }
         return;
     }
 
@@ -1853,6 +1940,9 @@ void MainWindow::setSourceInventory(const QString &text)
             m_sourceInventoryStats->setPlainText(QStringLiteral("Statistics unavailable for the current inventory payload."));
         }
         updateKnowledgeBaseFilterStatus();
+        if (!m_indexingActive) {
+            setKnowledgeInventoryRefreshVisible(false);
+        }
         return;
     }
 
@@ -1920,6 +2010,9 @@ void MainWindow::setSourceInventory(const QString &text)
                                     .arg(formatByteCount(collectionBytes)));
         collectionItem->setData(0, kKnowledgeNodeTypeRole, QStringLiteral("collection"));
         collectionItem->setData(0, kKnowledgeCollectionIdRole, collection.value(QStringLiteral("collectionId")).toString());
+        QJsonObject collectionProperties = collection;
+        collectionProperties.insert(QStringLiteral("nodeType"), QStringLiteral("collection"));
+        collectionItem->setData(0, kKnowledgePropertiesRole, QString::fromUtf8(QJsonDocument(collectionProperties).toJson(QJsonDocument::Compact)));
         collectionItem->setData(0, kKnowledgeSearchBlobRole,
                                 collection.value(QStringLiteral("label")).toString()
                                     + QLatin1Char('\n')
@@ -1944,6 +2037,10 @@ void MainWindow::setSourceInventory(const QString &text)
                                    .arg(formatByteCount(groupBytes)));
             groupItem->setData(0, kKnowledgeNodeTypeRole, QStringLiteral("group"));
             groupItem->setData(0, kKnowledgeCollectionIdRole, collection.value(QStringLiteral("collectionId")).toString());
+            groupItem->setData(0, kKnowledgeGroupLabelRole, group.value(QStringLiteral("label")).toString(QStringLiteral("(root)")));
+            QJsonObject groupProperties = group;
+            groupProperties.insert(QStringLiteral("nodeType"), QStringLiteral("group"));
+            groupItem->setData(0, kKnowledgePropertiesRole, QString::fromUtf8(QJsonDocument(groupProperties).toJson(QJsonDocument::Compact)));
             groupItem->setData(0, kKnowledgeSearchBlobRole,
                                collection.value(QStringLiteral("label")).toString()
                                    + QLatin1Char('\n')
@@ -1966,15 +2063,23 @@ void MainWindow::setSourceInventory(const QString &text)
                 const QString extractor = file.value(QStringLiteral("extractor")).toString().trimmed();
                 const QString extension = file.value(QStringLiteral("extension")).toString().trimmed();
                 const int chunkCount = file.value(QStringLiteral("chunkCount")).toInt();
+                const QString zeroChunkReason = file.value(QStringLiteral("zeroChunkReason")).toString().trimmed();
+                const bool hasZeroChunkWarning = chunkCount <= 0 && !zeroChunkReason.isEmpty();
+                const QString displayPath = relativePath.isEmpty() ? fileName : relativePath;
 
                 auto *fileItem = new QTreeWidgetItem(groupItem);
                 fileItem->setText(0, fileName.isEmpty() ? relativePath : fileName);
                 fileItem->setText(1, extension.isEmpty() ? sourceType : extension);
-                fileItem->setText(2, relativePath);
+                fileItem->setText(2, hasZeroChunkWarning
+                                      ? QStringLiteral("%1 — ZERO CHUNKS: %2").arg(displayPath, zeroChunkReason)
+                                      : displayPath);
                 fileItem->setData(0, kKnowledgeNodeTypeRole, QStringLiteral("file"));
                 fileItem->setData(0, kKnowledgePathRole, filePath);
                 fileItem->setData(0, kKnowledgeCollectionIdRole, collection.value(QStringLiteral("collectionId")).toString());
                 fileItem->setData(0, kKnowledgeGroupLabelRole, group.value(QStringLiteral("label")).toString(QStringLiteral("(root)")));
+                QJsonObject fileProperties = file;
+                fileProperties.insert(QStringLiteral("nodeType"), QStringLiteral("file"));
+                fileItem->setData(0, kKnowledgePropertiesRole, QString::fromUtf8(QJsonDocument(fileProperties).toJson(QJsonDocument::Compact)));
                 fileItem->setData(0, kKnowledgeSearchBlobRole,
                                   collection.value(QStringLiteral("label")).toString()
                                       + QLatin1Char('\n')
@@ -1990,7 +2095,9 @@ void MainWindow::setSourceInventory(const QString &text)
                                       + QLatin1Char('\n')
                                       + sourceRole
                                       + QLatin1Char('\n')
-                                      + sourceType);
+                                      + sourceType
+                                      + QLatin1Char('\n')
+                                      + zeroChunkReason);
 
                 QStringList details;
                 details << QStringLiteral("Collection: %1").arg(collection.value(QStringLiteral("label")).toString());
@@ -2002,17 +2109,28 @@ void MainWindow::setSourceInventory(const QString &text)
                                                                       sourceRole.isEmpty() ? QStringLiteral("<unknown>") : sourceRole);
                 details << QStringLiteral("Extractor: %1").arg(extractor.isEmpty() ? QStringLiteral("<unknown>") : extractor);
                 details << QStringLiteral("Chunks: %1").arg(chunkCount);
+                if (hasZeroChunkWarning) {
+                    details << QStringLiteral("Zero-chunk reason: %1").arg(zeroChunkReason);
+                }
                 details << QStringLiteral("Stored size: %1").arg(formatByteCount(static_cast<qint64>(file.value(QStringLiteral("fileSizeBytes")).toDouble())));
-                fileItem->setToolTip(0, details.join(QStringLiteral("\n")));
-                fileItem->setToolTip(1, details.join(QStringLiteral("\n")));
-                fileItem->setToolTip(2, details.join(QStringLiteral("\n")));
+                const QString detailsText = details.join(QStringLiteral("\n"));
+                fileItem->setToolTip(0, detailsText);
+                fileItem->setToolTip(1, detailsText);
+                fileItem->setToolTip(2, detailsText);
+
+                if (hasZeroChunkWarning) {
+                    const QColor warningColor(QStringLiteral("#ef4444"));
+                    for (int column = 0; column < 3; ++column) {
+                        fileItem->setForeground(column, warningColor);
+                    }
+                }
 
                 if (!filePath.isEmpty()) {
                     availablePaths << filePath;
-                    const QString displayPath = QStringLiteral("%1 / %2")
-                                                    .arg(collection.value(QStringLiteral("label")).toString(),
-                                                         relativePath.isEmpty() ? fileName : relativePath);
-                    m_knowledgeDisplayNames.insert(filePath, displayPath);
+                    const QString kbDisplayPath = QStringLiteral("%1 / %2")
+                                                      .arg(collection.value(QStringLiteral("label")).toString(),
+                                                           relativePath.isEmpty() ? fileName : relativePath);
+                    m_knowledgeDisplayNames.insert(filePath, kbDisplayPath);
                 }
             }
         }
@@ -2042,6 +2160,9 @@ void MainWindow::setSourceInventory(const QString &text)
     emitPrioritizedKnowledgeAssetsState();
     onKnowledgeBaseSortModeChanged(m_sourceInventorySortCombo != nullptr ? m_sourceInventorySortCombo->currentIndex() : 0);
     applyKnowledgeBaseFilter();
+    if (!m_indexingActive) {
+        setKnowledgeInventoryRefreshVisible(false);
+    }
 }
 
 void MainWindow::applyKnowledgeBaseFilter()
@@ -2212,6 +2333,131 @@ QStringList MainWindow::selectedKnowledgeAssetPaths() const
     return paths;
 }
 
+QTreeWidgetItem *MainWindow::knowledgeContextItem(const QPoint *treePos) const
+{
+    if (m_sourceInventoryTree == nullptr) {
+        return nullptr;
+    }
+
+    if (treePos != nullptr) {
+        if (QTreeWidgetItem *item = m_sourceInventoryTree->itemAt(*treePos)) {
+            return item;
+        }
+    }
+
+    if (QTreeWidgetItem *current = m_sourceInventoryTree->currentItem()) {
+        return current;
+    }
+
+    const QList<QTreeWidgetItem *> items = m_sourceInventoryTree->selectedItems();
+    return items.isEmpty() ? nullptr : items.constFirst();
+}
+
+void MainWindow::showKnowledgePropertiesDialog(const QString &title,
+                                               const QJsonObject &properties,
+                                               const QString &nodeType)
+{
+    QDialog dialog(this);
+    dialog.setWindowTitle(title);
+    dialog.resize(860, 620);
+
+    auto *layout = new QVBoxLayout(&dialog);
+    auto *summaryLabel = new QLabel(QStringLiteral("<b>%1</b>").arg(title), &dialog);
+    summaryLabel->setTextFormat(Qt::RichText);
+    layout->addWidget(summaryLabel);
+
+    QStringList lines;
+    if (nodeType == QStringLiteral("collection")) {
+        lines << QStringLiteral("Collection id: %1").arg(properties.value(QStringLiteral("collectionId")).toString(QStringLiteral("<unknown>")));
+        lines << QStringLiteral("Created at: %1").arg(properties.value(QStringLiteral("createdAt")).toString(QStringLiteral("<unknown>")));
+        lines << QStringLiteral("Collection root: %1").arg(properties.value(QStringLiteral("collectionRoot")).toString(QStringLiteral("<unknown>")));
+        lines << QStringLiteral("Files: %1").arg(properties.value(QStringLiteral("fileCount")).toInt());
+        lines << QStringLiteral("Chunks: %1").arg(properties.value(QStringLiteral("chunkCount")).toInt());
+        lines << QStringLiteral("Stored size: %1").arg(formatByteCount(static_cast<qint64>(properties.value(QStringLiteral("totalBytes")).toDouble())));
+    } else if (nodeType == QStringLiteral("group")) {
+        lines << QStringLiteral("Collection: %1").arg(properties.value(QStringLiteral("collectionLabel")).toString(QStringLiteral("<unknown>")));
+        lines << QStringLiteral("Folder label: %1").arg(properties.value(QStringLiteral("label")).toString(QStringLiteral("(root)")));
+        lines << QStringLiteral("Folder path: %1").arg(properties.value(QStringLiteral("folderPath")).toString(QStringLiteral("<unknown>")));
+        lines << QStringLiteral("Files: %1").arg(properties.value(QStringLiteral("fileCount")).toInt());
+        lines << QStringLiteral("Chunks: %1").arg(properties.value(QStringLiteral("chunkCount")).toInt());
+        lines << QStringLiteral("Stored size: %1").arg(formatByteCount(static_cast<qint64>(properties.value(QStringLiteral("totalBytes")).toDouble())));
+    } else {
+        const qint64 modifiedMs = static_cast<qint64>(properties.value(QStringLiteral("fileModifiedMs")).toDouble());
+        lines << QStringLiteral("Collection: %1").arg(properties.value(QStringLiteral("collectionLabel")).toString(QStringLiteral("<unknown>")));
+        lines << QStringLiteral("Folder: %1").arg(properties.value(QStringLiteral("groupLabel")).toString(QStringLiteral("(root)")));
+        lines << QStringLiteral("Relative path: %1").arg(properties.value(QStringLiteral("relativePath")).toString(QStringLiteral("<unknown>")));
+        lines << QStringLiteral("Internal path: %1").arg(properties.value(QStringLiteral("filePath")).toString(QStringLiteral("<unknown>")));
+        lines << QStringLiteral("Original path: %1").arg(properties.value(QStringLiteral("originalPath")).toString(QStringLiteral("<unknown>")));
+        lines << QStringLiteral("Type / role: %1 / %2")
+                     .arg(properties.value(QStringLiteral("sourceType")).toString(QStringLiteral("<unknown>")),
+                          properties.value(QStringLiteral("sourceRole")).toString(QStringLiteral("<unknown>")));
+        lines << QStringLiteral("Extractor: %1").arg(properties.value(QStringLiteral("extractor")).toString(QStringLiteral("<unknown>")));
+        lines << QStringLiteral("Modified: %1").arg(modifiedMs > 0
+                                                       ? QDateTime::fromMSecsSinceEpoch(modifiedMs).toString(Qt::ISODate)
+                                                       : QStringLiteral("<unknown>"));
+        lines << QStringLiteral("Stored size: %1").arg(formatByteCount(static_cast<qint64>(properties.value(QStringLiteral("fileSizeBytes")).toDouble())));
+        lines << QStringLiteral("Text chars: %1").arg(properties.value(QStringLiteral("textCharCount")).toInt());
+        lines << QStringLiteral("Lines: %1").arg(properties.value(QStringLiteral("lineCount")).toInt());
+        lines << QStringLiteral("Words: %1").arg(properties.value(QStringLiteral("wordCount")).toInt());
+        lines << QStringLiteral("Chunks: %1").arg(properties.value(QStringLiteral("chunkCount")).toInt());
+        lines << QStringLiteral("Chunking profile: %1").arg(properties.value(QStringLiteral("chunkingProfile")).toString(QStringLiteral("<unknown>")));
+        const QString zeroChunkReason = properties.value(QStringLiteral("zeroChunkReason")).toString().trimmed();
+        if (properties.value(QStringLiteral("chunkCount")).toInt() <= 0 && !zeroChunkReason.isEmpty()) {
+            lines << QStringLiteral("Zero-chunk reason: %1").arg(zeroChunkReason);
+        }
+    }
+
+    auto *summaryEdit = new QPlainTextEdit(&dialog);
+    summaryEdit->setReadOnly(true);
+    summaryEdit->setPlainText(lines.join(QStringLiteral("\n")));
+    summaryEdit->setMinimumHeight(nodeType == QStringLiteral("file") ? 210 : 170);
+    layout->addWidget(summaryEdit);
+
+    if (nodeType == QStringLiteral("file")) {
+        const QJsonArray previews = properties.value(QStringLiteral("chunksPreview")).toArray();
+        auto *chunkLabel = new QLabel(QStringLiteral("Chunk dump preview"), &dialog);
+        layout->addWidget(chunkLabel);
+
+        QStringList chunkLines;
+        if (previews.isEmpty()) {
+            const QString zeroChunkReason = properties.value(QStringLiteral("zeroChunkReason")).toString().trimmed();
+            if (properties.value(QStringLiteral("chunkCount")).toInt() <= 0 && !zeroChunkReason.isEmpty()) {
+                chunkLines << QStringLiteral("This asset produced zero chunks.");
+                chunkLines << QStringLiteral("Reason: %1").arg(zeroChunkReason);
+            } else {
+                chunkLines << QStringLiteral("No chunk preview is available for this asset.");
+            }
+        } else {
+            for (const QJsonValue &value : previews) {
+                if (!value.isObject()) {
+                    continue;
+                }
+                const QJsonObject preview = value.toObject();
+                chunkLines << QStringLiteral("--- Chunk %1 | %2 chars | %3 words ---")
+                                  .arg(preview.value(QStringLiteral("chunkIndex")).toInt())
+                                  .arg(preview.value(QStringLiteral("charCount")).toInt())
+                                  .arg(preview.value(QStringLiteral("wordCount")).toInt());
+                chunkLines << preview.value(QStringLiteral("text")).toString();
+                chunkLines << QString();
+            }
+            const int omitted = properties.value(QStringLiteral("omittedChunkCount")).toInt();
+            if (omitted > 0) {
+                chunkLines << QStringLiteral("(%1 additional chunk(s) omitted from preview)").arg(omitted);
+            }
+        }
+
+        auto *chunkDump = new QPlainTextEdit(&dialog);
+        chunkDump->setReadOnly(true);
+        chunkDump->setPlainText(chunkLines.join(QStringLiteral("\n")));
+        layout->addWidget(chunkDump, 1);
+    }
+
+    auto *buttons = new QDialogButtonBox(QDialogButtonBox::Close, &dialog);
+    connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    layout->addWidget(buttons);
+    dialog.exec();
+}
+
 void MainWindow::rebuildPrioritizedKnowledgeAssetsUi()
 {
     if (m_prioritizedAssetsList == nullptr || m_prioritizedAssetsStatus == nullptr) {
@@ -2292,14 +2538,11 @@ void MainWindow::onRemoveSelectedKnowledgeAssetsClicked()
                                  QStringLiteral("Select one or more knowledge base assets first."));
         return;
     }
-
-    const auto answer = QMessageBox::question(this,
-                                              QStringLiteral("Remove knowledge assets"),
-                                              QStringLiteral("Remove %1 selected asset(s) from the knowledge base?").arg(paths.size()));
-    if (answer != QMessageBox::Yes) {
+    if (!confirmKnowledgeBaseReindexAction(QStringLiteral("Remove %1 selected Knowledge Base asset(s)?").arg(paths.size()))) {
         return;
     }
 
+    setKnowledgeInventoryRefreshVisible(true, QStringLiteral("Refreshing Knowledge Base after asset removal..."));
     emit removeKnowledgeAssetsRequested(paths);
 }
 
@@ -2428,6 +2671,7 @@ void MainWindow::onRenameSelectedKnowledgeGroupClicked()
         return;
     }
 
+    setKnowledgeInventoryRefreshVisible(true, QStringLiteral("Refreshing Knowledge Base after collection rename..."));
     emit renameKnowledgeCollectionRequested(collectionId, newLabel);
 }
 
@@ -2453,22 +2697,178 @@ void MainWindow::onKnowledgeAssetsDropped(const QStringList &paths,
     if (uniquePaths.isEmpty() || targetCollectionId.trimmed().isEmpty()) {
         return;
     }
+    if (!confirmKnowledgeBaseReindexAction(QStringLiteral("Move %1 Knowledge Base asset(s) to the selected collection?").arg(uniquePaths.size()))) {
+        return;
+    }
 
+    setKnowledgeInventoryRefreshVisible(true, QStringLiteral("Refreshing Knowledge Base after asset move..."));
     emit moveKnowledgeAssetsRequested(uniquePaths, targetCollectionId.trimmed(), targetGroupLabel.trimmed());
     m_statusLabel->setText(QStringLiteral("Moving %1 Knowledge Base asset(s)...").arg(uniquePaths.size()));
 }
 
-void MainWindow::onClearKnowledgeBaseClicked()
+void MainWindow::onKnowledgeTreeContextMenuRequested(const QPoint &pos)
 {
-    const auto answer = QMessageBox::warning(this,
-                                             QStringLiteral("Clear knowledge base"),
-                                             QStringLiteral("Remove all imported assets from the knowledge base? This cannot be undone."),
-                                             QMessageBox::Yes | QMessageBox::No,
-                                             QMessageBox::No);
-    if (answer != QMessageBox::Yes) {
+    if (m_sourceInventoryTree == nullptr) {
         return;
     }
 
+    QTreeWidgetItem *item = knowledgeContextItem(&pos);
+    if (item != nullptr && !item->isSelected()) {
+        m_sourceInventoryTree->clearSelection();
+        item->setSelected(true);
+        m_sourceInventoryTree->setCurrentItem(item);
+    }
+
+    const QString nodeType = item != nullptr ? item->data(0, kKnowledgeNodeTypeRole).toString().trimmed() : QString();
+    QMenu menu(this);
+    QAction *createCollectionAction = menu.addAction(QStringLiteral("Create collection..."));
+    QAction *addFileToCollectionAction = nullptr;
+    QAction *addFolderToCollectionAction = nullptr;
+    QAction *renameCollectionAction = nullptr;
+    QAction *deleteCollectionAction = nullptr;
+    QAction *renameAssetAction = nullptr;
+    QAction *deleteAssetAction = nullptr;
+    QAction *propertiesAction = nullptr;
+
+    if (nodeType == QStringLiteral("collection")) {
+        menu.addSeparator();
+        addFileToCollectionAction = menu.addAction(QStringLiteral("Add file to collection..."));
+        addFolderToCollectionAction = menu.addAction(QStringLiteral("Add folder to collection..."));
+        menu.addSeparator();
+        renameCollectionAction = menu.addAction(QStringLiteral("Rename collection..."));
+        deleteCollectionAction = menu.addAction(QStringLiteral("Delete collection"));
+        propertiesAction = menu.addAction(QStringLiteral("Properties..."));
+    } else if (nodeType == QStringLiteral("group")) {
+        menu.addSeparator();
+        propertiesAction = menu.addAction(QStringLiteral("Properties..."));
+    } else if (nodeType == QStringLiteral("file")) {
+        menu.addSeparator();
+        renameAssetAction = menu.addAction(QStringLiteral("Rename asset..."));
+        deleteAssetAction = menu.addAction(QStringLiteral("Delete asset"));
+        propertiesAction = menu.addAction(QStringLiteral("Properties..."));
+    }
+
+    QAction *selected = menu.exec(m_sourceInventoryTree->viewport()->mapToGlobal(pos));
+    if (selected == nullptr) {
+        return;
+    }
+
+    if (selected == createCollectionAction) {
+        const QString label = promptForKnowledgeLabel(QStringLiteral("Create Knowledge Base collection"), QStringLiteral("Imported collection"));
+        if (!label.isEmpty()) {
+            setKnowledgeInventoryRefreshVisible(true, QStringLiteral("Refreshing Knowledge Base after collection create..."));
+            emit createKnowledgeCollectionRequested(label);
+        }
+        return;
+    }
+
+    if (item == nullptr) {
+        return;
+    }
+
+    if (selected == addFileToCollectionAction || selected == addFolderToCollectionAction) {
+        const QString collectionId = item->data(0, kKnowledgeCollectionIdRole).toString().trimmed();
+        if (collectionId.isEmpty()) {
+            return;
+        }
+
+        QStringList importPaths;
+        if (selected == addFileToCollectionAction) {
+            importPaths = QFileDialog::getOpenFileNames(this,
+                                                        QStringLiteral("Add files to Knowledge Base collection"),
+                                                        QString(),
+                                                        QStringLiteral("All Files (*.*)"));
+        } else {
+            const QString folder = QFileDialog::getExistingDirectory(this,
+                                                                     QStringLiteral("Add folder to Knowledge Base collection"));
+            if (!folder.trimmed().isEmpty()) {
+                importPaths << folder.trimmed();
+            }
+        }
+        if (importPaths.isEmpty()) {
+            return;
+        }
+        if (!confirmKnowledgeBaseReindexAction(QStringLiteral("Add %1 path(s) to collection '%2'?").arg(importPaths.size()).arg(item->text(0).trimmed()))) {
+            return;
+        }
+
+        setKnowledgeInventoryRefreshVisible(true, QStringLiteral("Adding assets to Knowledge Base collection..."));
+        emit addPathsToKnowledgeCollectionRequested(importPaths, collectionId);
+        return;
+    }
+
+    if (selected == renameCollectionAction) {
+        onRenameSelectedKnowledgeGroupClicked();
+        return;
+    }
+
+    if (selected == deleteCollectionAction) {
+        const QString collectionId = item->data(0, kKnowledgeCollectionIdRole).toString().trimmed();
+        const QJsonDocument propertiesDoc = QJsonDocument::fromJson(item->data(0, kKnowledgePropertiesRole).toString().toUtf8());
+        const QJsonObject properties = propertiesDoc.isObject() ? propertiesDoc.object() : QJsonObject();
+        const int fileCount = properties.value(QStringLiteral("fileCount")).toInt();
+        if (!collectionId.isEmpty() && confirmKnowledgeBaseReindexAction(QStringLiteral("Delete collection '%1'?").arg(item->text(0)),
+                                                                         QStringLiteral("This will remove %1 contained asset(s) and rebuild the Knowledge Base inventory.").arg(fileCount))) {
+            setKnowledgeInventoryRefreshVisible(true, QStringLiteral("Refreshing Knowledge Base after collection delete..."));
+            emit deleteKnowledgeCollectionRequested(collectionId);
+        }
+        return;
+    }
+
+    if (selected == renameAssetAction) {
+        const QString path = item->data(0, kKnowledgePathRole).toString().trimmed();
+        if (path.isEmpty()) {
+            return;
+        }
+        bool ok = false;
+        const QString newName = QInputDialog::getText(this,
+                                                      QStringLiteral("Rename Knowledge Base asset"),
+                                                      QStringLiteral("Asset file name:"),
+                                                      QLineEdit::Normal,
+                                                      item->text(0).trimmed(),
+                                                      &ok).trimmed();
+        if (ok && !newName.isEmpty() && newName != item->text(0).trimmed()) {
+            if (!confirmKnowledgeBaseReindexAction(QStringLiteral("Rename asset '%1' to '%2'?").arg(item->text(0).trimmed(), newName))) {
+                return;
+            }
+            setKnowledgeInventoryRefreshVisible(true, QStringLiteral("Refreshing Knowledge Base after asset rename..."));
+            emit renameKnowledgeAssetRequested(path, newName);
+        }
+        return;
+    }
+
+    if (selected == deleteAssetAction) {
+        const QStringList paths = selectedKnowledgeAssetPaths();
+        if (paths.isEmpty()) {
+            return;
+        }
+        if (confirmKnowledgeBaseReindexAction(QStringLiteral("Remove %1 selected Knowledge Base asset(s)?").arg(paths.size()))) {
+            setKnowledgeInventoryRefreshVisible(true, QStringLiteral("Refreshing Knowledge Base after asset removal..."));
+            emit removeKnowledgeAssetsRequested(paths);
+        }
+        return;
+    }
+
+    if (selected == propertiesAction) {
+        const QJsonDocument propertiesDoc = QJsonDocument::fromJson(item->data(0, kKnowledgePropertiesRole).toString().toUtf8());
+        if (!propertiesDoc.isObject()) {
+            QMessageBox::information(this,
+                                     QStringLiteral("Knowledge Base properties"),
+                                     QStringLiteral("Properties are not available for this item yet."));
+            return;
+        }
+        showKnowledgePropertiesDialog(QStringLiteral("%1 properties").arg(item->text(0).trimmed()), propertiesDoc.object(), nodeType);
+    }
+}
+
+void MainWindow::onClearKnowledgeBaseClicked()
+{
+    if (!confirmKnowledgeBaseReindexAction(QStringLiteral("Clear the entire Knowledge Base?"),
+                                           QStringLiteral("This removes all imported assets from Amelia's local Knowledge Base and cannot be undone."))) {
+        return;
+    }
+
+    setKnowledgeInventoryRefreshVisible(true, QStringLiteral("Clearing Knowledge Base..."));
     emit clearKnowledgeBaseRequested();
 }
 
@@ -2624,7 +3024,11 @@ void MainWindow::onImportFilesClicked()
     if (label.isEmpty()) {
         return;
     }
+    if (!confirmKnowledgeBaseReindexAction(QStringLiteral("Import %1 file(s) into Knowledge Base label '%2'?").arg(paths.size()).arg(label))) {
+        return;
+    }
 
+    setKnowledgeInventoryRefreshVisible(true, QStringLiteral("Importing Knowledge Base files..."));
     emit importPathsRequested(paths, label);
 }
 
@@ -2645,8 +3049,23 @@ void MainWindow::onImportFolderClicked()
     if (label.isEmpty()) {
         return;
     }
+    if (!confirmKnowledgeBaseReindexAction(QStringLiteral("Import folder '%1' into Knowledge Base label '%2'?").arg(QFileInfo(folder).fileName(), label))) {
+        return;
+    }
 
+    setKnowledgeInventoryRefreshVisible(true, QStringLiteral("Importing Knowledge Base folder..."));
     emit importPathsRequested(QStringList() << folder, label);
+}
+
+void MainWindow::onReindexClicked()
+{
+    if (!confirmKnowledgeBaseReindexAction(QStringLiteral("Start a full Knowledge Base reindex now?"),
+                                           QStringLiteral("Use this when you want Amelia to rebuild chunk coverage, embeddings, and inventory metadata for the current Knowledge Base."))) {
+        return;
+    }
+
+    setKnowledgeInventoryRefreshVisible(true, QStringLiteral("Reindex requested..."));
+    emit reindexRequested();
 }
 
 void MainWindow::onModelSelectionChanged(const QString &model)
@@ -2659,13 +3078,19 @@ void MainWindow::onModelSelectionChanged(const QString &model)
 
 void MainWindow::updateBusyIndicator()
 {
-    if (m_busyFrames.isEmpty()) {
-        m_busyIndicatorLabel->setText(QStringLiteral("Thinking..."));
-        return;
-    }
+    const QString frame = m_busyFrames.isEmpty()
+            ? QStringLiteral("•")
+            : m_busyFrames.at(m_busyFrameIndex % m_busyFrames.size());
 
-    const QString &frame = m_busyFrames.at(m_busyFrameIndex % m_busyFrames.size());
-    m_busyIndicatorLabel->setText(QStringLiteral("%1 Thinking / budgeting / retrieving / generating").arg(frame));
+    if (m_busyIndicatorLabel != nullptr && m_busyIndicatorLabel->isVisible()) {
+        m_busyIndicatorLabel->setText(QStringLiteral("%1 Thinking / budgeting / retrieving / generating").arg(frame));
+    }
+    if (m_knowledgeInventoryRefreshVisible && m_sourceInventoryRefreshLabel != nullptr) {
+        const QString base = m_knowledgeInventoryRefreshBaseLabel.trimmed().isEmpty()
+                ? QStringLiteral("Refreshing Knowledge Base...")
+                : m_knowledgeInventoryRefreshBaseLabel.trimmed();
+        m_sourceInventoryRefreshLabel->setText(QStringLiteral("%1 %2").arg(frame, base));
+    }
     ++m_busyFrameIndex;
 }
 
@@ -2802,7 +3227,11 @@ void MainWindow::onPromptLabImportAssetsClicked()
     if (label.isEmpty()) {
         return;
     }
+    if (!confirmKnowledgeBaseReindexAction(QStringLiteral("Import %1 Prompt Lab path(s) into Knowledge Base label '%2'?").arg(localPaths.size()).arg(label))) {
+        return;
+    }
 
+    setKnowledgeInventoryRefreshVisible(true, QStringLiteral("Importing Prompt Lab assets..."));
     emit importPathsRequested(localPaths, label);
     m_statusLabel->setText(QStringLiteral("Prompt Lab requested local asset import for %1 path(s) into '%2'.%3")
                            .arg(localPaths.size())

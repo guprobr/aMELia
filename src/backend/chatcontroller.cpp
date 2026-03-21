@@ -216,7 +216,7 @@ ChatController::ChatController(const AppConfig &config, QObject *parent)
 
         const bool canceled = (m_rag != nullptr && m_rag->lastReindexCanceled());
         const QString finalLabel = canceled
-                ? QStringLiteral("Indexing canceled. Partial cache saved.")
+                ? QStringLiteral("Indexing canceled. Pending queue cleared; partial cache saved.")
                 : QStringLiteral("Index complete.");
         emit indexingProgressChanged(qMax(1, chunks), qMax(1, chunks), finalLabel);
         emit indexingStateChanged(false);
@@ -226,7 +226,7 @@ ChatController::ChatController(const AppConfig &config, QObject *parent)
         }
 
         const QString reindexMessage = canceled
-                ? QStringLiteral("Knowledge indexing was canceled. Amelia kept %1 chunks across %2 sources and discarded the in-flight file.")
+                ? QStringLiteral("Knowledge indexing was canceled. Amelia kept %1 chunks across %2 sources, discarded the in-flight file, and dropped the remaining queued files from this run.")
                       .arg(chunks)
                       .arg(m_rag->sourceCount())
                 : QStringLiteral("Local docs indexed: %1 chunks across %2 sources.").arg(chunks).arg(m_rag->sourceCount());
@@ -956,6 +956,83 @@ void ChatController::importKnowledgePaths(const QStringList &paths, const QStrin
     }
 }
 
+void ChatController::addKnowledgePathsToCollection(const QStringList &paths, const QString &collectionId)
+{
+    if (paths.isEmpty() || collectionId.trimmed().isEmpty()) {
+        emit systemNotice(QStringLiteral("Knowledge Base collection import request is incomplete."));
+        return;
+    }
+    if (m_busy || m_indexing) {
+        emit systemNotice(QStringLiteral("Stop the current task before adding files to a Knowledge Base collection."));
+        return;
+    }
+
+    QString message;
+    const int imported = m_rag->addPathsToCollection(paths, m_storage->knowledgeRoot(), collectionId.trimmed(), &message);
+    emit systemNotice(message);
+    addDiagnostic(QStringLiteral("ingest"), message);
+    if (imported > 0) {
+        notifyTaskSucceeded(QStringLiteral("Knowledge collection updated"), message);
+        reindexDocs();
+    } else {
+        refreshSourceInventory();
+        notifyTaskFailed(QStringLiteral("Knowledge collection update failed"),
+                         message.isEmpty() ? QStringLiteral("No files were added to the Knowledge Base collection.") : message);
+    }
+}
+
+void ChatController::createKnowledgeCollection(const QString &label)
+{
+    if (label.trimmed().isEmpty()) {
+        emit systemNotice(QStringLiteral("Knowledge Base collection label is empty."));
+        return;
+    }
+    if (m_busy || m_indexing) {
+        emit systemNotice(QStringLiteral("Stop the current task before creating Knowledge Base collections."));
+        return;
+    }
+
+    QString message;
+    if (!m_rag->createCollection(m_storage->knowledgeRoot(), label.trimmed(), &message)) {
+        emit systemNotice(message.isEmpty() ? QStringLiteral("Failed to create the Knowledge Base collection.") : message);
+        addDiagnostic(QStringLiteral("ingest"), message);
+        notifyTaskFailed(QStringLiteral("Knowledge Base collection create failed"), message.isEmpty() ? QStringLiteral("Failed to create the Knowledge Base collection.") : message);
+        refreshSourceInventory();
+        return;
+    }
+
+    emit systemNotice(message);
+    addDiagnostic(QStringLiteral("ingest"), message);
+    refreshSourceInventory();
+    notifyTaskSucceeded(QStringLiteral("Knowledge Base collection created"), message);
+}
+
+void ChatController::deleteKnowledgeCollection(const QString &collectionId)
+{
+    if (collectionId.trimmed().isEmpty()) {
+        emit systemNotice(QStringLiteral("Knowledge Base delete request is incomplete."));
+        return;
+    }
+    if (m_busy || m_indexing) {
+        emit systemNotice(QStringLiteral("Stop the current task before deleting Knowledge Base collections."));
+        return;
+    }
+
+    QString message;
+    if (!m_rag->deleteCollection(m_storage->knowledgeRoot(), collectionId.trimmed(), &message)) {
+        emit systemNotice(message.isEmpty() ? QStringLiteral("Failed to delete the Knowledge Base collection.") : message);
+        addDiagnostic(QStringLiteral("ingest"), message);
+        notifyTaskFailed(QStringLiteral("Knowledge Base collection delete failed"), message.isEmpty() ? QStringLiteral("Failed to delete the Knowledge Base collection.") : message);
+        refreshSourceInventory();
+        return;
+    }
+
+    emit systemNotice(message);
+    addDiagnostic(QStringLiteral("ingest"), message);
+    notifyTaskSucceeded(QStringLiteral("Knowledge Base collection deleted"), message);
+    reindexDocs();
+}
+
 void ChatController::renameKnowledgeCollection(const QString &collectionId, const QString &newLabel)
 {
     if (collectionId.trimmed().isEmpty() || newLabel.trimmed().isEmpty()) {
@@ -1006,8 +1083,35 @@ void ChatController::moveKnowledgeAssets(const QStringList &paths,
         notifyTaskSucceeded(QStringLiteral("Knowledge assets moved"), message);
         reindexDocs();
     } else {
+        refreshSourceInventory();
         notifyTaskFailed(QStringLiteral("Knowledge asset move failed"), message);
     }
+}
+
+void ChatController::renameKnowledgeAsset(const QString &path, const QString &newFileName)
+{
+    if (path.trimmed().isEmpty() || newFileName.trimmed().isEmpty()) {
+        emit systemNotice(QStringLiteral("Knowledge Base asset rename request is incomplete."));
+        return;
+    }
+    if (m_busy || m_indexing) {
+        emit systemNotice(QStringLiteral("Stop the current task before renaming Knowledge Base assets."));
+        return;
+    }
+
+    QString message;
+    if (!m_rag->renameKnowledgePath(path.trimmed(), m_storage->knowledgeRoot(), newFileName.trimmed(), &message)) {
+        emit systemNotice(message.isEmpty() ? QStringLiteral("Failed to rename the selected Knowledge Base asset.") : message);
+        addDiagnostic(QStringLiteral("ingest"), message);
+        notifyTaskFailed(QStringLiteral("Knowledge asset rename failed"), message.isEmpty() ? QStringLiteral("Failed to rename the selected Knowledge Base asset.") : message);
+        refreshSourceInventory();
+        return;
+    }
+
+    emit systemNotice(message);
+    addDiagnostic(QStringLiteral("ingest"), message);
+    notifyTaskSucceeded(QStringLiteral("Knowledge asset renamed"), message);
+    reindexDocs();
 }
 
 void ChatController::removeKnowledgeAssets(const QStringList &paths)
@@ -1028,6 +1132,7 @@ void ChatController::removeKnowledgeAssets(const QStringList &paths)
         notifyTaskSucceeded(QStringLiteral("Knowledge assets removed"), message);
         reindexDocs();
     } else {
+        refreshSourceInventory();
         notifyTaskFailed(QStringLiteral("Knowledge asset removal failed"), message);
     }
 }

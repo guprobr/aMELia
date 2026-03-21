@@ -6,6 +6,7 @@
 #include <QtGlobal>
 
 #include <functional>
+#include <atomic>
 
 class EmbeddingClient {
 public:
@@ -35,11 +36,14 @@ public:
     QVector<QVector<float>> embedTexts(const QStringList &texts) const;
     QVector<QVector<float>> embedTexts(const QStringList &texts,
                                        const std::function<void(int, int)> &progressCallback) const;
+    QVector<QVector<float>> embedTexts(const QStringList &texts,
+                                       const std::function<void(int, int)> &progressCallback,
+                                       const std::atomic_bool *cancelRequested) const;
     static float cosineSimilarity(const QVector<float> &a, const QVector<float> &b);
 
 private:
-    NeuralAttemptResult tryOllamaEmbeddings(const QStringList &texts) const;
-    NeuralAttemptResult tryOllamaEmbeddingsViaEndpoint(const QStringList &texts, const QString &endpointPath) const;
+    NeuralAttemptResult tryOllamaEmbeddings(const QStringList &texts, const std::atomic_bool *cancelRequested = nullptr) const;
+    NeuralAttemptResult tryOllamaEmbeddingsViaEndpoint(const QStringList &texts, const QString &endpointPath, const std::atomic_bool *cancelRequested = nullptr) const;
 
     QString m_ollamaBaseUrl;
     QString m_embeddingModel;

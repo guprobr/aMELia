@@ -224,6 +224,14 @@ int main(int argc, char *argv[])
                          controller, &ChatController::setBackendModel);
         QObject::connect(window, &MainWindow::importPathsRequested,
                          controller, &ChatController::importKnowledgePaths);
+        QObject::connect(window, &MainWindow::addPathsToKnowledgeCollectionRequested,
+                         controller, &ChatController::addKnowledgePathsToCollection);
+        QObject::connect(window, &MainWindow::createKnowledgeCollectionRequested,
+                         controller, &ChatController::createKnowledgeCollection);
+        QObject::connect(window, &MainWindow::deleteKnowledgeCollectionRequested,
+                         controller, &ChatController::deleteKnowledgeCollection);
+        QObject::connect(window, &MainWindow::renameKnowledgeAssetRequested,
+                         controller, &ChatController::renameKnowledgeAsset);
         QObject::connect(window, &MainWindow::renameKnowledgeCollectionRequested,
                          controller, &ChatController::renameKnowledgeCollection);
         QObject::connect(window, &MainWindow::clearMemoriesRequested,

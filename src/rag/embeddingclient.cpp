@@ -148,6 +148,11 @@ QString simplifiedError(const QString &message)
     return normalized;
 }
 
+bool isCancelRequested(const std::atomic_bool *cancelRequested)
+{
+    return cancelRequested != nullptr && cancelRequested->load(std::memory_order_relaxed);
+}
+
 EmbeddingClient::NeuralAttemptResult parseModernEmbeddingResponse(const QByteArray &raw)
 {
     EmbeddingClient::NeuralAttemptResult result;
@@ -298,7 +303,8 @@ QVector<float> EmbeddingClient::embedTextLocalFallback(const QString &text) cons
 }
 
 EmbeddingClient::NeuralAttemptResult EmbeddingClient::tryOllamaEmbeddingsViaEndpoint(const QStringList &texts,
-                                                                                      const QString &endpointPath) const
+                                                                                      const QString &endpointPath,
+                                                                                      const std::atomic_bool *cancelRequested) const
 {
     NeuralAttemptResult result;
     result.endpointName = endpointPath;
@@ -313,20 +319,46 @@ EmbeddingClient::NeuralAttemptResult EmbeddingClient::tryOllamaEmbeddingsViaEndp
     request.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
 
     auto executeRequest = [&](const QJsonObject &payload) -> QByteArray {
+        if (isCancelRequested(cancelRequested)) {
+            result.errorMessage = QStringLiteral("embedding request canceled before dispatch");
+            return {};
+        }
+
         QEventLoop loop;
         QTimer timer;
+        QTimer cancelPoll;
         timer.setSingleShot(true);
+        cancelPoll.setInterval(50);
 
         QNetworkReply *reply = manager.post(request, QJsonDocument(payload).toJson(QJsonDocument::Compact));
+        bool canceled = false;
         QObject::connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
         QObject::connect(&timer, &QTimer::timeout, &loop, [&]() {
             if (reply->isRunning()) {
                 reply->abort();
             }
         });
+        QObject::connect(&cancelPoll, &QTimer::timeout, &loop, [&]() {
+            if (!isCancelRequested(cancelRequested)) {
+                return;
+            }
+            canceled = true;
+            if (reply->isRunning()) {
+                reply->abort();
+            }
+            loop.quit();
+        });
         timer.start(m_timeoutMs);
+        cancelPoll.start();
         loop.exec();
+        cancelPoll.stop();
         timer.stop();
+
+        if (canceled) {
+            result.errorMessage = QStringLiteral("embedding request canceled");
+            reply->deleteLater();
+            return {};
+        }
 
         const QByteArray raw = reply->readAll();
         const int httpStatus = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
@@ -406,7 +438,8 @@ EmbeddingClient::NeuralAttemptResult EmbeddingClient::tryOllamaEmbeddingsViaEndp
     return result;
 }
 
-EmbeddingClient::NeuralAttemptResult EmbeddingClient::tryOllamaEmbeddings(const QStringList &texts) const
+EmbeddingClient::NeuralAttemptResult EmbeddingClient::tryOllamaEmbeddings(const QStringList &texts,
+                                                                            const std::atomic_bool *cancelRequested) const
 {
     NeuralAttemptResult result;
     if (texts.isEmpty() || !isConfigured()) {
@@ -420,7 +453,7 @@ EmbeddingClient::NeuralAttemptResult EmbeddingClient::tryOllamaEmbeddings(const 
         return result;
     }
 
-    result = tryOllamaEmbeddingsViaEndpoint(texts, QStringLiteral("/api/embed"));
+    result = tryOllamaEmbeddingsViaEndpoint(texts, QStringLiteral("/api/embed"), cancelRequested);
     if (result.usedNeuralBackend) {
         m_lastSuccessfulEndpoint = result.endpointName;
         m_lastErrorSummary.clear();
@@ -430,7 +463,7 @@ EmbeddingClient::NeuralAttemptResult EmbeddingClient::tryOllamaEmbeddings(const 
     }
 
     if (result.shouldRetryLegacyEndpoint) {
-        const NeuralAttemptResult legacy = tryOllamaEmbeddingsViaEndpoint(texts, QStringLiteral("/api/embeddings"));
+        const NeuralAttemptResult legacy = tryOllamaEmbeddingsViaEndpoint(texts, QStringLiteral("/api/embeddings"), cancelRequested);
         if (legacy.usedNeuralBackend) {
             m_lastSuccessfulEndpoint = legacy.endpointName;
             m_lastErrorSummary.clear();
@@ -452,11 +485,18 @@ EmbeddingClient::NeuralAttemptResult EmbeddingClient::tryOllamaEmbeddings(const 
 
 QVector<QVector<float>> EmbeddingClient::embedTexts(const QStringList &texts) const
 {
-    return embedTexts(texts, {});
+    return embedTexts(texts, {}, nullptr);
 }
 
 QVector<QVector<float>> EmbeddingClient::embedTexts(const QStringList &texts,
                                                     const std::function<void(int, int)> &progressCallback) const
+{
+    return embedTexts(texts, progressCallback, nullptr);
+}
+
+QVector<QVector<float>> EmbeddingClient::embedTexts(const QStringList &texts,
+                                                    const std::function<void(int, int)> &progressCallback,
+                                                    const std::atomic_bool *cancelRequested) const
 {
     QVector<QVector<float>> embeddings;
     embeddings.reserve(texts.size());
@@ -475,6 +515,10 @@ QVector<QVector<float>> EmbeddingClient::embedTexts(const QStringList &texts,
 
         int offset = 0;
         while (offset < texts.size()) {
+            if (isCancelRequested(cancelRequested)) {
+                m_lastRequestUsedNeural = false;
+                return {};
+            }
             QStringList batch;
             int batchChars = 0;
             while (offset < texts.size() && batch.size() < batchSizeLimit) {
@@ -500,7 +544,12 @@ QVector<QVector<float>> EmbeddingClient::embedTexts(const QStringList &texts,
         neuralEmbeddings.reserve(texts.size());
         int completed = 0;
         for (const QStringList &batch : batches) {
-            const NeuralAttemptResult attempt = tryOllamaEmbeddings(batch);
+            if (isCancelRequested(cancelRequested)) {
+                neuralEmbeddings.clear();
+                m_lastRequestUsedNeural = false;
+                return {};
+            }
+            const NeuralAttemptResult attempt = tryOllamaEmbeddings(batch, cancelRequested);
             if (!attempt.usedNeuralBackend || attempt.embeddings.size() != batch.size()) {
                 allBatchesSucceeded = false;
                 neuralEmbeddings.clear();
@@ -510,6 +559,10 @@ QVector<QVector<float>> EmbeddingClient::embedTexts(const QStringList &texts,
                 neuralEmbeddings.push_back(embedding);
             }
             completed += batch.size();
+            if (isCancelRequested(cancelRequested)) {
+                m_lastRequestUsedNeural = false;
+                return {};
+            }
             if (progressCallback) {
                 progressCallback(completed, texts.size());
             }
@@ -522,6 +575,10 @@ QVector<QVector<float>> EmbeddingClient::embedTexts(const QStringList &texts,
 
     int completed = 0;
     for (const QString &text : texts) {
+        if (isCancelRequested(cancelRequested)) {
+            m_lastRequestUsedNeural = false;
+            return {};
+        }
         embeddings.push_back(embedTextWithHashFallback(text));
         ++completed;
         if (progressCallback) {

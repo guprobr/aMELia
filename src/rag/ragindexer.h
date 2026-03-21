@@ -57,12 +57,19 @@ public:
 
     QStringList supportedExtensions() const;
     int importPaths(const QStringList &paths, const QString &destinationRoot, const QString &label, QString *message = nullptr) const;
+    int addPathsToCollection(const QStringList &paths,
+                             const QString &destinationRoot,
+                             const QString &collectionId,
+                             QString *message = nullptr) const;
     int removeKnowledgePaths(const QStringList &paths, const QString &destinationRoot, QString *message = nullptr) const;
     int moveKnowledgePaths(const QStringList &paths,
                            const QString &destinationRoot,
                            const QString &targetCollectionId,
                            const QString &targetGroupLabel = QString(),
                            QString *message = nullptr) const;
+    bool createCollection(const QString &destinationRoot, const QString &label, QString *message = nullptr) const;
+    bool deleteCollection(const QString &destinationRoot, const QString &collectionId, QString *message = nullptr) const;
+    bool renameKnowledgePath(const QString &path, const QString &destinationRoot, const QString &newFileName, QString *message = nullptr) const;
     bool clearKnowledgeLibrary(const QString &destinationRoot, QString *message = nullptr) const;
     bool renameCollectionLabel(const QString &destinationRoot, const QString &collectionId, const QString &newLabel, QString *message = nullptr);
 
@@ -93,6 +100,11 @@ private:
         qint64 fileModifiedMs = 0;
         qint64 fileSizeBytes = 0;
         int chunkCount = 0;
+        int lineCount = 0;
+        int wordCount = 0;
+        int textCharCount = 0;
+        QString chunkingProfile;
+        QString zeroChunkReason;
     };
 
     void rebuildEmbeddings();

@@ -40,8 +40,12 @@ public:
     void clearMemories();
     void setBackendModel(const QString &model);
     void importKnowledgePaths(const QStringList &paths, const QString &label);
+    void addKnowledgePathsToCollection(const QStringList &paths, const QString &collectionId);
+    void createKnowledgeCollection(const QString &label);
+    void deleteKnowledgeCollection(const QString &collectionId);
     void removeKnowledgeAssets(const QStringList &paths);
     void moveKnowledgeAssets(const QStringList &paths, const QString &targetCollectionId, const QString &targetGroupLabel);
+    void renameKnowledgeAsset(const QString &path, const QString &newFileName);
     void renameKnowledgeCollection(const QString &collectionId, const QString &newLabel);
     void clearKnowledgeBase();
     void prepareForShutdown();

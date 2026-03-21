@@ -21,6 +21,8 @@
 #include <utility>
 
 namespace {
+bool isCancelRequested(const std::atomic_bool *cancelRequested);
+
 QString detectSourceType(const QFileInfo &info)
 {
     const QString suffix = info.suffix().toLower();
@@ -122,19 +124,111 @@ QString cleanedText(QString text)
     return text.trimmed();
 }
 
-QString cleanedPdfText(QString text)
+QString stripRepeatedPdfBoilerplate(const QString &text, const std::atomic_bool *cancelRequested = nullptr)
+{
+    const QStringList rawPages = text.split(QChar('\f'), Qt::KeepEmptyParts);
+    if (rawPages.size() < 3) {
+        return text;
+    }
+
+    QHash<QString, int> headerCounts;
+    QHash<QString, int> footerCounts;
+    QVector<QStringList> pageLines;
+    pageLines.reserve(rawPages.size());
+
+    for (const QString &rawPage : rawPages) {
+        if (isCancelRequested(cancelRequested)) {
+            return QString();
+        }
+        const QString normalizedPage = collapseExcessBlankLines(trimTrailingWhitespacePerLine(rawPage)).trimmed();
+        if (normalizedPage.isEmpty()) {
+            pageLines.push_back({});
+            continue;
+        }
+
+        QStringList lines = normalizedPage.split(QLatin1Char('\n'), Qt::KeepEmptyParts);
+        for (QString &line : lines) {
+            line = line.trimmed();
+        }
+        while (!lines.isEmpty() && lines.constFirst().isEmpty()) {
+            lines.removeFirst();
+        }
+        while (!lines.isEmpty() && lines.constLast().isEmpty()) {
+            lines.removeLast();
+        }
+
+        pageLines.push_back(lines);
+        const int probeCount = qMin(3, lines.size());
+        for (int i = 0; i < probeCount; ++i) {
+            const QString line = lines.at(i).trimmed();
+            if (!line.isEmpty() && line.size() <= 180) {
+                ++headerCounts[line];
+            }
+        }
+        for (int i = 0; i < probeCount; ++i) {
+            const QString line = lines.at(lines.size() - 1 - i).trimmed();
+            if (!line.isEmpty() && line.size() <= 180) {
+                ++footerCounts[line];
+            }
+        }
+    }
+
+    const int repetitionThreshold = qMax(2, rawPages.size() / 3);
+    QSet<QString> repeatedHeaders;
+    QSet<QString> repeatedFooters;
+    for (auto it = headerCounts.cbegin(); it != headerCounts.cend(); ++it) {
+        if (it.value() >= repetitionThreshold) {
+            repeatedHeaders.insert(it.key());
+        }
+    }
+    for (auto it = footerCounts.cbegin(); it != footerCounts.cend(); ++it) {
+        if (it.value() >= repetitionThreshold) {
+            repeatedFooters.insert(it.key());
+        }
+    }
+
+    QStringList cleanedPages;
+    cleanedPages.reserve(pageLines.size());
+    for (const QStringList &page : std::as_const(pageLines)) {
+        if (isCancelRequested(cancelRequested)) {
+            return QString();
+        }
+        QStringList cleanedLines = page;
+        while (!cleanedLines.isEmpty() && repeatedHeaders.contains(cleanedLines.constFirst().trimmed())) {
+            cleanedLines.removeFirst();
+        }
+        while (!cleanedLines.isEmpty() && repeatedFooters.contains(cleanedLines.constLast().trimmed())) {
+            cleanedLines.removeLast();
+        }
+        cleanedPages << cleanedLines.join(QStringLiteral("\n")).trimmed();
+    }
+
+    return cleanedPages.join(QStringLiteral("\f"));
+}
+
+QString cleanedPdfText(QString text, const std::atomic_bool *cancelRequested = nullptr)
 {
     text.replace(QStringLiteral("\r\n"), QStringLiteral("\n"));
     text.replace(QLatin1Char('\r'), QLatin1Char('\n'));
     text.replace(QChar(0x00A0), QLatin1Char(' '));
     text.replace(QLatin1Char('\t'), QStringLiteral("    "));
     text.replace(QRegularExpression(QStringLiteral("[\\x00-\\x08\\x0B\\x0C\\x0E-\\x1F]")), QStringLiteral(" "));
+    if (isCancelRequested(cancelRequested)) {
+        return QString();
+    }
+    text = stripRepeatedPdfBoilerplate(text, cancelRequested);
+    if (isCancelRequested(cancelRequested)) {
+        return QString();
+    }
 
     const QStringList rawPages = text.split(QChar('\f'), Qt::KeepEmptyParts);
     QStringList pages;
     pages.reserve(rawPages.size());
     int pageNumber = 0;
     for (const QString &rawPage : rawPages) {
+        if (isCancelRequested(cancelRequested)) {
+            return QString();
+        }
         const QString normalizedPage = collapseExcessBlankLines(trimTrailingWhitespacePerLine(rawPage)).trimmed();
         if (normalizedPage.isEmpty()) {
             continue;
@@ -199,7 +293,94 @@ QString normalizeBlockText(const QString &text)
     return collapseExcessBlankLines(trimTrailingWhitespacePerLine(text)).trimmed();
 }
 
-QStringList splitOversizedBlock(const QString &block, int maxBlockChars)
+int countWordsInText(const QString &text)
+{
+    int words = 0;
+    bool inWord = false;
+    for (const QChar ch : text) {
+        if (ch.isLetterOrNumber()) {
+            if (!inWord) {
+                ++words;
+                inWord = true;
+            }
+        } else {
+            inWord = false;
+        }
+    }
+    return words;
+}
+
+int countLinesInText(const QString &text)
+{
+    if (text.trimmed().isEmpty()) {
+        return 0;
+    }
+    return text.count(QLatin1Char('\n')) + 1;
+}
+
+QString compactPreviewText(QString text, int maxChars)
+{
+    text = normalizeBlockText(text);
+    if (text.size() <= maxChars) {
+        return text;
+    }
+    return text.left(qMax(80, maxChars)).trimmed() + QStringLiteral(" …");
+}
+
+struct ChunkingProfile {
+    int targetChunkChars = 1400;
+    int minimumChunkChars = 650;
+    int hardChunkChars = 1800;
+    int overlapChars = 140;
+    QString label;
+};
+
+ChunkingProfile chooseChunkingProfile(const QString &sourceType,
+                                     qint64 fileSizeBytes,
+                                     bool semanticReady,
+                                     int blockCount)
+{
+    ChunkingProfile profile;
+    if (sourceType == QStringLiteral("code") || sourceType == QStringLiteral("config")) {
+        profile.targetChunkChars = semanticReady ? 1200 : 2100;
+        profile.minimumChunkChars = semanticReady ? 420 : 780;
+        profile.hardChunkChars = semanticReady ? 1650 : 2850;
+        profile.overlapChars = semanticReady ? 110 : 220;
+        profile.label = semanticReady ? QStringLiteral("code-compact-semantic") : QStringLiteral("code-wide-lexical");
+    } else if (sourceType == QStringLiteral("log")) {
+        profile.targetChunkChars = semanticReady ? 1300 : 2200;
+        profile.minimumChunkChars = semanticReady ? 480 : 900;
+        profile.hardChunkChars = semanticReady ? 1700 : 3000;
+        profile.overlapChars = semanticReady ? 100 : 220;
+        profile.label = semanticReady ? QStringLiteral("log-compact-semantic") : QStringLiteral("log-wide-lexical");
+    } else {
+        profile.targetChunkChars = semanticReady ? 1450 : 2400;
+        profile.minimumChunkChars = semanticReady ? 650 : 1100;
+        profile.hardChunkChars = semanticReady ? 1850 : 3200;
+        profile.overlapChars = semanticReady ? 140 : 360;
+        profile.label = semanticReady ? QStringLiteral("doc-balanced-semantic") : QStringLiteral("doc-wide-lexical");
+    }
+
+    const bool largeFile = fileSizeBytes >= 1024 * 1024;
+    const bool veryLargeFile = fileSizeBytes >= 4 * 1024 * 1024 || blockCount >= 450;
+    if (largeFile) {
+        profile.targetChunkChars += semanticReady ? 250 : 300;
+        profile.minimumChunkChars += semanticReady ? 120 : 140;
+        profile.hardChunkChars += semanticReady ? 450 : 500;
+        profile.overlapChars += semanticReady ? 40 : 60;
+        profile.label += QStringLiteral("-large");
+    }
+    if (veryLargeFile) {
+        profile.targetChunkChars += semanticReady ? 250 : 300;
+        profile.minimumChunkChars += semanticReady ? 100 : 140;
+        profile.hardChunkChars += semanticReady ? 350 : 450;
+        profile.overlapChars += semanticReady ? 30 : 50;
+        profile.label += QStringLiteral("-xlarge");
+    }
+    return profile;
+}
+
+QStringList splitOversizedBlock(const QString &block, int maxBlockChars, const std::atomic_bool *cancelRequested = nullptr)
 {
     const QString normalized = normalizeBlockText(block);
     if (normalized.isEmpty()) {
@@ -212,6 +393,9 @@ QStringList splitOversizedBlock(const QString &block, int maxBlockChars)
     QStringList parts;
     int offset = 0;
     while (offset < normalized.size()) {
+        if (isCancelRequested(cancelRequested)) {
+            return {};
+        }
         const int remaining = normalized.size() - offset;
         if (remaining <= maxBlockChars) {
             parts << normalized.mid(offset).trimmed();
@@ -244,7 +428,7 @@ QStringList splitOversizedBlock(const QString &block, int maxBlockChars)
     return parts;
 }
 
-QVector<QString> buildSemanticBlocks(const QString &text)
+QVector<QString> buildSemanticBlocks(const QString &text, const std::atomic_bool *cancelRequested = nullptr)
 {
     QVector<QString> blocks;
     if (text.trimmed().isEmpty()) {
@@ -262,7 +446,7 @@ QVector<QString> buildSemanticBlocks(const QString &text)
         }
         const QString block = normalizeBlockText(currentLines.join(QStringLiteral("\n")));
         if (!block.isEmpty()) {
-            const QStringList pieces = splitOversizedBlock(block, 1800);
+            const QStringList pieces = splitOversizedBlock(block, 1800, cancelRequested);
             for (const QString &piece : pieces) {
                 if (!piece.trimmed().isEmpty()) {
                     blocks.push_back(piece.trimmed());
@@ -273,6 +457,9 @@ QVector<QString> buildSemanticBlocks(const QString &text)
     };
 
     for (const QString &line : lines) {
+        if (isCancelRequested(cancelRequested)) {
+            return {};
+        }
         const QString trimmed = line.trimmed();
 
         if (isPageMarkerLine(trimmed)) {
@@ -353,11 +540,14 @@ int totalBlockChars(const QStringList &blocks)
     return total;
 }
 
-QStringList overlapTailBlocks(const QStringList &blocks, int overlapChars)
+QStringList overlapTailBlocks(const QStringList &blocks, int overlapChars, const std::atomic_bool *cancelRequested = nullptr)
 {
     QStringList carry;
     int carryChars = 0;
     for (int i = blocks.size() - 1; i >= 0; --i) {
+        if (isCancelRequested(cancelRequested)) {
+            return {};
+        }
         const QString &block = blocks.at(i);
         const int blockChars = block.size() + (carry.isEmpty() ? 0 : 2);
         if (!carry.isEmpty() && carryChars + blockChars > overlapChars * 2) {
@@ -372,13 +562,10 @@ QStringList overlapTailBlocks(const QStringList &blocks, int overlapChars)
     return carry;
 }
 
-QVector<QString> buildChunksFromBlocks(const QVector<QString> &blocks, bool preferCompactChunks)
+QVector<QString> buildChunksFromBlocks(const QVector<QString> &blocks,
+                                      const ChunkingProfile &profile,
+                                      const std::atomic_bool *cancelRequested = nullptr)
 {
-    const int targetChunkChars = preferCompactChunks ? 1400 : 2400;
-    const int minimumChunkChars = preferCompactChunks ? 650 : 1100;
-    const int hardChunkChars = preferCompactChunks ? 1800 : 3200;
-    const int overlapChars = preferCompactChunks ? 140 : 360;
-
     QVector<QString> chunks;
     if (blocks.isEmpty()) {
         return chunks;
@@ -398,6 +585,9 @@ QVector<QString> buildChunksFromBlocks(const QVector<QString> &blocks, bool pref
     };
 
     for (const QString &block : blocks) {
+        if (isCancelRequested(cancelRequested)) {
+            return {};
+        }
         if (block.trimmed().isEmpty()) {
             continue;
         }
@@ -405,14 +595,33 @@ QVector<QString> buildChunksFromBlocks(const QVector<QString> &blocks, bool pref
         const int separatorChars = currentBlocks.isEmpty() ? 0 : 2;
         const int projected = currentChars + separatorChars + block.size();
         const bool shouldSplit = !currentBlocks.isEmpty()
-                && projected > targetChunkChars
-                && currentChars >= minimumChunkChars;
-        const bool mustSplit = !currentBlocks.isEmpty() && projected > hardChunkChars;
+                && projected > profile.targetChunkChars
+                && currentChars >= profile.minimumChunkChars;
+        const bool mustSplit = !currentBlocks.isEmpty() && projected > profile.hardChunkChars;
         if (shouldSplit || mustSplit) {
-            const QStringList carry = overlapTailBlocks(currentBlocks, overlapChars);
+            const QStringList carry = overlapTailBlocks(currentBlocks, profile.overlapChars, cancelRequested);
             flushChunk();
             currentBlocks = carry;
             currentChars = totalBlockChars(currentBlocks);
+        }
+
+        if (block.size() > profile.hardChunkChars && currentBlocks.isEmpty()) {
+            const QStringList slices = splitOversizedBlock(block, profile.targetChunkChars, cancelRequested);
+            for (int sliceIndex = 0; sliceIndex < slices.size(); ++sliceIndex) {
+                const QString &slice = slices.at(sliceIndex);
+                if (slice.trimmed().isEmpty()) {
+                    continue;
+                }
+                currentBlocks << slice;
+                currentChars = totalBlockChars(currentBlocks);
+                const bool lastSlice = sliceIndex == slices.size() - 1;
+                if (!lastSlice) {
+                    flushChunk();
+                    currentBlocks = overlapTailBlocks(currentBlocks, profile.overlapChars, cancelRequested);
+                    currentChars = totalBlockChars(currentBlocks);
+                }
+            }
+            continue;
         }
 
         currentBlocks << block;
@@ -421,7 +630,7 @@ QVector<QString> buildChunksFromBlocks(const QVector<QString> &blocks, bool pref
 
     flushChunk();
 
-    if (chunks.size() >= 2 && chunks.constLast().size() < minimumChunkChars / 2) {
+    if (chunks.size() >= 2 && chunks.constLast().size() < profile.minimumChunkChars / 2) {
         const QString merged = normalizeBlockText(chunks.at(chunks.size() - 2) + QStringLiteral("\n\n") + chunks.constLast());
         chunks[chunks.size() - 2] = merged;
         chunks.removeLast();
@@ -456,6 +665,15 @@ bool shouldKeepChunkText(const QString &text)
         }
     }
 
+    const bool structuredShortChunk = text.contains(QLatin1Char('\n'))
+            && (text.contains(QLatin1Char('{'))
+                || text.contains(QLatin1Char('='))
+                || text.contains(QStringLiteral(":"))
+                || text.contains(QStringLiteral("->")));
+    if (structuredShortChunk) {
+        return alnumCount >= 18 && wordCount >= 3;
+    }
+
     return alnumCount >= 32 && wordCount >= 6;
 }
 
@@ -469,45 +687,66 @@ bool readTextFile(const QString &path, QString *text, QString *extractor, std::a
     QFileInfo info(path);
     const QString suffix = info.suffix().toLower();
     if (suffix == QStringLiteral("pdf")) {
-        QProcess process;
-        process.start(QStringLiteral("pdftotext"), {QStringLiteral("-layout"), path, QStringLiteral("-")});
-        if (!process.waitForStarted(1500)) {
-            if (extractor != nullptr) {
-                *extractor = QStringLiteral("pdf:pdftotext-not-found");
+        auto runPdfToText = [&](const QStringList &arguments, QString *output) -> bool {
+            QProcess process;
+            process.start(QStringLiteral("pdftotext"), arguments);
+            if (!process.waitForStarted(1500)) {
+                return false;
             }
-            return false;
-        }
-        while (!process.waitForFinished(150)) {
+            while (!process.waitForFinished(150)) {
+                if (isCancelRequested(cancelRequested)) {
+                    process.kill();
+                    process.waitForFinished(1000);
+                    return false;
+                }
+            }
             if (isCancelRequested(cancelRequested)) {
                 process.kill();
                 process.waitForFinished(1000);
-                if (extractor != nullptr) {
-                    *extractor = QStringLiteral("canceled");
-                }
                 return false;
             }
-        }
-        if (isCancelRequested(cancelRequested)) {
-            process.kill();
-            process.waitForFinished(1000);
-            if (extractor != nullptr) {
-                *extractor = QStringLiteral("canceled");
+            if (process.exitStatus() != QProcess::NormalExit || process.exitCode() != 0) {
+                return false;
             }
-            return false;
-        }
-        if (process.exitStatus() != QProcess::NormalExit || process.exitCode() != 0) {
-            if (extractor != nullptr) {
-                *extractor = QStringLiteral("pdf:pdftotext-failed");
+            if (output != nullptr) {
+                *output = QString::fromUtf8(process.readAllStandardOutput());
             }
-            return false;
+            return true;
+        };
+
+        QString extractedText;
+        bool extracted = runPdfToText({QStringLiteral("-enc"), QStringLiteral("UTF-8"), QStringLiteral("-layout"), path, QStringLiteral("-")},
+                                      &extractedText);
+        QString extractorName = QStringLiteral("pdf:pdftotext-layout-paged");
+        if (extracted) {
+            const QString normalized = cleanedPdfText(extractedText, cancelRequested);
+            const int wordCount = countWordsInText(normalized);
+            if (wordCount < 80) {
+                QString fallbackText;
+                if (runPdfToText({QStringLiteral("-enc"), QStringLiteral("UTF-8"), QStringLiteral("-raw"), path, QStringLiteral("-")},
+                                 &fallbackText)) {
+                    const QString fallbackNormalized = cleanedPdfText(fallbackText, cancelRequested);
+                    if (countWordsInText(fallbackNormalized) > wordCount) {
+                        extractedText = fallbackText;
+                        extractorName = QStringLiteral("pdf:pdftotext-raw-paged");
+                    }
+                }
+            }
+            if (text != nullptr) {
+                *text = cleanedPdfText(extractedText, cancelRequested);
+            }
+            if (extractor != nullptr) {
+                *extractor = extractorName;
+            }
+            return true;
         }
-        if (text != nullptr) {
-            *text = cleanedPdfText(QString::fromUtf8(process.readAllStandardOutput()));
-        }
+
         if (extractor != nullptr) {
-            *extractor = QStringLiteral("pdf:pdftotext-layout-paged");
+            *extractor = isCancelRequested(cancelRequested)
+                    ? QStringLiteral("canceled")
+                    : QStringLiteral("pdf:pdftotext-failed");
         }
-        return true;
+        return false;
     }
 
     if (isCancelRequested(cancelRequested)) {
@@ -519,18 +758,34 @@ bool readTextFile(const QString &path, QString *text, QString *extractor, std::a
 
     QFile file(path);
     if (!file.open(QIODevice::ReadOnly)) {
-        return false;
-    }
-
-    const QByteArray bytes = file.readAll();
-    file.close();
-
-    if (isCancelRequested(cancelRequested)) {
         if (extractor != nullptr) {
-            *extractor = QStringLiteral("canceled");
+            *extractor = QStringLiteral("read-failed");
         }
         return false;
     }
+
+    QByteArray bytes;
+    bytes.reserve(static_cast<int>(qMin<qint64>(info.size(), 4 * 1024 * 1024)));
+    while (!file.atEnd()) {
+        const QByteArray chunk = file.read(256 * 1024);
+        if (chunk.isEmpty() && file.error() != QFile::NoError) {
+            file.close();
+            if (extractor != nullptr) {
+                *extractor = QStringLiteral("read-failed");
+            }
+            return false;
+        }
+        bytes.append(chunk);
+        if (isCancelRequested(cancelRequested)) {
+            file.close();
+            if (extractor != nullptr) {
+                *extractor = QStringLiteral("canceled");
+            }
+            return false;
+        }
+    }
+    file.close();
+
     if (bytes.contains('\0')) {
         if (extractor != nullptr) {
             *extractor = QStringLiteral("binary-skipped");
@@ -547,6 +802,29 @@ bool readTextFile(const QString &path, QString *text, QString *extractor, std::a
     return true;
 }
 
+QString fallbackZeroChunkReason(const QString &extractor, int textCharCount, int wordCount)
+{
+    const QString normalizedExtractor = extractor.trimmed().toLower();
+    if (normalizedExtractor == QStringLiteral("canceled")) {
+        return QStringLiteral("Indexing was canceled before this asset finished chunk generation.");
+    }
+    if (normalizedExtractor == QStringLiteral("binary-skipped")) {
+        return QStringLiteral("The file appears to be binary or otherwise unsupported for text chunking.");
+    }
+    if (normalizedExtractor == QStringLiteral("read-failed")) {
+        return QStringLiteral("Amelia could not read the file contents from disk.");
+    }
+    if (normalizedExtractor == QStringLiteral("pdf:pdftotext-failed")) {
+        return QStringLiteral("PDF text extraction failed. The document may be scanned, image-only, encrypted, or unsupported by pdftotext.");
+    }
+    if (normalizedExtractor.startsWith(QStringLiteral("pdf:")) && textCharCount <= 0) {
+        return QStringLiteral("PDF extraction produced no usable text after cleanup. The document may be scanned or image-only.");
+    }
+    if (textCharCount <= 0 || wordCount <= 0) {
+        return QStringLiteral("Text extraction finished, but no usable text remained after cleanup.");
+    }
+    return QStringLiteral("The asset was ingested, but no chunk survived filtering or deduplication.");
+}
 
 QString canonicalPathFor(const QString &path)
 {
@@ -1157,7 +1435,10 @@ void RagIndexer::ensureEmbeddingsForChunks(QVector<Chunk> &chunks) const
         return;
     }
 
-    const QVector<QVector<float>> embeddings = m_embeddingClient.embedTexts(missingTexts);
+    const QVector<QVector<float>> embeddings = m_embeddingClient.embedTexts(missingTexts, {}, &m_cancelRequested);
+    if (m_cancelRequested.load(std::memory_order_relaxed)) {
+        return;
+    }
     const int assignCount = qMin(missingIndexes.size(), embeddings.size());
     for (int i = 0; i < assignCount; ++i) {
         chunks[missingIndexes.at(i)].embedding = embeddings.at(i);
@@ -1172,7 +1453,7 @@ bool RagIndexer::sourceMatchesFile(const SourceInfo &source, const QFileInfo &in
 
 QString RagIndexer::chunkingStrategyName()
 {
-    return QStringLiteral("semantic-blocks-v3");
+    return QStringLiteral("semantic-blocks-v4");
 }
 
 int RagIndexer::reindex(const std::function<void(int, int, const QString &)> &progressCallback)
@@ -1277,6 +1558,7 @@ int RagIndexer::reindex(const std::function<void(int, int, const QString &)> &pr
     for (const QString &path : paths) {
         currentPathSet.insert(path);
     }
+    QSet<QString> pendingPaths = currentPathSet;
     for (auto it = workingSourcesByPath.begin(); it != workingSourcesByPath.end();) {
         if (!currentPathSet.contains(it.key())) {
             workingChunksByPath.remove(it.key());
@@ -1313,6 +1595,10 @@ int RagIndexer::reindex(const std::function<void(int, int, const QString &)> &pr
     };
 
     const auto cancelWithPartialCommit = [&](const QString &label) -> int {
+        for (const QString &pendingPath : std::as_const(pendingPaths)) {
+            workingSourcesByPath.remove(pendingPath);
+            workingChunksByPath.remove(pendingPath);
+        }
         return finalizeWorkingState(workingSourcesByPath,
                                     workingChunksByPath,
                                     label,
@@ -1352,6 +1638,7 @@ int RagIndexer::reindex(const std::function<void(int, int, const QString &)> &pr
             workingChunksByPath.insert(path, reusedChunks);
             ++reusedFiles;
             ++committedFiles;
+            pendingPaths.remove(path);
 
             if (progressCallback) {
                 progressCallback(i + 1,
@@ -1384,20 +1671,54 @@ int RagIndexer::reindex(const std::function<void(int, int, const QString &)> &pr
         source.extractor = extractor.isEmpty() ? QStringLiteral("unknown") : extractor;
         source.fileModifiedMs = info.lastModified().toMSecsSinceEpoch();
         source.fileSizeBytes = info.size();
+        source.chunkingProfile = QStringLiteral("unavailable");
         applyMetadata(source);
 
+        source.textCharCount = textValue.size();
+        source.lineCount = countLinesInText(textValue);
+        source.wordCount = countWordsInText(textValue);
+
         QVector<Chunk> rebuiltChunksForPath;
-        if (ok && !textValue.trimmed().isEmpty()) {
-            const bool preferCompactChunks = m_semanticEnabled && m_embeddingClient.isConfigured();
-            const QVector<QString> blocks = buildSemanticBlocks(textValue);
-            const QVector<QString> chunkTexts = buildChunksFromBlocks(blocks, preferCompactChunks);
+        const QString trimmedTextValue = textValue.trimmed();
+        int blockCount = 0;
+        int candidateChunkCount = 0;
+        int filteredChunkCount = 0;
+        int duplicateChunkCount = 0;
+        if (ok && !trimmedTextValue.isEmpty()) {
+            const bool semanticReady = m_semanticEnabled && m_embeddingClient.isConfigured();
+            const QVector<QString> blocks = buildSemanticBlocks(textValue, &m_cancelRequested);
+            blockCount = blocks.size();
+            const ChunkingProfile profile = chooseChunkingProfile(sourceType,
+                                                                 source.fileSizeBytes,
+                                                                 semanticReady,
+                                                                 blocks.size());
+            source.chunkingProfile = profile.label;
+
+            const QVector<QString> chunkTexts = buildChunksFromBlocks(blocks, profile, &m_cancelRequested);
+            candidateChunkCount = chunkTexts.size();
+            if (m_cancelRequested.load(std::memory_order_relaxed)) {
+                return cancelWithPartialCommit(QStringLiteral("Indexing canceled. Partial cache saved; the in-flight file was discarded."));
+            }
+
             QStringList embeddingsInput;
+            QSet<QString> seenChunkFingerprints;
             embeddingsInput.reserve(chunkTexts.size());
             for (const QString &chunkText : chunkTexts) {
-                const QString normalizedChunk = chunkText.trimmed();
-                if (shouldKeepChunkText(normalizedChunk)) {
-                    embeddingsInput.push_back(normalizedChunk);
+                if (m_cancelRequested.load(std::memory_order_relaxed)) {
+                    return cancelWithPartialCommit(QStringLiteral("Indexing canceled. Partial cache saved; the in-flight file was discarded."));
                 }
+                const QString normalizedChunk = chunkText.trimmed();
+                if (!shouldKeepChunkText(normalizedChunk)) {
+                    ++filteredChunkCount;
+                    continue;
+                }
+                const QString fingerprint = stableHashHex(normalizedChunk.simplified());
+                if (seenChunkFingerprints.contains(fingerprint)) {
+                    ++duplicateChunkCount;
+                    continue;
+                }
+                seenChunkFingerprints.insert(fingerprint);
+                embeddingsInput.push_back(normalizedChunk);
             }
 
             QVector<QVector<float>> embeddings;
@@ -1421,7 +1742,8 @@ int RagIndexer::reindex(const std::function<void(int, int, const QString &)> &pr
                                                                                        .arg(completed)
                                                                                        .arg(total));
                                                               }
-                                                          });
+                                                          },
+                                                          &m_cancelRequested);
             }
             if (m_cancelRequested.load(std::memory_order_relaxed)) {
                 return cancelWithPartialCommit(QStringLiteral("Indexing canceled. Partial cache saved; the in-flight file was discarded."));
@@ -1449,10 +1771,37 @@ int RagIndexer::reindex(const std::function<void(int, int, const QString &)> &pr
             }
         }
 
+        if (source.chunkCount <= 0) {
+            if (!ok) {
+                source.zeroChunkReason = fallbackZeroChunkReason(source.extractor, source.textCharCount, source.wordCount);
+            } else if (trimmedTextValue.isEmpty()) {
+                source.zeroChunkReason = fallbackZeroChunkReason(source.extractor, source.textCharCount, source.wordCount);
+            } else if (blockCount <= 0) {
+                source.zeroChunkReason = QStringLiteral("Text was extracted, but Amelia could not derive any semantic blocks from it.");
+            } else if (candidateChunkCount <= 0) {
+                source.zeroChunkReason = QStringLiteral("Text was parsed into blocks, but chunk generation produced no chunk candidates.");
+            } else if ((filteredChunkCount + duplicateChunkCount) >= candidateChunkCount) {
+                if (filteredChunkCount > 0 && duplicateChunkCount > 0) {
+                    source.zeroChunkReason = QStringLiteral("All %1 chunk candidate(s) were removed during filtering (%2 weak/noisy, %3 duplicate).").arg(candidateChunkCount).arg(filteredChunkCount).arg(duplicateChunkCount);
+                } else if (filteredChunkCount > 0) {
+                    source.zeroChunkReason = QStringLiteral("All %1 chunk candidate(s) were filtered out as too weak or noisy.").arg(candidateChunkCount);
+                } else if (duplicateChunkCount > 0) {
+                    source.zeroChunkReason = QStringLiteral("All %1 chunk candidate(s) were duplicates of other extracted content.").arg(candidateChunkCount);
+                }
+            }
+
+            if (source.zeroChunkReason.trimmed().isEmpty()) {
+                source.zeroChunkReason = fallbackZeroChunkReason(source.extractor, source.textCharCount, source.wordCount);
+            }
+        } else {
+            source.zeroChunkReason.clear();
+        }
+
         workingSourcesByPath.insert(path, source);
         workingChunksByPath.insert(path, rebuiltChunksForPath);
         ++rebuiltFiles;
         ++committedFiles;
+        pendingPaths.remove(path);
 
         if (progressCallback) {
             progressCallback(i + 1,
@@ -1561,6 +1910,14 @@ bool RagIndexer::loadCache()
         source.fileModifiedMs = static_cast<qint64>(obj.value(QStringLiteral("fileModifiedMs")).toDouble());
         source.fileSizeBytes = static_cast<qint64>(obj.value(QStringLiteral("fileSizeBytes")).toDouble());
         source.chunkCount = obj.value(QStringLiteral("chunkCount")).toInt();
+        source.lineCount = obj.value(QStringLiteral("lineCount")).toInt();
+        source.wordCount = obj.value(QStringLiteral("wordCount")).toInt();
+        source.textCharCount = obj.value(QStringLiteral("textCharCount")).toInt();
+        source.chunkingProfile = obj.value(QStringLiteral("chunkingProfile")).toString();
+        source.zeroChunkReason = obj.value(QStringLiteral("zeroChunkReason")).toString();
+        if (source.chunkCount <= 0 && source.zeroChunkReason.trimmed().isEmpty()) {
+            source.zeroChunkReason = fallbackZeroChunkReason(source.extractor, source.textCharCount, source.wordCount);
+        }
         if (source.filePath.isEmpty()) {
             continue;
         }
@@ -1629,6 +1986,11 @@ bool RagIndexer::saveCache() const
         obj.insert(QStringLiteral("fileModifiedMs"), static_cast<double>(source.fileModifiedMs));
         obj.insert(QStringLiteral("fileSizeBytes"), static_cast<double>(source.fileSizeBytes));
         obj.insert(QStringLiteral("chunkCount"), source.chunkCount);
+        obj.insert(QStringLiteral("lineCount"), source.lineCount);
+        obj.insert(QStringLiteral("wordCount"), source.wordCount);
+        obj.insert(QStringLiteral("textCharCount"), source.textCharCount);
+        obj.insert(QStringLiteral("chunkingProfile"), source.chunkingProfile);
+        obj.insert(QStringLiteral("zeroChunkReason"), source.zeroChunkReason);
         sourceArray.push_back(obj);
     }
     root.insert(QStringLiteral("sources"), sourceArray);
@@ -1867,12 +2229,58 @@ QString RagIndexer::embeddingBackendName() const
 
 QString RagIndexer::formatInventoryForUi() const
 {
-    if (m_sources.isEmpty()) {
+    const QVector<ManifestCollection> manifestCollections = loadManifestCollections(m_docsRoot);
+    if (m_sources.isEmpty() && manifestCollections.isEmpty()) {
         return QStringLiteral("<none>");
     }
 
+    QHash<QString, QVector<const Chunk *>> chunksByPath;
+    chunksByPath.reserve(m_sources.size());
+    for (const Chunk &chunk : m_chunks) {
+        chunksByPath[chunk.filePath].push_back(&chunk);
+    }
+
+    auto buildChunkPreviewArray = [&](const QString &filePath) {
+        QJsonArray preview;
+        const QVector<const Chunk *> chunkPointers = chunksByPath.value(filePath);
+        if (chunkPointers.isEmpty()) {
+            return preview;
+        }
+
+        QVector<qsizetype> selectedIndexes;
+        if (chunkPointers.size() <= 8) {
+            selectedIndexes.reserve(chunkPointers.size());
+            for (int i = 0; i < chunkPointers.size(); ++i) {
+                selectedIndexes.push_back(i);
+            }
+        } else {
+            selectedIndexes = {0, 1, 2, 3,
+                               chunkPointers.size() - 2,
+                               chunkPointers.size() - 1};
+        }
+
+        int lastIndex = -1;
+        for (const int idx : std::as_const(selectedIndexes)) {
+            if (idx < 0 || idx >= chunkPointers.size() || idx == lastIndex) {
+                continue;
+            }
+            lastIndex = idx;
+            const Chunk *chunk = chunkPointers.at(idx);
+            if (chunk == nullptr) {
+                continue;
+            }
+            QJsonObject obj;
+            obj.insert(QStringLiteral("chunkIndex"), chunk->chunkIndex);
+            obj.insert(QStringLiteral("charCount"), chunk->text.size());
+            obj.insert(QStringLiteral("wordCount"), countWordsInText(chunk->text));
+            obj.insert(QStringLiteral("text"), compactPreviewText(chunk->text, 900));
+            preview.push_back(obj);
+        }
+        return preview;
+    };
+
     QJsonObject root;
-    root.insert(QStringLiteral("format"), QStringLiteral("amelia-kb-inventory-v5"));
+    root.insert(QStringLiteral("format"), QStringLiteral("amelia-kb-inventory-v6"));
     root.insert(QStringLiteral("knowledgeRoot"), m_docsRoot);
     root.insert(QStringLiteral("collectionsRoot"), collectionsRootFor(m_docsRoot));
     root.insert(QStringLiteral("workspaceJailRoot"), QFileInfo(m_docsRoot).dir().absolutePath());
@@ -1891,22 +2299,39 @@ QString RagIndexer::formatInventoryForUi() const
     QHash<QString, int> collectionIndexes;
     QHash<QString, QHash<QString, int>> groupIndexesByCollection;
 
+    auto ensureCollection = [&](const QString &collectionId,
+                                const QString &collectionLabel,
+                                const QString &createdAt) {
+        int collectionIndex = collectionIndexes.value(collectionId, -1);
+        if (collectionIndex >= 0) {
+            return collectionIndex;
+        }
+
+        QJsonObject collection;
+        collection.insert(QStringLiteral("collectionId"), collectionId);
+        collection.insert(QStringLiteral("label"), collectionLabel);
+        collection.insert(QStringLiteral("createdAt"), createdAt);
+        collection.insert(QStringLiteral("collectionRoot"), QDir(collectionsRootFor(m_docsRoot)).filePath(collectionId));
+        collection.insert(QStringLiteral("fileCount"), 0);
+        collection.insert(QStringLiteral("chunkCount"), 0);
+        collection.insert(QStringLiteral("totalBytes"), 0.0);
+        collection.insert(QStringLiteral("groups"), QJsonArray());
+        collections.push_back(collection);
+        collectionIndex = collections.size() - 1;
+        collectionIndexes.insert(collectionId, collectionIndex);
+        return collectionIndex;
+    };
+
+    for (const ManifestCollection &collection : manifestCollections) {
+        ensureCollection(collection.collectionId,
+                         collection.label.trimmed().isEmpty() ? QStringLiteral("Imported collection") : collection.label,
+                         collection.createdAt);
+    }
+
     for (const SourceInfo &source : m_sources) {
         const QString collectionId = source.collectionId.trimmed().isEmpty() ? QStringLiteral("legacy") : source.collectionId;
         const QString collectionLabel = source.collectionLabel.trimmed().isEmpty() ? QStringLiteral("Legacy imports") : source.collectionLabel;
-        int collectionIndex = collectionIndexes.value(collectionId, -1);
-        if (collectionIndex < 0) {
-            QJsonObject collection;
-            collection.insert(QStringLiteral("collectionId"), collectionId);
-            collection.insert(QStringLiteral("label"), collectionLabel);
-            collection.insert(QStringLiteral("fileCount"), 0);
-            collection.insert(QStringLiteral("chunkCount"), 0);
-            collection.insert(QStringLiteral("totalBytes"), 0.0);
-            collection.insert(QStringLiteral("groups"), QJsonArray());
-            collections.push_back(collection);
-            collectionIndex = collections.size() - 1;
-            collectionIndexes.insert(collectionId, collectionIndex);
-        }
+        const int collectionIndex = ensureCollection(collectionId, collectionLabel, QString());
 
         QJsonObject collection = collections.at(collectionIndex).toObject();
         QJsonArray groups = collection.value(QStringLiteral("groups")).toArray();
@@ -1923,6 +2348,9 @@ QString RagIndexer::formatInventoryForUi() const
             QJsonObject group;
             group.insert(QStringLiteral("groupId"), groupId);
             group.insert(QStringLiteral("label"), groupLabel);
+            group.insert(QStringLiteral("collectionId"), collectionId);
+            group.insert(QStringLiteral("collectionLabel"), collectionLabel);
+            group.insert(QStringLiteral("folderPath"), QDir(QDir(collectionsRootFor(m_docsRoot)).filePath(collectionId)).filePath(groupLabel == QStringLiteral("(root)") ? QString() : groupLabel));
             group.insert(QStringLiteral("fileCount"), 0);
             group.insert(QStringLiteral("chunkCount"), 0);
             group.insert(QStringLiteral("totalBytes"), 0.0);
@@ -1945,7 +2373,21 @@ QString RagIndexer::formatInventoryForUi() const
         file.insert(QStringLiteral("extractor"), source.extractor);
         file.insert(QStringLiteral("chunkCount"), source.chunkCount);
         file.insert(QStringLiteral("fileSizeBytes"), static_cast<double>(source.fileSizeBytes));
+        file.insert(QStringLiteral("fileModifiedMs"), static_cast<double>(source.fileModifiedMs));
         file.insert(QStringLiteral("extension"), QFileInfo(source.fileName).suffix().toLower());
+        file.insert(QStringLiteral("lineCount"), source.lineCount);
+        file.insert(QStringLiteral("wordCount"), source.wordCount);
+        file.insert(QStringLiteral("textCharCount"), source.textCharCount);
+        file.insert(QStringLiteral("chunkingProfile"), source.chunkingProfile);
+        file.insert(QStringLiteral("zeroChunkReason"), source.zeroChunkReason);
+        file.insert(QStringLiteral("collectionId"), collectionId);
+        file.insert(QStringLiteral("collectionLabel"), collectionLabel);
+        file.insert(QStringLiteral("groupId"), groupId);
+        file.insert(QStringLiteral("groupLabel"), groupLabel);
+        const QJsonArray chunkPreview = buildChunkPreviewArray(source.filePath);
+        file.insert(QStringLiteral("chunksPreview"), chunkPreview);
+        file.insert(QStringLiteral("previewChunkCount"), chunkPreview.size());
+        file.insert(QStringLiteral("omittedChunkCount"), qMax(0, source.chunkCount - chunkPreview.size()));
         files.push_back(file);
 
         group.insert(QStringLiteral("files"), files);
@@ -2055,6 +2497,77 @@ int RagIndexer::importPaths(const QStringList &paths, const QString &destination
 
     if (message != nullptr) {
         *message = QStringLiteral("Imported %1 file(s) into Knowledge Base label '%2'.").arg(copied).arg(normalizedLabel);
+    }
+    return copied;
+}
+
+int RagIndexer::addPathsToCollection(const QStringList &paths,
+                                   const QString &destinationRoot,
+                                   const QString &collectionId,
+                                   QString *message) const
+{
+    if (paths.isEmpty() || collectionId.trimmed().isEmpty()) {
+        if (message != nullptr) {
+            *message = QStringLiteral("Collection import request is incomplete.");
+        }
+        return 0;
+    }
+
+    QVector<ManifestCollection> collections = loadManifestCollections(destinationRoot);
+    int collectionIndex = -1;
+    for (int i = 0; i < collections.size(); ++i) {
+        if (collections.at(i).collectionId == collectionId.trimmed()) {
+            collectionIndex = i;
+            break;
+        }
+    }
+    if (collectionIndex < 0) {
+        if (message != nullptr) {
+            *message = QStringLiteral("Destination Knowledge Base collection was not found.");
+        }
+        return 0;
+    }
+
+    ManifestCollection updatedCollection = collections.at(collectionIndex);
+    QSet<QString> usedRelativePaths;
+    for (const ManifestEntry &entry : std::as_const(updatedCollection.entries)) {
+        usedRelativePaths.insert(entry.relativePath);
+    }
+
+    const QString collectionRoot = QDir(collectionsRootFor(destinationRoot)).filePath(updatedCollection.collectionId);
+    QDir().mkpath(collectionRoot);
+
+    QVector<ManifestEntry> newEntries;
+    int copied = 0;
+    for (const QString &path : paths) {
+        copied += importPathIntoCollection(path,
+                                           updatedCollection.collectionId,
+                                           collectionRoot,
+                                           &newEntries,
+                                           &usedRelativePaths);
+    }
+
+    if (copied <= 0 || newEntries.isEmpty()) {
+        if (message != nullptr) {
+            *message = QStringLiteral("No supported files were added to Knowledge Base collection '%1'.").arg(updatedCollection.label);
+        }
+        return 0;
+    }
+
+    updatedCollection.entries += newEntries;
+    collections[collectionIndex] = updatedCollection;
+    if (!saveManifestCollections(destinationRoot, collections)) {
+        for (const ManifestEntry &entry : std::as_const(newEntries)) {
+            QFile::remove(entry.internalPath);
+        }
+        if (message != nullptr) {
+            *message = QStringLiteral("Failed to update the Knowledge Base manifest for collection '%1'.").arg(updatedCollection.label);
+        }
+        return 0;
+    }
+
+    if (message != nullptr) {
+        *message = QStringLiteral("Added %1 file(s) to Knowledge Base collection '%2'.").arg(copied).arg(updatedCollection.label);
     }
     return copied;
 }
@@ -2181,7 +2694,13 @@ int RagIndexer::moveKnowledgePaths(const QStringList &paths,
     const QString targetCollectionRoot = QDir(collectionsRootFor(destinationRoot)).filePath(targetCollectionId);
     QDir().mkpath(targetCollectionRoot);
 
+    struct FileMoveRecord {
+        QString sourcePath;
+        QString destinationPath;
+    };
+
     QVector<ManifestEntry> movedEntries;
+    QVector<FileMoveRecord> successfulMoves;
     QStringList movedSourcePaths;
     int moved = 0;
     int failed = 0;
@@ -2225,6 +2744,7 @@ int RagIndexer::moveKnowledgePaths(const QStringList &paths,
             movedEntry.groupLabel = groupLabelFromRelativePath(uniqueRelativePath);
             movedEntry.groupId = stableHashHex(targetCollectionId + QStringLiteral("|") + movedEntry.groupLabel);
             movedEntries.push_back(movedEntry);
+            successfulMoves.push_back({canonicalInternalPath, canonicalPathFor(destinationPath)});
             movedSourcePaths.push_back(canonicalInternalPath);
             ++moved;
         }
@@ -2246,12 +2766,13 @@ int RagIndexer::moveKnowledgePaths(const QStringList &paths,
     QVector<ManifestCollection> filteredCollections;
     filteredCollections.reserve(collections.size());
     for (const ManifestCollection &collection : std::as_const(collections)) {
-        if (!collection.entries.isEmpty()) {
-            filteredCollections.push_back(collection);
-        }
+        filteredCollections.push_back(collection);
     }
 
     if (!saveManifestCollections(destinationRoot, filteredCollections)) {
+        for (auto it = successfulMoves.crbegin(); it != successfulMoves.crend(); ++it) {
+            moveStoredKnowledgeFile(it->destinationPath, it->sourcePath);
+        }
         if (message != nullptr) {
             *message = QStringLiteral("Failed to persist the Knowledge Base move operation.");
         }
@@ -2287,6 +2808,178 @@ int RagIndexer::moveKnowledgePaths(const QStringList &paths,
     return moved;
 }
 
+bool RagIndexer::createCollection(const QString &destinationRoot, const QString &label, QString *message) const
+{
+    const QString normalizedLabel = label.trimmed();
+    if (normalizedLabel.isEmpty()) {
+        if (message != nullptr) {
+            *message = QStringLiteral("Collection label is empty.");
+        }
+        return false;
+    }
+
+    QVector<ManifestCollection> collections = loadManifestCollections(destinationRoot);
+    if (labelExistsInManifest(collections, normalizedLabel)) {
+        if (message != nullptr) {
+            *message = QStringLiteral("Knowledge Base label '%1' already exists. Choose a unique label.").arg(normalizedLabel);
+        }
+        return false;
+    }
+
+    const QString createdAt = QDateTime::currentDateTimeUtc().toString(Qt::ISODate);
+    const QString collectionId = stableHashHex(normalizedLabel + QStringLiteral("|") + createdAt + QStringLiteral("|empty"));
+    ManifestCollection collection;
+    collection.collectionId = collectionId;
+    collection.label = normalizedLabel;
+    collection.createdAt = createdAt;
+    collections.push_back(collection);
+
+    const QString collectionRoot = QDir(collectionsRootFor(destinationRoot)).filePath(collectionId);
+    QDir().mkpath(collectionRoot);
+    if (!saveManifestCollections(destinationRoot, collections)) {
+        QDir(collectionRoot).removeRecursively();
+        if (message != nullptr) {
+            *message = QStringLiteral("Failed to create Knowledge Base collection '%1'.").arg(normalizedLabel);
+        }
+        return false;
+    }
+
+    if (message != nullptr) {
+        *message = QStringLiteral("Created Knowledge Base collection '%1'.").arg(normalizedLabel);
+    }
+    return true;
+}
+
+bool RagIndexer::deleteCollection(const QString &destinationRoot, const QString &collectionId, QString *message) const
+{
+    if (collectionId.trimmed().isEmpty()) {
+        if (message != nullptr) {
+            *message = QStringLiteral("Collection id is empty.");
+        }
+        return false;
+    }
+
+    QVector<ManifestCollection> collections = loadManifestCollections(destinationRoot);
+    int removedEntries = 0;
+    QString removedLabel;
+    bool found = false;
+
+    QVector<ManifestCollection> filteredCollections;
+    filteredCollections.reserve(collections.size());
+    for (const ManifestCollection &collection : std::as_const(collections)) {
+        if (collection.collectionId == collectionId) {
+            found = true;
+            removedEntries = collection.entries.size();
+            removedLabel = collection.label;
+            continue;
+        }
+        filteredCollections.push_back(collection);
+    }
+
+    if (!found) {
+        if (message != nullptr) {
+            *message = QStringLiteral("Knowledge Base collection was not found.");
+        }
+        return false;
+    }
+
+    const QString collectionRoot = QDir(collectionsRootFor(destinationRoot)).filePath(collectionId);
+    const bool removedFiles = !QFileInfo::exists(collectionRoot) || QDir(collectionRoot).removeRecursively();
+    if (!saveManifestCollections(destinationRoot, filteredCollections)) {
+        if (message != nullptr) {
+            *message = QStringLiteral("Failed to update the Knowledge Base manifest after deleting '%1'.").arg(removedLabel);
+        }
+        return false;
+    }
+
+    if (message != nullptr) {
+        *message = removedFiles
+                ? QStringLiteral("Deleted Knowledge Base collection '%1' (%2 asset(s)).").arg(removedLabel).arg(removedEntries)
+                : QStringLiteral("Removed collection '%1' from the manifest, but some stored files could not be deleted.").arg(removedLabel);
+    }
+    return true;
+}
+
+bool RagIndexer::renameKnowledgePath(const QString &path, const QString &destinationRoot, const QString &newFileName, QString *message) const
+{
+    const QString canonicalPath = canonicalPathFor(path);
+    const QString normalizedFileName = QFileInfo(newFileName.trimmed()).fileName().trimmed();
+    if (canonicalPath.isEmpty() || normalizedFileName.isEmpty()) {
+        if (message != nullptr) {
+            *message = QStringLiteral("Asset path or new file name is empty.");
+        }
+        return false;
+    }
+
+    QVector<ManifestCollection> collections = loadManifestCollections(destinationRoot);
+    for (ManifestCollection &collection : collections) {
+        const QString collectionRoot = QDir(collectionsRootFor(destinationRoot)).filePath(collection.collectionId);
+        QSet<QString> usedRelativePaths;
+        for (const ManifestEntry &entry : collection.entries) {
+            if (canonicalPathFor(entry.internalPath) != canonicalPath) {
+                usedRelativePaths.insert(entry.relativePath);
+            }
+        }
+
+        for (ManifestEntry &entry : collection.entries) {
+            if (canonicalPathFor(entry.internalPath) != canonicalPath) {
+                continue;
+            }
+
+            const QString relativeDir = QFileInfo(entry.relativePath).path() == QStringLiteral(".")
+                    ? QString()
+                    : QFileInfo(entry.relativePath).path();
+            const QString desiredRelativePath = relativeDir.isEmpty()
+                    ? normalizedFileName
+                    : QDir(relativeDir).filePath(normalizedFileName);
+            const QString uniqueRelativePath = ensureUniqueRelativePath(desiredRelativePath, &usedRelativePaths);
+            const QString destinationPath = QDir(collectionRoot).filePath(uniqueRelativePath);
+            if (canonicalPathFor(destinationPath) == canonicalPath) {
+                if (message != nullptr) {
+                    *message = QStringLiteral("Asset already uses that name.");
+                }
+                return false;
+            }
+            if (!moveStoredKnowledgeFile(entry.internalPath, destinationPath)) {
+                if (message != nullptr) {
+                    *message = QStringLiteral("Failed to rename the selected Knowledge Base asset.");
+                }
+                return false;
+            }
+
+            const QString previousPath = entry.internalPath;
+            const QString previousRelativePath = entry.relativePath;
+            const QString previousGroupLabel = entry.groupLabel;
+            const QString previousGroupId = entry.groupId;
+            entry.internalPath = canonicalPathFor(destinationPath);
+            entry.relativePath = uniqueRelativePath;
+            entry.groupLabel = groupLabelFromRelativePath(uniqueRelativePath);
+            entry.groupId = stableHashHex(collection.collectionId + QStringLiteral("|") + entry.groupLabel);
+
+            if (!saveManifestCollections(destinationRoot, collections)) {
+                moveStoredKnowledgeFile(entry.internalPath, previousPath);
+                entry.internalPath = previousPath;
+                entry.relativePath = previousRelativePath;
+                entry.groupLabel = previousGroupLabel;
+                entry.groupId = previousGroupId;
+                if (message != nullptr) {
+                    *message = QStringLiteral("Failed to persist the Knowledge Base asset rename.");
+                }
+                return false;
+            }
+
+            if (message != nullptr) {
+                *message = QStringLiteral("Renamed Knowledge Base asset to '%1'.").arg(normalizedFileName);
+            }
+            return true;
+        }
+    }
+
+    if (message != nullptr) {
+        *message = QStringLiteral("Knowledge Base asset was not found.");
+    }
+    return false;
+}
 
 bool RagIndexer::clearKnowledgeLibrary(const QString &destinationRoot, QString *message) const
 {
