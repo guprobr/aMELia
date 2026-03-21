@@ -508,7 +508,8 @@ QString rewriteUnsafeMarkdownTables(const QString &markdown)
 
 QString normalizeRenderableMarkdown(const QString &text)
 {
-    QString normalized = rewriteUnsafeMarkdownTables(text);
+    QString normalized = TranscriptFormatter::sanitizeRenderableMarkdown(text);
+    normalized = rewriteUnsafeMarkdownTables(normalized);
     normalized.replace(QRegularExpression(QStringLiteral(R"(```([A-Za-z0-9_+\-]*)<br\s*/?>)"), QRegularExpression::CaseInsensitiveOption),
                        QStringLiteral("```\\1\n"));
     normalized.replace(QRegularExpression(QStringLiteral(R"((?i)<br\s*/?>```)")), QStringLiteral("\n```"));

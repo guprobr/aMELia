@@ -149,17 +149,6 @@ QString decodeEscapedLayoutOutsideQuotes(const QString &text)
             continue;
         }
 
-        if (!inDoubleQuote && ch == QLatin1Char('\'')) {
-            inSingleQuote = !inSingleQuote;
-            out += ch;
-            continue;
-        }
-        if (!inSingleQuote && ch == QLatin1Char('"')) {
-            inDoubleQuote = !inDoubleQuote;
-            out += ch;
-            continue;
-        }
-
         if (!inSingleQuote && !inDoubleQuote && ch == QLatin1Char('\\') && i + 1 < text.size()) {
             const QChar next = text.at(i + 1);
             if (next == QLatin1Char('n')) {
@@ -176,6 +165,23 @@ QString decodeEscapedLayoutOutsideQuotes(const QString &text)
                 ++i;
                 continue;
             }
+            if (next == QLatin1Char('"') || next == QLatin1Char('\'')) {
+                out += ch;
+                out += next;
+                ++i;
+                continue;
+            }
+        }
+
+        if (!inDoubleQuote && ch == QLatin1Char('\'')) {
+            inSingleQuote = !inSingleQuote;
+            out += ch;
+            continue;
+        }
+        if (!inSingleQuote && ch == QLatin1Char('"')) {
+            inDoubleQuote = !inDoubleQuote;
+            out += ch;
+            continue;
         }
 
         out += ch;
@@ -302,7 +308,7 @@ QString normalizeLooseMarkdownSpacing(QString text)
 
 namespace TranscriptFormatter {
 
-QString sanitizeFinalAssistantMarkdown(const QString &text)
+QString sanitizeRenderableMarkdown(const QString &text)
 {
     QString cleaned = text;
     cleaned.replace(QStringLiteral("\r\n"), QStringLiteral("\n"));
@@ -313,6 +319,11 @@ QString sanitizeFinalAssistantMarkdown(const QString &text)
     cleaned = closeDanglingFence(cleaned);
     cleaned = normalizeLooseMarkdownSpacing(cleaned);
     return cleaned;
+}
+
+QString sanitizeFinalAssistantMarkdown(const QString &text)
+{
+    return sanitizeRenderableMarkdown(text);
 }
 
 } // namespace TranscriptFormatter
