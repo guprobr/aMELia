@@ -2825,9 +2825,9 @@ QString RagIndexer::formatDocumentStudyPrompt(const QStringList &preferredPaths,
                 ? QStringLiteral("<no explicit outline lines extracted>")
                 : outlineLines.join(QStringLiteral("\n"));
 
-        QStringList majorHeadings = extractMajorSectionHeadings(text, 24);
+        QStringList majorHeadings = extractMajorSectionHeadings(text, 64);
         if (majorHeadings.isEmpty()) {
-            majorHeadings = extractMajorSectionHeadings(outlineText, 24);
+            majorHeadings = extractMajorSectionHeadings(outlineText, 64);
         }
 
         struct SectionAnchor {
@@ -2934,11 +2934,11 @@ QString RagIndexer::formatDocumentStudyPrompt(const QStringList &preferredPaths,
         anchors = uniqueAnchors;
 
         const bool hugeDocument = fileChunks.size() >= 1200 || text.size() >= 250000;
-        if (hugeDocument && anchors.size() > 24) {
+        if (hugeDocument && anchors.size() > 64) {
             QVector<SectionAnchor> sampledAnchors;
-            sampledAnchors.reserve(24);
-            for (int sampleIndex = 0; sampleIndex < 24; ++sampleIndex) {
-                const int pos = qRound((anchors.size() - 1) * (sampleIndex / 23.0));
+            sampledAnchors.reserve(64);
+            for (int sampleIndex = 0; sampleIndex < 64; ++sampleIndex) {
+                const int pos = qRound((anchors.size() - 1) * (sampleIndex / 63.0));
                 if (pos < 0 || pos >= anchors.size()) {
                     continue;
                 }

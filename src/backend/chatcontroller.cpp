@@ -1024,8 +1024,10 @@ void ChatController::sendUserPrompt(const QString &prompt, bool allowExternalSea
             result.retrievedHits = localHits.size();
             const QString hitPromptContextRaw = m_rag->formatHitsForPrompt(localHits);
             const bool heavyDocumentStudyPacket = looksLikeDocumentStudy && documentStudyPacket.size() >= 18000;
+            const bool structuredDocumentStudyPacket = looksLikeDocumentStudy
+                    && documentStudyPacket.contains(QStringLiteral("SECTION_COVERAGE_PACKET:"));
             const QString hitPromptContext = looksLikeDocumentStudy
-                    ? (heavyDocumentStudyPacket ? QString() : trimForBudget(hitPromptContextRaw, 1600))
+                    ? ((heavyDocumentStudyPacket || structuredDocumentStudyPacket) ? QString() : trimForBudget(hitPromptContextRaw, 1600))
                     : hitPromptContextRaw;
             const QString combinedLocalContext = documentStudyPacket.trimmed().isEmpty()
                     ? hitPromptContext
@@ -2102,6 +2104,9 @@ QVector<LlmChatMessage> ChatController::buildPromptMessages(const QString &userP
         "context is truly insufficient.\n"
         "- For document or PDF requests, follow any retrieved table of contents, section headings, "
         "or chapter structure before inventing your own structure.\n"
+        "- When LOCAL_CONTEXT contains DOCUMENT_OUTLINE_MAP or SECTION_COVERAGE_PACKET, cover every "
+        "available top-level section or chapter in original order before expanding details. If "
+        "space is tight, keep one short line per section instead of omitting later sections.\n"
         "- For chapter-specific tutorials or instructions, only include steps and commands that "
         "are explicitly present in the retrieved chapter context. Do not extrapolate missing steps.\n"
         "- RELEVANT_MEMORIES are stable user preferences or facts. Never treat them as a hidden "

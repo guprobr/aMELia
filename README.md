@@ -1,4 +1,4 @@
-# aMELia Qt6 v9.14.2
+# aMELia Qt6 v9.14.3
 
 Amelia is a local-first Qt6/C++ coding and cloud assistant that talks to a local Ollama server, stores its state under `~/.amelia_qt6`, indexes a local knowledge base, and can optionally use sanitized external web search through SearXNG.
 
@@ -564,6 +564,12 @@ This release keeps the improvements from the earlier 6.9x line, including:
 - Prompt Lab asset-aware recipe composition
 - semantic retrieval, external search integration, and outline-first planning
 
+
+## v9.14.3
+
+- Huge document-study summaries now keep far more top-level sections or chapters before sampling.
+- Structured document-study packets suppress ordinary hit sidecars entirely, so outline-driven summaries stay focused and stop drifting back to early semantic hits.
+- Added a stronger developer grounding rule for document/PDF summaries: cover every available top-level section in original order and shorten each section rather than omitting later ones.
 
 ## v9.14.2
 
