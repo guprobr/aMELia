@@ -1019,18 +1019,19 @@ void ChatController::sendUserPrompt(const QString &prompt, bool allowExternalSea
                 documentStudyPacket = m_rag->formatDocumentStudyPrompt(studyPaths,
                                                                        maxStudyFiles,
                                                                        180,
-                                                                       36000);
+                                                                       22000);
             }
             result.retrievedHits = localHits.size();
             const QString hitPromptContextRaw = m_rag->formatHitsForPrompt(localHits);
+            const bool heavyDocumentStudyPacket = looksLikeDocumentStudy && documentStudyPacket.size() >= 18000;
             const QString hitPromptContext = looksLikeDocumentStudy
-                    ? trimForBudget(hitPromptContextRaw, 3000)
+                    ? (heavyDocumentStudyPacket ? QString() : trimForBudget(hitPromptContextRaw, 1600))
                     : hitPromptContextRaw;
             const QString combinedLocalContext = documentStudyPacket.trimmed().isEmpty()
                     ? hitPromptContext
                     : documentStudyPacket + QStringLiteral("\n\n") + hitPromptContext;
             result.localContext = trimForBudget(combinedLocalContext,
-                                                result.outlineOnlyFirstPass ? 4800 : (looksLikeDocumentStudy ? 52000 : 9600));
+                                                result.outlineOnlyFirstPass ? 4800 : (looksLikeDocumentStudy ? 28000 : 9600));
             result.localUi = m_rag->formatHitsForUi(localHits);
         }
 
@@ -1754,7 +1755,7 @@ void ChatController::startGeneration(const QString &prompt,
 
     const bool heavyDocumentStudyRequest = looksLikeDocumentStudyPrompt(prompt)
             && localContext.contains(QStringLiteral("SECTION_COVERAGE_PACKET:"))
-            && localContext.size() >= 24000;
+            && localContext.size() >= 16000;
     if (heavyDocumentStudyRequest && !m_forceDisableReasoningForActiveRequest) {
         addDiagnostic(QStringLiteral("backend"),
                       QStringLiteral("Large document-study request detected; forcing think=false for this request to reduce Ollama load."));

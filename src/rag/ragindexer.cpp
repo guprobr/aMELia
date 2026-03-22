@@ -2933,17 +2933,39 @@ QString RagIndexer::formatDocumentStudyPrompt(const QStringList &preferredPaths,
         }
         anchors = uniqueAnchors;
 
-        const int previewBudget = qMin(10000, qMax(3000, maxCharsPerFile / 7));
-        const int coverageBudget = qMax(2400, maxCharsPerFile - previewBudget - 800);
+        const bool hugeDocument = fileChunks.size() >= 1200 || text.size() >= 250000;
+        if (hugeDocument && anchors.size() > 24) {
+            QVector<SectionAnchor> sampledAnchors;
+            sampledAnchors.reserve(24);
+            for (int sampleIndex = 0; sampleIndex < 24; ++sampleIndex) {
+                const int pos = qRound((anchors.size() - 1) * (sampleIndex / 23.0));
+                if (pos < 0 || pos >= anchors.size()) {
+                    continue;
+                }
+                if (!sampledAnchors.isEmpty() && sampledAnchors.constLast().chunkPos == anchors.at(pos).chunkPos) {
+                    continue;
+                }
+                sampledAnchors.push_back(anchors.at(pos));
+            }
+            if (!sampledAnchors.isEmpty()) {
+                anchors = sampledAnchors;
+            }
+        }
+
+        const int effectiveMaxCharsPerFile = hugeDocument ? qMin(maxCharsPerFile, 18000) : maxCharsPerFile;
+        const int previewBudget = hugeDocument ? 0 : qMin(8000, qMax(2400, effectiveMaxCharsPerFile / 8));
+        const int coverageBudget = qMax(2400, effectiveMaxCharsPerFile - previewBudget - 800);
+        const int minSectionChars = hugeDocument ? 280 : 650;
+        const int maxSectionCharsCap = hugeDocument ? 950 : 3600;
         QStringList coverageSections;
         int remainingBudget = coverageBudget;
         int remainingSections = anchors.size();
         for (int i = 0; i < anchors.size(); ++i) {
             const int startPos = anchors.at(i).chunkPos;
             const int endPosExclusive = (i + 1 < anchors.size()) ? anchors.at(i + 1).chunkPos : fileChunks.size();
-            const int maxSectionChars = qBound(650,
+            const int maxSectionChars = qBound(minSectionChars,
                                                remainingSections > 0 ? remainingBudget / remainingSections : remainingBudget,
-                                               3600);
+                                               maxSectionCharsCap);
             const QString excerpt = combinedSectionPreview(fileChunks,
                                                           startPos,
                                                           endPosExclusive,
@@ -2965,8 +2987,8 @@ QString RagIndexer::formatDocumentStudyPrompt(const QStringList &preferredPaths,
             sectionCoverageText = QStringLiteral("<section sweep unavailable; falling back to balanced document preview>");
         }
 
-        const int fullDocumentInlineThreshold = qMin(maxCharsPerFile, 32000);
-        const bool includeFullDocumentPreview = text.size() <= fullDocumentInlineThreshold;
+        const int fullDocumentInlineThreshold = qMin(effectiveMaxCharsPerFile, 32000);
+        const bool includeFullDocumentPreview = !hugeDocument && text.size() <= fullDocumentInlineThreshold;
         const QString fullDocumentPreview = includeFullDocumentPreview
                 ? balancedTrimForStudy(text, previewBudget)
                 : QString();
