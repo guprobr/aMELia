@@ -99,7 +99,11 @@ void OllamaClient::generate(const QString &baseUrl,
     }
     payload.insert(QStringLiteral("options"), options);
 
-    if (modelIsGptOss(model)) {
+    if (m_forceThinkOff) {
+        payload.insert(QStringLiteral("think"), false);
+        emit diagnosticMessage(QStringLiteral("backend"),
+                               QStringLiteral("Forced think=false for this request to reduce backend load and avoid reasoning-heavy stalls on large document-study prompts."));
+    } else if (modelIsGptOss(model)) {
         payload.insert(QStringLiteral("think"), QStringLiteral("low"));
         if (!m_reasoningTraceEnabled) {
             emit diagnosticMessage(QStringLiteral("backend"),
@@ -312,6 +316,11 @@ void OllamaClient::setGenerationConfig(const AppConfig &config)
 void OllamaClient::setReasoningTraceEnabled(bool enabled)
 {
     m_reasoningTraceEnabled = enabled;
+}
+
+void OllamaClient::setForceThinkOff(bool enabled)
+{
+    m_forceThinkOff = enabled;
 }
 
 void OllamaClient::stop()
@@ -846,6 +855,9 @@ void OllamaClient::abortForTimeout(const QString &message)
 
 QString OllamaClient::thinkRequestModeForModel(const QString &model) const
 {
+    if (m_forceThinkOff) {
+        return QStringLiteral("false");
+    }
     if (modelIsGptOss(model)) {
         return QStringLiteral("low");
     }

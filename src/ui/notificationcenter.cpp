@@ -3,6 +3,9 @@
 #include "core/appconfig.h"
 
 #include <QAction>
+#include <QDBusConnection>
+#include <QDBusInterface>
+#include <QDBusMessage>
 #include <QApplication>
 #include <QCoreApplication>
 #include <QFrame>
@@ -48,6 +51,25 @@ QSystemTrayIcon::MessageIcon trayIconForSeverity(int severity)
     case NotificationCenter::Info:
     default:
         return QSystemTrayIcon::Information;
+    }
+}
+
+bool shouldPersistInHistory(int severity)
+{
+    return severity >= NotificationCenter::Warning;
+}
+
+uchar urgencyForSeverity(int severity)
+{
+    switch (severity) {
+    case NotificationCenter::Error:
+        return 2;
+    case NotificationCenter::Warning:
+        return 1;
+    case NotificationCenter::Success:
+    case NotificationCenter::Info:
+    default:
+        return 0;
     }
 }
 }
@@ -166,18 +188,55 @@ void NotificationCenter::notify(const QString &title, const QString &message, in
     const QString normalizedTitle = title.trimmed().isEmpty() ? QStringLiteral("Amelia") : title.trimmed();
     const QString normalizedMessage = message.trimmed().isEmpty() ? QStringLiteral("Task update.") : message.trimmed();
 
-    if (m_trayIcon != nullptr && m_trayIcon->supportsMessages()) {
-        m_trayIcon->showMessage(normalizedTitle,
-                                normalizedMessage,
-                                trayIconForSeverity(severity),
-                                m_config.desktopNotificationTimeoutMs);
-    }
-
+    showNativeDesktopNotification(normalizedTitle, normalizedMessage, severity);
     showInAppToast(normalizedTitle, normalizedMessage, severity);
 
     if (m_alertWidget != nullptr) {
         QApplication::alert(m_alertWidget.data(), 0);
     }
+}
+
+bool NotificationCenter::showNativeDesktopNotification(const QString &title,
+                                                       const QString &message,
+                                                       int severity) const
+{
+#ifdef Q_OS_LINUX
+    if (QDBusConnection::sessionBus().isConnected()) {
+        QDBusInterface notifications(QStringLiteral("org.freedesktop.Notifications"),
+                                     QStringLiteral("/org/freedesktop/Notifications"),
+                                     QStringLiteral("org.freedesktop.Notifications"),
+                                     QDBusConnection::sessionBus());
+        if (notifications.isValid()) {
+            QVariantMap hints;
+            hints.insert(QStringLiteral("urgency"), QVariant::fromValue(urgencyForSeverity(severity)));
+            hints.insert(QStringLiteral("transient"), !shouldPersistInHistory(severity));
+            hints.insert(QStringLiteral("desktop-entry"), QStringLiteral("amelia_qt6"));
+
+            const QDBusMessage reply = notifications.call(QStringLiteral("Notify"),
+                                                          QStringLiteral("amelia_qt6"),
+                                                          static_cast<uint>(0),
+                                                          QStringLiteral("amelia_qt6"),
+                                                          title,
+                                                          message,
+                                                          QStringList(),
+                                                          hints,
+                                                          m_config.desktopNotificationTimeoutMs);
+            if (reply.type() != QDBusMessage::ErrorMessage) {
+                return true;
+            }
+        }
+    }
+#endif
+
+    if (m_trayIcon != nullptr && m_trayIcon->supportsMessages()) {
+        m_trayIcon->showMessage(title,
+                                message,
+                                trayIconForSeverity(severity),
+                                m_config.desktopNotificationTimeoutMs);
+        return true;
+    }
+
+    return false;
 }
 
 void NotificationCenter::onTrayActivated(QSystemTrayIcon::ActivationReason reason)

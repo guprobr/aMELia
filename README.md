@@ -1,253 +1,10 @@
-# aMELia Qt6 v9.06
+# aMELia Qt6 v9.14
 
 Amelia is a local-first Qt6/C++ coding and cloud assistant that talks to a local Ollama server, stores its state under `~/.amelia_qt6`, indexes a local knowledge base, and can optionally use sanitized external web search through SearXNG.
 
 This build rolls forward the existing bootstrap, indexing, transcript, Prompt Lab, notification, and progress-bar work, and adds a Knowledge Base collection model with preserved folder structure, a tree-view browser, a hard-locked Knowledge Base root and safer workspace-jail boundaries under `~/.amelia_qt6`, stronger transcript code-block handling, first-run service prompts, and a full JSON configuration editor. aMELia is also allegorically considered a MEL: Model Enhancement Lab.
 
 NOTE: prompt transcripts are first generated in markdown but after it finishes, they should be properly formatted.
-
-## What's new in v9.06
-
-### Transform-mode prompt shaping, safer conversation switching, and sticky transcript scroll
-
-- Amelia now detects **rewrite / expand / transform** requests that include a large pasted source block and automatically switches into a safer prompt layout with separate **TASK_INSTRUCTION** and **SOURCE_MATERIAL** sections
-- in this mode, the model is told to **transform** the pasted material instead of continuing it verbatim, which prevents the common failure mode where Amelia simply repeats the pasted prior answer
-- transform-mode turns also skip prompt-time **RECENT_CONVERSATION** and **SESSION_SUMMARY** reinjection, reducing contamination when the pasted source already contains assistant-like text
-- changing conversations is now blocked while a generation is active, both in the UI and in the controller safety path, so streamed chunks cannot land in the wrong conversation anymore
-- the transcript view now respects manual scrolling during generation: if the user scrolls up to inspect earlier content, incoming streamed lines no longer force the viewport back down until the user returns to the bottom
-
-## What's new in v9.05
-
-### Conversation-overlap anti-loop fix and quieter model events
-
-- prompt assembly now suppresses **RECENT_CONVERSATION** entries whose content substantially overlaps the current user request, which prevents the same answer text from being fed twice under different sections
-- session summaries that substantially overlap the current prompt are also skipped for that turn, reducing self-conditioning when the user quotes or pastes part of a previous answer
-- the overlap check is stronger than exact-match deduplication: it catches large quoted excerpts and long shared substrings, not just byte-for-byte duplicates
-- desktop notifications are now quiet for **model refresh** and **model change** events; the information still appears in the UI and diagnostics without spamming system toasts
-
-### Token-aware embedding recovery and reasoning root-cause fix
-
-- embedding calls are now guarded by both **character** and **estimated token** budgets instead of a character cap alone
-- batched `/api/embed` requests now obey a conservative batch token budget and automatically fall back to **single-item retries** when Ollama reports `input length exceeds the context length`
-- single-item retries now re-clip aggressively before falling back, which prevents one pathological chunk from poisoning a whole indexing batch
-- GPT-OSS requests now explicitly use `think=low`, because a boolean `think=false` is not a reliable way to suppress hidden thinking on that family
-- hidden reasoning no longer counts as real stream progress: only **visible answer text** can satisfy Amelia's first-token / active-stream logic now
-- if Ollama finishes after producing hidden reasoning but **no visible answer**, Amelia treats that as a reasoning-only failure and retries once instead of accepting an empty completion
-- prompt assembly now strips loop-prone markers (`<END>`, `<think>`, `<amelia_thinking>`) and deduplicates repeated prompt/history sections before they are re-fed into the model
-
-
-### Embedding overflow guard and full Ollama response diagnostics
-
-- Amelia now applies a conservative hard cap before every embedding call, so oversized chunks and giant prompts are clipped before they hit Ollama's embedding context window
-- semantic chunking profiles were tightened for indexing, which reduces the chance of `input length exceeds the context length` during `/api/embed`
-- embedding diagnostics now capture every Ollama embedding request/response internally, but the verbose request/response summaries are only shown when **Verbose diagnostics** is enabled in the UI; logical `HTTP 200` errors are still surfaced as essential diagnostics
-- chat diagnostics now capture Ollama request / header / completion summaries for troubleshooting, while the noisy request/response summaries stay hidden unless **Verbose diagnostics** is enabled
-
-### GPT-OSS hidden thinking mitigation
-
-- Amelia now treats GPT-OSS specially when building the `think` request field: it asks for `low` when trace capture is enabled and records that GPT-OSS may still think server-side when capture is off
-- when the backend emits hidden `thinking` or `<think>` content while the UI toggle is off, Amelia suppresses it from the visible answer and diagnostics trace panel but still uses it internally to detect pre-answer loops
-- the reasoning-only stall guard is now more aggressive, so repeated hidden thinking before the first visible answer is retried sooner
-
-### Memory anti-loop safeguards and Memory tab actions
-
-- auto-persisted memories are now normalized into shorter preference / fact snippets instead of replaying large raw prompt fragments verbatim
-- prompt assembly now filters out memories that look like meta-instructions, prompt scaffolding, or near-copies of the current user prompt
-- this reduces self-reinforcing prompt behavior where an older instruction-like memory keeps getting re-fed into later turns
-- the **Memory** tab now shows persisted entries in a structured table instead of one flat text dump
-- individual persisted memories can now be deleted directly from the UI with **Delete selected**
-
-### Cancel / queue handling and safer KB refresh
-
-- canceling indexing now also drops the remaining queued files from that run, so Amelia does not immediately continue re-indexing assets the user explicitly canceled
-- the Knowledge Base tree now switches into a locked refresh view while inventory is being rebuilt, with an animated status line instead of leaving stale rows visible
-- Knowledge Base tree controls are disabled while the refreshed inventory is pending, which reduces stale drag/drop and stale-selection mistakes during reindex-triggering operations
-- operations that require a Knowledge Base rebuild now ask for confirmation up front and explicitly explain that Amelia will refresh and reindex afterwards
-- collection right-click menus now include **Add file to collection** and **Add folder to collection** shortcuts
-
-### Large-asset ingestion, parsing, and chunk coverage
-
-- large assets now use a more adaptive chunking profile instead of one fixed chunk shape for everything
-- chunk sizing now scales by source type and asset size, which improves large-document coverage while reducing wasted overlap on huge files
-- duplicate chunk bodies from repeated boilerplate are now filtered before embedding so oversized manuals and exported docs waste less embedding time
-- PDF ingestion now strips repeated page headers / footers more aggressively and can fall back to a raw `pdftotext` pass when the layout pass yields thin coverage
-- imported assets now track extra ingestion metadata including text chars, line count, word count, and the chunking profile used
-- asset properties can now show a bounded chunk-dump preview so large assets are easier to inspect without flooding the UI
-
-### Knowledge Base tree actions and safer move behavior
-
-- Knowledge Base collections now support **Create / Delete / Rename / Properties** from the right-click menu
-- individual Knowledge Base assets now support **Rename / Delete / Properties** from the right-click menu
-- collection and asset property dialogs now expose more relevant stored metadata, and asset properties can include a chunk preview dump
-- tree drag/drop now behaves more safely when moving assets, and failed moves force an immediate inventory refresh instead of leaving items visually missing until another manual refresh
-- manifest persistence for move operations is now rollback-aware, so a failed save is less likely to leave the KB in an inconsistent state
-
-### Finalize-only transcript sanitize funnel
-
-- completed assistant answers now pass through a single finalize-only transcript sanitize funnel before they are persisted and rendered
-- the funnel is intentionally **not** applied during streaming, which avoids breaking partially emitted Markdown or half-open code fences mid-generation
-- obvious escaped code patterns such as `cpp\n#include ...` are repaired into proper fenced code blocks once the full answer is available
-- escaped layout markers are decoded outside quoted strings only, so code like `"Hello\n"` keeps its string escape while the surrounding broken line structure is repaired
-- sanitized completed answers now flow consistently into transcript rendering, conversation persistence, and code-copy extraction
-- Amelia's rendered **Copy code** controls are preserved because the funnel operates on final model text, not on the transcript HTML widgets
-
-### Transcript table/code-block safety and model defaults
-
-- transcript rendering now treats fenced code blocks more defensively when the opening fence appears mid-line, which prevents Markdown tables with multiline code snippets from corrupting the rest of the transcript
-- default generation model is now **`gpt-oss:20b`**
-- default embedding model is now **`embeddinggemma:latest`**
-- README startup examples now recommend pulling `gpt-oss:20b` for generation and `embeddinggemma:latest` for embeddings
-
-### Indexing visibility and KB footprint
-
-- reindex progress now advances during long embedding runs instead of appearing frozen on large PDFs or remote Ollama setups
-- embedding progress labels now include the current file and completed chunk count, for example `Embedding 1 / 3: manual.pdf — 48/221 chunks`
-- neural-indexing chunking now uses a more compact profile with reduced overlap, which lowers duplicated embedding work and improves retrieval focus
-- the default Ollama embedding batch size is now smaller, so progress updates arrive more often and long CPU-only embedding requests feel less stuck
-- indexing now exposes a dedicated **Cancel index** button during reindexing runs
-- canceling indexing now keeps already-committed files, discards the file that was in flight, and writes the partial-safe cache back to disk
-- closing Amelia during indexing now triggers the same cancellation path so the app can shut down more cleanly
-- Knowledge Base assets can now be **dragged and dropped between collections** directly from the existing tree view
-- the Knowledge Base tab now includes a dedicated **footprint / stats panel** showing:
-  - number of collections
-  - total files
-  - total chunks
-  - total stored size under Amelia
-  - per-collection file / chunk / size totals
-
-### Real embeddings and safer retrieval fusion
-
-- Amelia now tries to use a real **Ollama embedding model** for semantic retrieval, instead of relying only on the previous local hash-vector approximation
-- the embedding client now supports both Ollama embedding API variants: it tries modern `POST /api/embed` first and automatically retries legacy `POST /api/embeddings` when the server answers 404
-- if the configured embedding model is unavailable, Amelia automatically falls back to the previous local hash embedder so the KB remains usable
-- backend diagnostics now preserve the last embedding error summary, so it is easier to tell whether neural embeddings are active or the local fallback is being used
-- RAG cache metadata now tracks the embedding backend and chunking strategy, so stale caches are discarded when retrieval internals change
-- retrieval weighting is now more conservative: lexical evidence stays primary unless a true neural embedding vector is actually available
-- new config keys:
-  - `ollamaEmbeddingModel`
-  - `ollamaEmbeddingTimeoutMs`
-  - `ollamaEmbeddingBatchSize`
-
-### Higher-quality chunking
-
-- chunking is now **structure-aware** instead of mostly raw size-based, and the invalid bullet-list regex from the previous build has been fixed
-- Markdown headings, PDF page markers, fenced code blocks, bullets, and command/config-like regions are kept together more often
-- oversized sections are split on paragraph, line, or whitespace boundaries before a hard cut is used
-- overlap is carried by semantic blocks instead of character offsets, reducing mid-paragraph and mid-code splits
-
-### Knowledge Base collections and safer structure handling
-
-- display version bumped to `9.05`
-- imported files and folders are now stored as **collections** with:
-  - an immutable collection hash / ID
-  - a user-visible **label** that can be renamed later
-  - duplicate-label protection
-- imported folder structure is preserved under the collection, so files with the same leaf name remain distinguishable
-- standalone-file imports are grouped deterministically instead of being flattened into one ambiguous directory
-- Knowledge Base metadata is now persisted through a manifest file, so collection identity, grouping, and labels survive reindexing
-- Knowledge Base removal and clear operations now work against the manifest-aware model instead of a flat loose-file model
-
-### Knowledge Base UI improvements
-
-- the **Knowledge Base** tab now uses a **tree view** with expanders for:
-  - collection label
-  - folder / subgroup
-  - file
-- the tree can be sorted by **name** or **file type**
-- selected collections can be **renamed** from the UI while keeping the immutable internal collection ID unchanged
-- UI display names now prefer collection labels and relative paths instead of ambiguous bare file names
-
-### Safer local workspace handling
-
-- Amelia now exposes and prepares a dedicated workspace jail rooted under `~/.amelia_qt6/workspace`
-- runtime scratch space is separated into `~/.amelia_qt6/workspace/runtime`
-- backend / diagnostics views now show the workspace jail paths explicitly
-- the Knowledge Base root is now hard-locked under Amelia's active data root (`<dataRoot>/knowledge`) instead of allowing it to point elsewhere
-- configured `knowledgeRoot` values are normalized back to Amelia's own data root so KB operations stay jailed
-- Knowledge Base operations continue to work on copies stored under Amelia's own data root, reducing the chance of acting blindly on the user's original filesystem
-
-### Transcript and code-block fixes
-
-- transcript **Copy code** links now use stable per-block indices again
-- the copy-code parser no longer falls back to the wrong block once the transcript grows
-- transcript code blocks now render with stricter `white-space: pre` handling, preserving indentation more faithfully in the final transcript output
-- fenced-code rendering keeps exact code text in the clipboard flow instead of repeatedly copying the first block
-
-### Tray menu improvement
-
-- right-clicking the system tray icon now opens a useful context menu with:
-  - **Show Amelia**
-  - **Hide Amelia**
-  - **Exit**
-
-### Existing improvements still present
-
-
-This release keeps the improvements from the earlier 6.9x line, including:
-
-- native desktop notifications for startup, prompt lifecycle, indexing, memory, and related events, while model refresh/change updates stay in-app without desktop toasts
-- restoring a saved conversation updates the UI quietly without a desktop toast
-- status-area progress feedback from prompt preparation through answer completion
-- bootstrap dialog visibility at startup
-- incremental / asynchronous knowledge-base indexing
-- transcript formatting and copy helpers
-- reasoning-only stall guard that retries once without backend thinking when a model loops before the first visible answer
-- Prompt Lab asset-aware recipe composition
-- semantic retrieval, external search integration, and outline-first planning
-
-## All aMELia Qt6 features
-
-- **Local-first desktop app** built with C++ and Qt6
-- **Local Ollama integration** for model generation, model refresh, backend probing, and model selection
-- **Persistent local state** under `~/.amelia_qt6` for config, conversations, memories, summaries, KB cache, collection manifests, and workspace jail data
-- **Session management** with create, restore, list, and delete conversation workflows
-- **Rich transcript view** with colored role cards, Markdown rendering, fenced-code rendering, clickable code-copy links, and clipboard copy of the last answer
-- **Transcript sanitization** that neutralizes raw HTML-like tags before Markdown rendering to avoid broken layouts
-- **Exact code-block transcript handling** with stable copy links and stronger indentation preservation
-- **Manual Memory** capture plus persisted memory storage / clearing
-- **Prompt-safe memory reuse** for stored memories that you save manually, so reused memory text is trimmed and filtered before it is re-injected into later prompts
-- **Per-memory deletion UI** from the structured **Memory** tab
-- **Memory details panel** with description, confidence, pin state, and timestamps for the selected memory
-- **Auto-memory disabled** by default in this build to avoid prompt-loop feedback; use **Manual Memory** when you want to persist something intentionally
-- **Knowledge Base ingestion** from files and folders with preserved collection structure
-- **Knowledge Base collections** with immutable IDs, user-facing unique labels, rename support, manifest-backed grouping, and a KB root locked under Amelia's data root
-- **Knowledge Base inspection** with source summary, searchable tree view, collection/folder expanders, sorting by name or file type, remove-selected, and clear-KB actions
-- **Knowledge Base prioritization** with **Use once** and **Pin** actions plus an active-priority panel near the prompt box
-- **Incremental indexing** so changed assets can be refreshed without rebuilding the entire cache
-- **Partial-safe cancellation** so user-canceled reindexes keep finished work and discard only the in-flight file
-- **Tree-view asset moves** so Knowledge Base files can be dragged to another collection or folder without re-importing them
-- **Asynchronous PDF ingestion** and non-blocking KB analysis
-- **Semantic retrieval** with a real Ollama embedding path plus automatic local fallback
-- **Structure-aware chunking** that preserves headings, code fences, page markers, and list regions more faithfully
-- **Grounded local-source panel** showing local evidence used for answers
-- **Sanitized external search** through SearXNG, with an explicit per-prompt allow checkbox
-- **External-source panel** showing sanitized external evidence
-- **Privacy preview panel** showing what context is being shared with the backend
-- **Outline planning** and outline-first document / procedure generation support
-- **Prompt Lab** with presets, local asset helpers, KB-asset references, notes / constraints, recipe composition, clipboard copy, and input injection
-- **Backend summary panel** for runtime/backend/config visibility
-- **Diagnostics panel** for operational logs and optional reasoning-trace capture
-- **Reasoning trace toggle** for backend thinking streams when exposed by the selected model/backend
-- **Desktop notifications** for meaningful task lifecycle events, excluding model refresh/change toasts
-- **System tray controls** with Show / Hide / Exit actions
-- **Busy indicator and response progress bar** for long-running operations and streamed answer progress
-- **Bootstrap dialog** shown immediately at startup while initialization completes
-- **Tooltips across the UI** for buttons, tabs, lists, and major controls
-- **Config-driven behavior** with user-overridable defaults in `~/.amelia_qt6/config.json`
-- **Optional external grounding controls** including domain allowlist and timeout configuration
-- **Operational diagnostics** for backend, search, RAG, startup, planner, memory, and related categories
-
-## Versioning
-
-- Version is now `9.05`.
-- The display version comes from one place only:
-  - `src/core/appversion.h`
-
-## Cache / index regeneration notes
-
-- These code changes do **not** require a manual forced cache wipe, but Amelia will automatically invalidate older KB caches when the chunking strategy changes.
-- Moving or renaming assets inside the Knowledge Base **does** change their stored path / collection metadata, so Amelia refreshes the KB index after those operations.
-- Cancel-index support remains backward-compatible with the partial-safe cache write path.
 
 ## Ubuntu packages
 
@@ -463,6 +220,57 @@ Main things to check:
 - whether your local disk is slow
 - whether Ollama is CPU-only instead of GPU-backed
 
+## All aMELia Qt6 features
+
+- **Local-first desktop app** built with C++ and Qt6
+- **Local Ollama integration** for model generation, model refresh, backend probing, and model selection
+- **Persistent local state** under `~/.amelia_qt6` for config, conversations, memories, summaries, KB cache, collection manifests, and workspace jail data
+- **Session management** with create, restore, list, and delete conversation workflows
+- **Rich transcript view** with colored role cards, Markdown rendering, fenced-code rendering, clickable code-copy links, and clipboard copy of the last answer
+- **Transcript sanitization** that neutralizes raw HTML-like tags before Markdown rendering to avoid broken layouts
+- **Exact code-block transcript handling** with stable copy links and stronger indentation preservation
+- **Manual Memory** capture plus persisted memory storage / clearing
+- **Prompt-safe memory reuse** for stored memories that you save manually, so reused memory text is trimmed and filtered before it is re-injected into later prompts
+- **Per-memory deletion UI** from the structured **Memory** tab
+- **Memory details panel** with description, confidence, pin state, and timestamps for the selected memory
+- **Auto-memory disabled** by default in this build to avoid prompt-loop feedback; use **Manual Memory** when you want to persist something intentionally
+- **Knowledge Base ingestion** from files and folders with preserved collection structure
+- **Knowledge Base collections** with immutable IDs, user-facing unique labels, rename support, manifest-backed grouping, and a KB root locked under Amelia's data root
+- **Knowledge Base inspection** with source summary, searchable tree view, collection/folder expanders, sorting by name or file type, remove-selected, and clear-KB actions
+- **Knowledge Base prioritization** with **Use once** and **Pin** actions plus an active-priority panel near the prompt box
+- **Incremental indexing** so changed assets can be refreshed without rebuilding the entire cache
+- **Content-hash reuse** so touched-but-unchanged assets can skip reparsing and re-embedding
+- **Shared chunk embedding reuse** so duplicate chunk text across assets can borrow cached embeddings instead of calling Ollama again
+- **Partial-safe cancellation** so user-canceled reindexes keep finished work and discard only the in-flight file
+- **Tree-view asset moves** so Knowledge Base files can be dragged to another collection or folder without re-importing them
+- **Asynchronous PDF ingestion** and non-blocking KB analysis
+- **Semantic retrieval** with a real Ollama embedding path plus automatic local fallback
+- **Structure-aware chunking** that preserves headings, code fences, page markers, and list regions more faithfully
+- **Grounded local-source panel** showing local evidence used for answers
+- **Sanitized external search** through SearXNG, with an explicit per-prompt allow checkbox
+- **External-source panel** showing sanitized external evidence
+- **Privacy preview panel** showing what context is being shared with the backend
+- **Outline planning** and outline-first document / procedure generation support
+- **Prompt Lab** with presets, local asset helpers, KB-asset references, notes / constraints, recipe composition, clipboard copy, and input injection
+- **Backend summary panel** for runtime/backend/config visibility
+- **Diagnostics panel** for operational logs and optional reasoning-trace capture
+- **Reasoning trace toggle** for backend thinking streams when exposed by the selected model/backend
+- **Desktop notifications** for meaningful task lifecycle events, excluding model refresh/change toasts
+- **System tray controls** with Show / Hide / Exit actions
+- **Busy indicator and response progress bar** for long-running operations and streamed answer progress
+- **Bootstrap dialog** shown immediately at startup while initialization completes
+- **Tooltips across the UI** for buttons, tabs, lists, and major controls
+- **Config-driven behavior** with user-overridable defaults in `~/.amelia_qt6/config.json`
+- **Optional external grounding controls** including domain allowlist and timeout configuration
+- **Operational diagnostics** for backend, search, RAG, startup, planner, memory, and related categories
+
+## Cache / index regeneration notes
+
+- Most code changes do **not** require a manual forced cache wipe, but Amelia will automatically invalidate older KB caches when the chunking strategy changes.
+- This build upgrades the KB cache format to **`amelia-rag-cache-v3`** and stores per-file content hashes plus per-chunk fingerprints for faster reuse on later reindexes.
+- Moving or renaming assets inside the Knowledge Base **does** change their stored path / collection metadata, so Amelia refreshes the KB index after those operations.
+- Cancel-index support remains backward-compatible with the partial-safe cache write path.
+
 ## Recent UI additions
 
 - The **Memory** tab now shows persisted entries in a structured table and supports **Delete selected** for one-at-a-time cleanup.
@@ -474,23 +282,284 @@ Main things to check:
 - The external-search checkbox now defaults to off on fresh installs/configs.
 - The transcript renderer now sanitizes raw HTML-like fragments before Markdown rendering.
 
+---
 
-## Recent changes
+- For large document-study prompts, Amelia now omits **FULL_DOCUMENT_TEXT** entirely and relies on the **DOCUMENT_OUTLINE_MAP** plus **SECTION_COVERAGE_PACKET**, which prevents huge PDFs from crowding out late sections and overloading Ollama.
+- Document-study payloads are now slimmer overall: fewer coverage hits, a much smaller retrieved-hit sidecar, and a lower local-context budget tuned for stability instead of giant front-loaded packets.
+- Heavy document-study requests now force **think=false** for the active Ollama call, reducing backend load and avoiding runner crashes on large HLD/manual summaries.
 
-- 7.903 embedding overflow guard: Amelia now clips oversized embedding inputs before `/api/embed`, tightens semantic chunk sizes, and captures every embedding request/response so silent HTTP-200 logical failures are visible when needed.
-- 7.903 diagnostics refinement: verbose Ollama request/response summaries now stay hidden unless **Verbose diagnostics** is enabled in the UI, while essential errors remain visible by default.
-- 7.903 auto-memory safety: automatic memory capture is disabled in this build to avoid prompt-loop feedback; manual memory remains available.
-- 7.903 GPT-OSS hidden-thinking mitigation: hidden backend thinking is suppressed from the UI when trace capture is off, but Amelia still watches it internally to catch pre-answer loops earlier.
-- 7.903 reasoning loop guard refinement: the hidden-thinking guard now prefers repetition / low-diversity detection over a blunt timeout, raises the pure stall threshold for complex prompts, and records the dominant repeated hidden note when a retry is triggered.
-- 7.903 restore-notification cleanup: restoring a saved conversation no longer raises a desktop notification.
-- 7.903 memory inspection panel: the Memory tab now includes a details box with a human-readable description plus confidence / pin / timestamp metadata for the selected memory.
-- 7.902 memory anti-loop guard: auto-persisted memories are normalized and prompt-safe filtered before they are re-used in later prompts, reducing self-reinforcing prompt behavior.
-- 7.902 Memory tab actions: persisted memories are shown in a structured table and can be deleted individually from the UI.
-- 7.9 cancel / queue clearing: canceling indexing now drops the remaining queued files from that run instead of continuing to re-index assets the user explicitly canceled.
-- 7.9 safer KB refresh UX: the Knowledge Base tree now switches to a locked refresh view with an animated status line while stale inventory is being rebuilt.
-- 7.901 finalize-only transcript sanitize funnel: completed assistant answers are repaired once at the end of generation, which fixes broken escaped code blocks like `cpp\n...` without risking mid-stream formatting corruption or breaking Amelia's **Copy code** controls.
-- 7.9 collection shortcuts: collection context menus now include **Add file to collection** and **Add folder to collection**, and reindex-triggering actions warn the user before they proceed.
-- 7.8 large-asset ingestion: adaptive chunking, repeated-boilerplate reduction, duplicate-chunk filtering, richer ingestion metadata, and bounded chunk previews make large KB assets cheaper to inspect and better covered during indexing.
-- 7.8 Knowledge Base context menus: collections now support create/delete/rename/properties and assets now support rename/delete/properties directly from the tree.
-- 7.8 safer KB moves: failed drag/drop moves now refresh the inventory immediately, and manifest-save failures are rolled back more defensively.
-- 7.1e1 transcript rendering hotfix: unsafe markdown tables containing fenced code or HTML line breaks are automatically rewritten into stacked sections before rendering, preventing the rest of the transcript from breaking.
+- Document-study prompts now build a **SECTION_COVERAGE_PACKET** instead of spending most of the budget on a single front-trimmed full-document blob.
+- Major top-level sections are mapped to chunk anchors and the prompt budget is distributed across those sections, so late chapters survive much more reliably.
+- For document-study requests, the ordinary retrieved-hit appendix is now trimmed much harder so it does not crowd out the section sweep.
+- Prompt diagnostics now also report `section_packets` so you can verify the new path in one run.
+
+## What's new in v9.12.1
+
+### Prompt-path diagnostics for Ollama requests
+
+- Amelia now logs **hard prompt diagnostics** so you can verify whether the whole-document study path actually survived into the final Ollama request
+- added local-context marker logs showing counts and hashes for document-study packets, outline maps, optional full-document previews, regular `--- Source:` blocks, and budget-trim markers
+- added final payload diagnostics with the **message layout**, **total payload chars**, and a **stable SHA-1 fingerprint** of the message packet sent to Ollama
+- this makes it easy to distinguish between:
+  - the document-sweep path not activating
+  - the local context being trimmed before send
+  - Amelia sending the exact same prompt packet twice
+
+## What's new in v9.12
+
+### Whole-document study packets for summaries and HLD/PDF analysis
+
+- Amelia now has a dedicated **whole-document study path** for prompts such as **summary**, **summarize**, **contents**, **HLD**, **manual**, and **PDF overview**
+- instead of relying only on top-ranked chunks, Amelia now builds a **DOCUMENT_STUDY_PACKET** for the strongest matching file and injects:
+  - a compact **DOCUMENT_OUTLINE_MAP** extracted from the full document text
+  - the **FULL_DOCUMENT_TEXT** itself, trimmed in a head+tail-safe way when the asset is too large to fit wholesale
+- if direct file extraction is unavailable, Amelia falls back to reconstructing the document text from its stored chunks in file order
+- this greatly improves coverage for long HLDs where late sections were previously missed because semantic retrieval sampled only part of the file
+- document-study prompts now have a much larger local-context budget so the whole-document packet can survive prompt trimming
+
+### Why this matters
+
+- whole-document embeddings alone are too coarse to summarize a large manual faithfully
+- the missing-section bug came from using a **search-style retrieval path** for a **document-analysis task**
+- this build shifts Amelia closer to a real **document sweep**: it still keeps chunk retrieval for precision, but summary-style prompts now also get the full-document skeleton and text for coverage
+
+## What's new in v9.11.1
+
+- hotfix for a malformed newline character literal in `src/rag/ragindexer.cpp` that could break compilation in `headingLikeLineCount()`
+
+## What's new in v9.11
+
+### Stronger section coverage for long-document summaries
+
+- document-study retrieval now gives **coverage chunks priority** over ordinary semantic hits, so the final prompt keeps more of the document skeleton instead of letting a few loud topics dominate
+- representative coverage per prioritized file was increased again, with stronger bias toward **multi-page contents / heading-heavy early chunks** plus **tail chunks** from the end of the document
+- structure detection now also recognizes **split numbered headings** such as a section number on one line and the title on the next, which is common in PDF text extraction and helps Amelia notice sections, and late deployment chapters
+- document-study prompts now get an even larger local-context budget so late sections are less likely to be trimmed out before generation
+
+### Why this matters
+
+- the previous build was much better at broad summaries, but long HLDs could still skip mid/late sections when semantic hits outranked document-outline evidence
+- this build pushes Amelia closer to a **whole-document study pass** without sacrificing chunk-level retrieval precision
+
+## What's new in v9.10
+
+### Broader document-study retrieval for long manuals and HLDs
+
+- Amelia now treats **summary / overview / contents / HLD / guide** prompts more like **document study** requests instead of ordinary point-lookups
+- when a document-study prompt targets prioritized assets, Amelia now expands the retrieved context with **representative coverage chunks** from the same file instead of relying only on a few top-ranked semantic hits
+- these coverage hits favor **table-of-contents / heading-heavy / structure** chunks and then sample the file across its full span, which greatly reduces the classic long-document failure mode where Amelia only sees a few semantically loud sections
+- per-file retrieval caps for document-generation / architecture queries were raised, so one large asset is less likely to be underrepresented
+- document-study prompts now get a **larger local-context budget**, allowing more of the retrieved file structure to survive prompt trimming
+
+### Why this matters
+
+- long HLDs and manuals often fail not because indexing is missing chunks, but because the final prompt only contains a narrow slice of the document
+- this build keeps the faster indexing/cache work from v9.09, but improves the **retrieval assembly** layer so Amelia can form broader summaries from large assets without drifting toward a few isolated topics
+
+## What's new in v9.09
+
+### Faster large-asset indexing and stronger cache reuse
+
+- Amelia now stores a **content hash per indexed asset**, so a file can be reused even when its timestamp changed but the actual bytes did not
+- this is especially helpful for large PDFs and exported manuals that are recopied, touched, or moved around without real content changes
+- chunk embeddings are now also reused through a **shared chunk-fingerprint cache**, so identical chunk text found in other assets or older cache state does not need to be re-embedded
+- repeated boilerplate across different documents now benefits from cached embeddings instead of paying the Ollama embedding cost again
+- the KB cache format was bumped to **`amelia-rag-cache-v3`** and the chunking strategy key to **`semantic-blocks-v5-speed-cache`**, so Amelia will automatically rebuild older caches once and then keep the new reuse metadata
+- reindex completion messages now report **hash-reused files** and **shared embedding cache hits**, making speed wins easier to verify on real libraries
+
+### Practical impact
+
+- fastest path remains the existing **mtime/size** reuse when nothing changed
+- second-fastest path is now **content-hash reuse** when metadata changed but file bytes did not
+- rebuilds that still need chunking can now skip many embedding calls when chunk text already exists elsewhere in the KB cache
+- this improves large-document indexing speed without switching to coarse whole-document-only embeddings, so retrieval precision is preserved
+
+## What's new in v9.06
+
+### Transform-mode prompt shaping, safer conversation switching, and sticky transcript scroll
+
+- Amelia now detects **rewrite / expand / transform** requests that include a large pasted source block and automatically switches into a safer prompt layout with separate **TASK_INSTRUCTION** and **SOURCE_MATERIAL** sections
+- in this mode, the model is told to **transform** the pasted material instead of continuing it verbatim, which prevents the common failure mode where Amelia simply repeats the pasted prior answer
+- transform-mode turns also skip prompt-time **RECENT_CONVERSATION** and **SESSION_SUMMARY** reinjection, reducing contamination when the pasted source already contains assistant-like text
+- changing conversations is now blocked while a generation is active, both in the UI and in the controller safety path, so streamed chunks cannot land in the wrong conversation anymore
+- the transcript view now respects manual scrolling during generation: if the user scrolls up to inspect earlier content, incoming streamed lines no longer force the viewport back down until the user returns to the bottom
+
+## What's new in v9.05
+
+### Conversation-overlap anti-loop fix and quieter model events
+
+- prompt assembly now suppresses **RECENT_CONVERSATION** entries whose content substantially overlaps the current user request, which prevents the same answer text from being fed twice under different sections
+- session summaries that substantially overlap the current prompt are also skipped for that turn, reducing self-conditioning when the user quotes or pastes part of a previous answer
+- the overlap check is stronger than exact-match deduplication: it catches large quoted excerpts and long shared substrings, not just byte-for-byte duplicates
+- desktop notifications are now quiet for **model refresh** and **model change** events; the information still appears in the UI and diagnostics without spamming system toasts
+- informative tray notifications now request **transient** delivery on Linux desktop notification services, so routine start/success notices avoid notification-history clutter while warnings/errors can remain in history
+
+### Token-aware embedding recovery and reasoning root-cause fix
+
+- embedding calls are now guarded by both **character** and **estimated token** budgets instead of a character cap alone
+- batched `/api/embed` requests now obey a conservative batch token budget and automatically fall back to **single-item retries** when Ollama reports `input length exceeds the context length`
+- single-item retries now re-clip aggressively before falling back, which prevents one pathological chunk from poisoning a whole indexing batch
+- GPT-OSS requests now explicitly use `think=low`, because a boolean `think=false` is not a reliable way to suppress hidden thinking on that family
+- hidden reasoning no longer counts as real stream progress: only **visible answer text** can satisfy Amelia's first-token / active-stream logic now
+- if Ollama finishes after producing hidden reasoning but **no visible answer**, Amelia treats that as a reasoning-only failure and retries once instead of accepting an empty completion
+- prompt assembly now strips loop-prone markers (`<END>`, `<think>`, `<amelia_thinking>`) and deduplicates repeated prompt/history sections before they are re-fed into the model
+
+
+### Embedding overflow guard and full Ollama response diagnostics
+
+- Amelia now applies a conservative hard cap before every embedding call, so oversized chunks and giant prompts are clipped before they hit Ollama's embedding context window
+- semantic chunking profiles were tightened for indexing, which reduces the chance of `input length exceeds the context length` during `/api/embed`
+- embedding diagnostics now capture every Ollama embedding request/response internally, but the verbose request/response summaries are only shown when **Verbose diagnostics** is enabled in the UI; logical `HTTP 200` errors are still surfaced as essential diagnostics
+- chat diagnostics now capture Ollama request / header / completion summaries for troubleshooting, while the noisy request/response summaries stay hidden unless **Verbose diagnostics** is enabled
+
+### GPT-OSS hidden thinking mitigation
+
+- Amelia now treats GPT-OSS specially when building the `think` request field: it asks for `low` when trace capture is enabled and records that GPT-OSS may still think server-side when capture is off
+- when the backend emits hidden `thinking` or `<think>` content while the UI toggle is off, Amelia suppresses it from the visible answer and diagnostics trace panel but still uses it internally to detect pre-answer loops
+- the reasoning-only stall guard is now more aggressive, so repeated hidden thinking before the first visible answer is retried sooner
+
+### Memory anti-loop safeguards and Memory tab actions
+
+- auto-persisted memories are now normalized into shorter preference / fact snippets instead of replaying large raw prompt fragments verbatim
+- prompt assembly now filters out memories that look like meta-instructions, prompt scaffolding, or near-copies of the current user prompt
+- this reduces self-reinforcing prompt behavior where an older instruction-like memory keeps getting re-fed into later turns
+- the **Memory** tab now shows persisted entries in a structured table instead of one flat text dump
+- individual persisted memories can now be deleted directly from the UI with **Delete selected**
+
+### Cancel / queue handling and safer KB refresh
+
+- canceling indexing now also drops the remaining queued files from that run, so Amelia does not immediately continue re-indexing assets the user explicitly canceled
+- the Knowledge Base tree now switches into a locked refresh view while inventory is being rebuilt, with an animated status line instead of leaving stale rows visible
+- Knowledge Base tree controls are disabled while the refreshed inventory is pending, which reduces stale drag/drop and stale-selection mistakes during reindex-triggering operations
+- operations that require a Knowledge Base rebuild now ask for confirmation up front and explicitly explain that Amelia will refresh and reindex afterwards
+- collection right-click menus now include **Add file to collection** and **Add folder to collection** shortcuts
+
+### Large-asset ingestion, parsing, and chunk coverage
+
+- large assets now use a more adaptive chunking profile instead of one fixed chunk shape for everything
+- chunk sizing now scales by source type and asset size, which improves large-document coverage while reducing wasted overlap on huge files
+- duplicate chunk bodies from repeated boilerplate are now filtered before embedding so oversized manuals and exported docs waste less embedding time
+- PDF ingestion now strips repeated page headers / footers more aggressively and can fall back to a raw `pdftotext` pass when the layout pass yields thin coverage
+- imported assets now track extra ingestion metadata including text chars, line count, word count, and the chunking profile used
+- asset properties can now show a bounded chunk-dump preview so large assets are easier to inspect without flooding the UI
+
+### Knowledge Base tree actions and safer move behavior
+
+- Knowledge Base collections now support **Create / Delete / Rename / Properties** from the right-click menu
+- individual Knowledge Base assets now support **Rename / Delete / Properties** from the right-click menu
+- collection and asset property dialogs now expose more relevant stored metadata, and asset properties can include a chunk preview dump
+- tree drag/drop now behaves more safely when moving assets, and failed moves force an immediate inventory refresh instead of leaving items visually missing until another manual refresh
+- manifest persistence for move operations is now rollback-aware, so a failed save is less likely to leave the KB in an inconsistent state
+
+### Finalize-only transcript sanitize funnel
+
+- completed assistant answers now pass through a single finalize-only transcript sanitize funnel before they are persisted and rendered
+- the funnel is intentionally **not** applied during streaming, which avoids breaking partially emitted Markdown or half-open code fences mid-generation
+- obvious escaped code patterns such as `cpp\n#include ...` are repaired into proper fenced code blocks once the full answer is available
+- escaped layout markers are decoded outside quoted strings only, so code like `"Hello\n"` keeps its string escape while the surrounding broken line structure is repaired
+- sanitized completed answers now flow consistently into transcript rendering, conversation persistence, and code-copy extraction
+- Amelia's rendered **Copy code** controls are preserved because the funnel operates on final model text, not on the transcript HTML widgets
+
+### Transcript table/code-block safety and model defaults
+
+- transcript rendering now treats fenced code blocks more defensively when the opening fence appears mid-line, which prevents Markdown tables with multiline code snippets from corrupting the rest of the transcript
+- default generation model is now **`gpt-oss:20b`**
+- default embedding model is now **`embeddinggemma:latest`**
+- README startup examples now recommend pulling `gpt-oss:20b` for generation and `embeddinggemma:latest` for embeddings
+
+### Indexing visibility and KB footprint
+
+- reindex progress now advances during long embedding runs instead of appearing frozen on large PDFs or remote Ollama setups
+- embedding progress labels now include the current file and completed chunk count, for example `Embedding 1 / 3: manual.pdf — 48/221 chunks`
+- neural-indexing chunking now uses a more compact profile with reduced overlap, which lowers duplicated embedding work and improves retrieval focus
+- the default Ollama embedding batch size is now smaller, so progress updates arrive more often and long CPU-only embedding requests feel less stuck
+- indexing now exposes a dedicated **Cancel index** button during reindexing runs
+- canceling indexing now keeps already-committed files, discards the file that was in flight, and writes the partial-safe cache back to disk
+- closing Amelia during indexing now triggers the same cancellation path so the app can shut down more cleanly
+- Knowledge Base assets can now be **dragged and dropped between collections** directly from the existing tree view
+- the Knowledge Base tab now includes a dedicated **footprint / stats panel** showing:
+  - number of collections
+  - total files
+  - total chunks
+  - total stored size under Amelia
+  - per-collection file / chunk / size totals
+
+### Real embeddings and safer retrieval fusion
+
+- Amelia now tries to use a real **Ollama embedding model** for semantic retrieval, instead of relying only on the previous local hash-vector approximation
+- the embedding client now supports both Ollama embedding API variants: it tries modern `POST /api/embed` first and automatically retries legacy `POST /api/embeddings` when the server answers 404
+- if the configured embedding model is unavailable, Amelia automatically falls back to the previous local hash embedder so the KB remains usable
+- backend diagnostics now preserve the last embedding error summary, so it is easier to tell whether neural embeddings are active or the local fallback is being used
+- RAG cache metadata now tracks the embedding backend and chunking strategy, so stale caches are discarded when retrieval internals change
+- retrieval weighting is now more conservative: lexical evidence stays primary unless a true neural embedding vector is actually available
+- new config keys:
+  - `ollamaEmbeddingModel`
+  - `ollamaEmbeddingTimeoutMs`
+  - `ollamaEmbeddingBatchSize`
+
+### Higher-quality chunking
+
+- chunking is now **structure-aware** instead of mostly raw size-based, and the invalid bullet-list regex from the previous build has been fixed
+- Markdown headings, PDF page markers, fenced code blocks, bullets, and command/config-like regions are kept together more often
+- oversized sections are split on paragraph, line, or whitespace boundaries before a hard cut is used
+- overlap is carried by semantic blocks instead of character offsets, reducing mid-paragraph and mid-code splits
+
+### Knowledge Base collections and safer structure handling
+
+- display version bumped to `9.05`
+- imported files and folders are now stored as **collections** with:
+  - an immutable collection hash / ID
+  - a user-visible **label** that can be renamed later
+  - duplicate-label protection
+- imported folder structure is preserved under the collection, so files with the same leaf name remain distinguishable
+- standalone-file imports are grouped deterministically instead of being flattened into one ambiguous directory
+- Knowledge Base metadata is now persisted through a manifest file, so collection identity, grouping, and labels survive reindexing
+- Knowledge Base removal and clear operations now work against the manifest-aware model instead of a flat loose-file model
+
+### Knowledge Base UI improvements
+
+- the **Knowledge Base** tab now uses a **tree view** with expanders for:
+  - collection label
+  - folder / subgroup
+  - file
+- the tree can be sorted by **name** or **file type**
+- selected collections can be **renamed** from the UI while keeping the immutable internal collection ID unchanged
+- UI display names now prefer collection labels and relative paths instead of ambiguous bare file names
+
+### Safer local workspace handling
+
+- Amelia now exposes and prepares a dedicated workspace jail rooted under `~/.amelia_qt6/workspace`
+- runtime scratch space is separated into `~/.amelia_qt6/workspace/runtime`
+- backend / diagnostics views now show the workspace jail paths explicitly
+- the Knowledge Base root is now hard-locked under Amelia's active data root (`<dataRoot>/knowledge`) instead of allowing it to point elsewhere
+- configured `knowledgeRoot` values are normalized back to Amelia's own data root so KB operations stay jailed
+- Knowledge Base operations continue to work on copies stored under Amelia's own data root, reducing the chance of acting blindly on the user's original filesystem
+
+### Transcript and code-block fixes
+
+- transcript **Copy code** links now use stable per-block indices again
+- the copy-code parser no longer falls back to the wrong block once the transcript grows
+- transcript code blocks now render with stricter `white-space: pre` handling, preserving indentation more faithfully in the final transcript output
+- fenced-code rendering keeps exact code text in the clipboard flow instead of repeatedly copying the first block
+
+### Tray menu improvement
+
+- right-clicking the system tray icon now opens a useful context menu with:
+  - **Show Amelia**
+  - **Hide Amelia**
+  - **Exit**
+
+### Existing improvements still present
+
+
+This release keeps the improvements from the earlier 6.9x line, including:
+
+- native desktop notifications for startup, prompt lifecycle, indexing, memory, and related events, while model refresh/change updates stay in-app without desktop toasts
+- restoring a saved conversation updates the UI quietly without a desktop toast
+- status-area progress feedback from prompt preparation through answer completion
+- bootstrap dialog visibility at startup
+- incremental / asynchronous knowledge-base indexing
+- transcript formatting and copy helpers
+- reasoning-only stall guard that retries once without backend thinking when a model loops before the first visible answer
+- Prompt Lab asset-aware recipe composition
+- semantic retrieval, external search integration, and outline-first planning

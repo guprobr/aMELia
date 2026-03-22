@@ -31,6 +31,7 @@ public:
     void setTotalTimeoutMs(int timeoutMs);
     void setGenerationConfig(const AppConfig &config);
     void setReasoningTraceEnabled(bool enabled);
+    void setForceThinkOff(bool enabled);
 
     void stop() override;
 
@@ -101,6 +102,7 @@ private:
     bool m_receivedVisibleOutput = false;
     bool m_insideReasoningTrace = false;
     bool m_reasoningTraceEnabled = false;
+    bool m_forceThinkOff = false;
     bool m_hiddenThinkingNoticeEmitted = false;
     int m_probeTimeoutMs = 10000;
     int m_httpStatusCode = 0;

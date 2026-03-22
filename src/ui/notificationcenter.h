@@ -41,6 +41,7 @@ private slots:
 
 private:
     bool shouldEmitForSeverity(int severity) const;
+    bool showNativeDesktopNotification(const QString &title, const QString &message, int severity) const;
     void showInAppToast(const QString &title, const QString &message, int severity);
     void ensureTrayMenu();
     void updateTrayActions();

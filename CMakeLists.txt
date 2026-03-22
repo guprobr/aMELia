@@ -10,7 +10,7 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-find_package(Qt6 REQUIRED COMPONENTS Core Widgets Network Concurrent)
+find_package(Qt6 REQUIRED COMPONENTS Core Widgets Network Concurrent DBus)
 
 qt_standard_project_setup()
 
@@ -66,6 +66,7 @@ target_link_libraries(amelia_qt6
         Qt6::Widgets
         Qt6::Network
         Qt6::Concurrent
+        Qt6::DBus
 )
 
 install(TARGETS amelia_qt6

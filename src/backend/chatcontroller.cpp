@@ -12,14 +12,18 @@
 #include "core/storagemanager.h"
 #include "backend/toolexecutor.h"
 
+#include <algorithm>
+
 #include <QDateTime>
 #include <QFile>
 #include <QDir>
 #include <QFileInfo>
+#include <QHash>
 #include <QSet>
 #include <QTimer>
 #include <QMetaObject>
 #include <QRegularExpression>
+#include <QCryptographicHash>
 #include <QtConcurrent/QtConcurrentRun>
 
 #include <cstdio>
@@ -45,6 +49,70 @@ QString trimForBudget(const QString &text, int maxChars)
     return trimmed + QStringLiteral("\n[... budget-trimmed ...]");
 }
 
+
+QString shortSha1(const QString &text)
+{
+    return QString::fromLatin1(QCryptographicHash::hash(text.toUtf8(), QCryptographicHash::Sha1).toHex().left(12));
+}
+
+int countMarker(const QString &text, const QString &marker)
+{
+    if (text.isEmpty() || marker.isEmpty()) {
+        return 0;
+    }
+
+    int count = 0;
+    int position = 0;
+    while ((position = text.indexOf(marker, position)) >= 0) {
+        ++count;
+        position += marker.size();
+    }
+    return count;
+}
+
+QString summarizePromptSectionMarkers(const QString &text)
+{
+    if (text.trimmed().isEmpty()) {
+        return QStringLiteral("chars=0 | sha1=<empty>");
+    }
+
+    return QStringLiteral(
+                   "chars=%1 | sha1=%2 | doc_packets=%3 | outline_maps=%4 | section_packets=%5 | full_docs=%6 | source_blocks=%7 | budget_trims=%8")
+            .arg(text.size())
+            .arg(shortSha1(text))
+            .arg(countMarker(text, QStringLiteral("=== DOCUMENT_STUDY_PACKET:")))
+            .arg(countMarker(text, QStringLiteral("DOCUMENT_OUTLINE_MAP:")))
+            .arg(countMarker(text, QStringLiteral("SECTION_COVERAGE_PACKET:")))
+            .arg(countMarker(text, QStringLiteral("FULL_DOCUMENT_TEXT:")))
+            .arg(countMarker(text, QStringLiteral("--- Source:")))
+            .arg(countMarker(text, QStringLiteral("[... budget-trimmed ...]")));
+}
+
+QString summarizeMessagePayload(const QVector<LlmChatMessage> &messages)
+{
+    if (messages.isEmpty()) {
+        return QStringLiteral("messages=0 | payload_sha1=<empty>");
+    }
+
+    QByteArray payload;
+    QStringList layout;
+    layout.reserve(messages.size());
+    int totalChars = 0;
+    for (const LlmChatMessage &message : messages) {
+        payload += message.role.toUtf8();
+        payload += '\n';
+        payload += message.content.toUtf8();
+        payload += "\n---\n";
+        layout << QStringLiteral("%1:%2").arg(message.role).arg(message.content.size());
+        totalChars += message.content.size();
+    }
+
+    return QStringLiteral("messages=%1 | total_chars=%2 | payload_sha1=%3 | layout=%4")
+            .arg(messages.size())
+            .arg(totalChars)
+            .arg(QString::fromLatin1(QCryptographicHash::hash(payload, QCryptographicHash::Sha1).toHex().left(12)))
+            .arg(layout.join(QStringLiteral(", ")));
+}
 QString normalizePromptDedupKey(QString text)
 {
     text.replace(QStringLiteral("\r\n"), QStringLiteral("\n"));
@@ -70,6 +138,24 @@ bool isStructuredDocumentRequest(const QString &prompt)
             || lower.contains(QStringLiteral("guide"))
             || lower.contains(QStringLiteral("markdown"))
             || lower.contains(QStringLiteral(".md"));
+}
+
+bool looksLikeDocumentStudyPrompt(const QString &prompt)
+{
+    const QString lower = prompt.toLower();
+    return lower.contains(QStringLiteral("summary"))
+            || lower.contains(QStringLiteral("summarize"))
+            || lower.contains(QStringLiteral("tutorial"))
+            || lower.contains(QStringLiteral("chapter"))
+            || lower.contains(QStringLiteral("section"))
+            || lower.contains(QStringLiteral("contents"))
+            || lower.contains(QStringLiteral("table of contents"))
+            || lower.contains(QStringLiteral("pdf"))
+            || lower.contains(QStringLiteral("manual"))
+            || lower.contains(QStringLiteral("guide"))
+            || lower.contains(QStringLiteral("overview"))
+            || lower.contains(QStringLiteral("high-level design"))
+            || lower.contains(QStringLiteral("hld"));
 }
 
 bool containsAny(const QString &text, const QStringList &needles)
@@ -414,6 +500,9 @@ ChatController::ChatController(const AppConfig &config, QObject *parent)
                           .arg(result.retrievedHits)
                           .arg(m_rag->sourceCount())
                           .arg(QString::number(result.bestHitScore, 'f', 2)));
+        addDiagnostic(QStringLiteral("rag"),
+                      QStringLiteral("Prompt prep local-context markers | %1")
+                          .arg(summarizePromptSectionMarkers(result.localContext)));
         if (!result.prioritizedAssetsRequested.isEmpty()) {
             addDiagnostic(QStringLiteral("rag"),
                           QStringLiteral("Prioritized KB assets active: requested=%1 | matched_hits=%2 | used_sources=%3")
@@ -836,16 +925,7 @@ void ChatController::sendUserPrompt(const QString &prompt, bool allowExternalSea
             result.localUi = uiSections.isEmpty() ? QStringLiteral("<none>") : uiSections.join(QStringLiteral("\n\n----------------\n\n"));
         } else {
             RetrievalIntent intent = RetrievalIntent::General;
-            const bool looksLikeDocumentStudy = trimmed.contains(QStringLiteral("summary"), Qt::CaseInsensitive)
-                    || trimmed.contains(QStringLiteral("summarize"), Qt::CaseInsensitive)
-                    || trimmed.contains(QStringLiteral("tutorial"), Qt::CaseInsensitive)
-                    || trimmed.contains(QStringLiteral("chapter"), Qt::CaseInsensitive)
-                    || trimmed.contains(QStringLiteral("section"), Qt::CaseInsensitive)
-                    || trimmed.contains(QStringLiteral("contents"), Qt::CaseInsensitive)
-                    || trimmed.contains(QStringLiteral("table of contents"), Qt::CaseInsensitive)
-                    || trimmed.contains(QStringLiteral("pdf"), Qt::CaseInsensitive)
-                    || trimmed.contains(QStringLiteral("manual"), Qt::CaseInsensitive)
-                    || trimmed.contains(QStringLiteral("guide"), Qt::CaseInsensitive);
+            const bool looksLikeDocumentStudy = looksLikeDocumentStudyPrompt(trimmed);
             if (trimmed.contains(QStringLiteral("error"), Qt::CaseInsensitive)
                     || trimmed.contains(QStringLiteral("failed"), Qt::CaseInsensitive)
                     || trimmed.contains(QStringLiteral("alarm"), Qt::CaseInsensitive)) {
@@ -863,7 +943,7 @@ void ChatController::sendUserPrompt(const QString &prompt, bool allowExternalSea
                 intent = RetrievalIntent::Implementation;
             }
 
-            const int prioritizedLimit = looksLikeDocumentStudy ? qMax(4, qMin(config.maxLocalHits, 8))
+            const int prioritizedLimit = looksLikeDocumentStudy ? qMax(3, qMin(config.maxLocalHits, 6))
                                                                 : qMax(1, qMin(config.maxLocalHits, 4));
             const QVector<RagHit> prioritizedHits = prioritizedAssets.isEmpty()
                     ? QVector<RagHit>()
@@ -887,14 +967,70 @@ void ChatController::sendUserPrompt(const QString &prompt, bool allowExternalSea
                                                  nullptr,
                                                  nullptr);
             }
-            const QVector<RagHit> localHits = mergePreferredHits(prioritizedHits,
-                                                                 generalHits,
-                                                                 config.maxLocalHits,
-                                                                 &result.bestHitScore,
-                                                                 &result.prioritizedAssetsUsed,
-                                                                 &result.prioritizedHits);
+            QVector<RagHit> localHits = mergePreferredHits(prioritizedHits,
+                                                          generalHits,
+                                                          config.maxLocalHits,
+                                                          &result.bestHitScore,
+                                                          &result.prioritizedAssetsUsed,
+                                                          &result.prioritizedHits);
+            QString documentStudyPacket;
+            if (looksLikeDocumentStudy) {
+                QStringList studyPaths = prioritizedAssets;
+                if (studyPaths.isEmpty()) {
+                    QHash<QString, int> fileCounts;
+                    QHash<QString, double> bestScores;
+                    for (const RagHit &hit : std::as_const(localHits)) {
+                        fileCounts[hit.filePath] += 1;
+                        bestScores[hit.filePath] = qMax(bestScores.value(hit.filePath), hit.rerankScore);
+                    }
+
+                    QStringList rankedPaths = fileCounts.keys();
+                    std::sort(rankedPaths.begin(), rankedPaths.end(), [&fileCounts, &bestScores](const QString &a, const QString &b) {
+                        if (fileCounts.value(a) != fileCounts.value(b)) {
+                            return fileCounts.value(a) > fileCounts.value(b);
+                        }
+                        if (!qFuzzyCompare(bestScores.value(a) + 1.0, bestScores.value(b) + 1.0)) {
+                            return bestScores.value(a) > bestScores.value(b);
+                        }
+                        return a < b;
+                    });
+
+                    for (const QString &path : std::as_const(rankedPaths)) {
+                        studyPaths.push_back(path);
+                        if (studyPaths.size() >= 2) {
+                            break;
+                        }
+                    }
+                }
+
+                const int coveragePerFile = prioritizedAssets.isEmpty() ? 6 : 8;
+                const QVector<RagHit> coverageHits = m_rag->representativeHitsInFiles(studyPaths,
+                                                                                      coveragePerFile,
+                                                                                      true);
+                const int studyHitLimit = qMax(config.maxLocalHits + qMin(coverageHits.size(), 10), 14);
+                localHits = mergePreferredHits(coverageHits,
+                                               localHits,
+                                               studyHitLimit,
+                                               &result.bestHitScore,
+                                               &result.prioritizedAssetsUsed,
+                                               &result.prioritizedHits);
+
+                const int maxStudyFiles = prioritizedAssets.isEmpty() ? 1 : qMin(2, studyPaths.size());
+                documentStudyPacket = m_rag->formatDocumentStudyPrompt(studyPaths,
+                                                                       maxStudyFiles,
+                                                                       180,
+                                                                       36000);
+            }
             result.retrievedHits = localHits.size();
-            result.localContext = trimForBudget(m_rag->formatHitsForPrompt(localHits), result.outlineOnlyFirstPass ? 4800 : 9600);
+            const QString hitPromptContextRaw = m_rag->formatHitsForPrompt(localHits);
+            const QString hitPromptContext = looksLikeDocumentStudy
+                    ? trimForBudget(hitPromptContextRaw, 3000)
+                    : hitPromptContextRaw;
+            const QString combinedLocalContext = documentStudyPacket.trimmed().isEmpty()
+                    ? hitPromptContext
+                    : documentStudyPacket + QStringLiteral("\n\n") + hitPromptContext;
+            result.localContext = trimForBudget(combinedLocalContext,
+                                                result.outlineOnlyFirstPass ? 4800 : (looksLikeDocumentStudy ? 52000 : 9600));
             result.localUi = m_rag->formatHitsForUi(localHits);
         }
 
@@ -1611,8 +1747,23 @@ void ChatController::startGeneration(const QString &prompt,
     }
     addDiagnostic(QStringLiteral("budget"), QStringLiteral("Prompt budgeting applied | local=%1 chars | external=%2 chars | memory=%3 chars | summary=%4 chars | chat_messages=%5 | payload_chars=%6")
                   .arg(localContext.size()).arg(externalContext.size()).arg(memoryContext.size()).arg(m_currentSummary.size()).arg(messages.size()).arg(totalChars));
-    const bool requestReasoningTrace = m_reasoningTraceEnabled && !m_forceDisableReasoningForActiveRequest;
+    addDiagnostic(QStringLiteral("budget"), QStringLiteral("Final local-context markers | %1")
+                  .arg(summarizePromptSectionMarkers(localContext)));
+    addDiagnostic(QStringLiteral("backend"), QStringLiteral("Final message payload | %1")
+                  .arg(summarizeMessagePayload(messages)));
+
+    const bool heavyDocumentStudyRequest = looksLikeDocumentStudyPrompt(prompt)
+            && localContext.contains(QStringLiteral("SECTION_COVERAGE_PACKET:"))
+            && localContext.size() >= 24000;
+    if (heavyDocumentStudyRequest && !m_forceDisableReasoningForActiveRequest) {
+        addDiagnostic(QStringLiteral("backend"),
+                      QStringLiteral("Large document-study request detected; forcing think=false for this request to reduce Ollama load."));
+    }
+    const bool requestReasoningTrace = m_reasoningTraceEnabled
+            && !m_forceDisableReasoningForActiveRequest
+            && !heavyDocumentStudyRequest;
     m_llmClient->setReasoningTraceEnabled(requestReasoningTrace);
+    m_llmClient->setForceThinkOff(heavyDocumentStudyRequest);
 
     addDiagnostic(QStringLiteral("backend"), QStringLiteral("Sending chat request to Ollama (%1 message(s), num_ctx=%2, temperature=%3, top_p=%4, top_k=%5, think=%6)")
                   .arg(messages.size())
@@ -1886,13 +2037,14 @@ QVector<LlmChatMessage> ChatController::buildPromptMessages(const QString &userP
                                                             const QString &sessionSummary,
                                                             bool contextIsWeak) const
 {
-    const int localBudget    = m_outlineOnlyFirstPass ? 4800  : 9600;
+    const bool documentStudyPrompt = looksLikeDocumentStudyPrompt(userPrompt);
+    const int localBudget    = m_outlineOnlyFirstPass ? 4800  : (documentStudyPrompt ? 52000 : 9600);
     const int externalBudget = m_outlineOnlyFirstPass ? 1400  : 2400;
     const int memoryBudget   = 900;
     const int summaryBudget  = 1200;
     const int outlineBudget  = 1400;
     const int historyBudget  = 2400;
-    const int sourceBudget   = m_outlineOnlyFirstPass ? 7000 : 14000;
+    const int sourceBudget   = m_outlineOnlyFirstPass ? 7000 : (documentStudyPrompt ? 22000 : 14000);
     const TransformPromptSpec transformPrompt = detectTransformPrompt(userPrompt);
 
     QVector<LlmChatMessage> messages;

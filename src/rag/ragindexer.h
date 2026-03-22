@@ -49,6 +49,13 @@ public:
                                       int limit = 4,
                                       RetrievalIntent intent = RetrievalIntent::General,
                                       const QStringList &preferredRoles = {}) const;
+    QVector<RagHit> representativeHitsInFiles(const QStringList &preferredPaths,
+                                              int perFileLimit = 8,
+                                              bool preferStructure = true) const;
+    QString formatDocumentStudyPrompt(const QStringList &preferredPaths,
+                                      int maxFiles = 1,
+                                      int outlineLineLimit = 180,
+                                      int maxCharsPerFile = 70000) const;
     QString formatHitsForPrompt(const QVector<RagHit> &hits) const;
     QString formatHitsForUi(const QVector<RagHit> &hits) const;
     QString formatInventoryForUi() const;
@@ -83,6 +90,7 @@ private:
         QString text;
         QVector<float> embedding;
         int chunkIndex = 0;
+        QString textFingerprint;
         qint64 fileModifiedMs = 0;
     };
 
@@ -101,6 +109,7 @@ private:
         qint64 fileModifiedMs = 0;
         qint64 fileSizeBytes = 0;
         int chunkCount = 0;
+        QString fileContentHash;
         int lineCount = 0;
         int wordCount = 0;
         int textCharCount = 0;
