@@ -484,6 +484,80 @@ bool markdownTableBlockNeedsRewrite(const QStringList &rows)
     return false;
 }
 
+QString normalizeInlineSingleLineFences(const QString &text)
+{
+    const QStringList lines = text.split(QLatin1Char('\n'), Qt::KeepEmptyParts);
+    QStringList output;
+    output.reserve(lines.size());
+
+    static const QSet<QString> supportedLanguages = {
+        QStringLiteral("text"), QStringLiteral("plain"), QStringLiteral("plaintext"),
+        QStringLiteral("bash"), QStringLiteral("sh"), QStringLiteral("shell"),
+        QStringLiteral("zsh"), QStringLiteral("fish"), QStringLiteral("powershell"),
+        QStringLiteral("ps1"), QStringLiteral("cmd"), QStringLiteral("bat"),
+        QStringLiteral("c"), QStringLiteral("h"), QStringLiteral("cpp"),
+        QStringLiteral("cxx"), QStringLiteral("cc"), QStringLiteral("hpp"),
+        QStringLiteral("c++"), QStringLiteral("objective-c"), QStringLiteral("objc"),
+        QStringLiteral("swift"), QStringLiteral("java"), QStringLiteral("kotlin"),
+        QStringLiteral("scala"), QStringLiteral("go"), QStringLiteral("rust"),
+        QStringLiteral("zig"), QStringLiteral("python"), QStringLiteral("py"),
+        QStringLiteral("ruby"), QStringLiteral("rb"), QStringLiteral("php"),
+        QStringLiteral("perl"), QStringLiteral("lua"), QStringLiteral("javascript"),
+        QStringLiteral("js"), QStringLiteral("typescript"), QStringLiteral("ts"),
+        QStringLiteral("tsx"), QStringLiteral("jsx"), QStringLiteral("json"),
+        QStringLiteral("yaml"), QStringLiteral("yml"), QStringLiteral("toml"),
+        QStringLiteral("ini"), QStringLiteral("xml"), QStringLiteral("html"),
+        QStringLiteral("css"), QStringLiteral("sql"), QStringLiteral("cmake"),
+        QStringLiteral("dockerfile"), QStringLiteral("makefile")
+    };
+
+    for (const QString &line : lines) {
+        const int openFence = line.indexOf(QStringLiteral("```"));
+        const int closeFence = openFence >= 0 ? line.indexOf(QStringLiteral("```"), openFence + 3) : -1;
+        if (openFence < 0 || closeFence < 0) {
+            output << line;
+            continue;
+        }
+
+        const QString prefix = line.left(openFence).trimmed();
+        const QString suffix = line.mid(closeFence + 3).trimmed();
+        const QString inner = line.mid(openFence + 3, closeFence - openFence - 3).trimmed();
+        if (inner.isEmpty() || inner.contains(QLatin1Char('\n'))) {
+            output << line;
+            continue;
+        }
+
+        QString language;
+        QString payload = inner;
+        const QRegularExpression whitespacePattern(QStringLiteral(R"(\s+)"));
+        const QRegularExpressionMatch whitespaceMatch = whitespacePattern.match(inner);
+        if (whitespaceMatch.hasMatch() && whitespaceMatch.capturedStart() > 0) {
+            const QString candidate = inner.left(whitespaceMatch.capturedStart()).trimmed();
+            if (supportedLanguages.contains(candidate.toLower())) {
+                language = candidate;
+                payload = inner.mid(whitespaceMatch.capturedEnd()).trimmed();
+            }
+        }
+
+        if (payload.isEmpty()) {
+            output << line;
+            continue;
+        }
+
+        if (!prefix.isEmpty()) {
+            output << prefix;
+        }
+        output << QStringLiteral("```%1").arg(language);
+        output << payload;
+        output << QStringLiteral("```");
+        if (!suffix.isEmpty()) {
+            output << suffix;
+        }
+    }
+
+    return output.join(QLatin1Char('\n'));
+}
+
 QString rewriteUnsafeMarkdownTables(const QString &markdown)
 {
     const QStringList lines = markdown.split(QLatin1Char('\n'), Qt::KeepEmptyParts);
@@ -546,7 +620,7 @@ QString rewriteUnsafeMarkdownTables(const QString &markdown)
                         output << QStringLiteral("**%1**").arg(header);
                         output << QString();
                     }
-                    output << afterFence;
+                    output << normalizeInlineSingleLineFences(afterFence);
                     output << QString();
                 } else if (value.contains(QLatin1Char('\n'))) {
                     output << QStringLiteral("**%1:**").arg(header);
@@ -573,11 +647,13 @@ QString normalizeRenderableMarkdown(const QString &text)
 {
     QString normalized = TranscriptFormatter::sanitizeRenderableMarkdown(text);
     normalized = rewriteUnsafeMarkdownTables(normalized);
+    normalized = normalizeInlineSingleLineFences(normalized);
     normalized.replace(QRegularExpression(QStringLiteral(R"(```([A-Za-z0-9_+\-]*)<br\s*/?>)"), QRegularExpression::CaseInsensitiveOption),
                        QStringLiteral("```\\1\n"));
     normalized.replace(QRegularExpression(QStringLiteral(R"((?i)<br\s*/?>```)")), QStringLiteral("\n```"));
     return normalized;
 }
+
 
 QVector<TranscriptSegment> splitTranscriptSegments(const QString &text)
 {
