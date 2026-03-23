@@ -345,6 +345,17 @@ QString decodeMarkdownCellText(QString cell)
     return cell.trimmed();
 }
 
+int countMarkdownFenceDelimiters(const QString &text)
+{
+    int count = 0;
+    int offset = 0;
+    while ((offset = text.indexOf(QStringLiteral("```"), offset)) >= 0) {
+        ++count;
+        offset += 3;
+    }
+    return count;
+}
+
 QStringList splitMarkdownTableRow(const QString &line)
 {
     QString working = line.trimmed();
@@ -358,18 +369,26 @@ QStringList splitMarkdownTableRow(const QString &line)
     QStringList cells;
     QString current;
     bool escaped = false;
-    for (const QChar ch : working) {
+    bool inFence = false;
+    for (int i = 0; i < working.size(); ++i) {
+        const QChar ch = working.at(i);
         if (escaped) {
             current += ch;
             escaped = false;
             continue;
         }
-        if (ch == QLatin1Char('\\')) {
+        if (!inFence && ch == QLatin1Char('\\')) {
             current += ch;
             escaped = true;
             continue;
         }
-        if (ch == QLatin1Char('|')) {
+        if (i + 2 < working.size() && working.mid(i, 3) == QStringLiteral("```")) {
+            current += QStringLiteral("```");
+            inFence = !inFence;
+            i += 2;
+            continue;
+        }
+        if (!inFence && ch == QLatin1Char('|')) {
             cells.push_back(current.trimmed());
             current.clear();
             continue;
@@ -405,16 +424,60 @@ bool isMarkdownTableSeparatorLine(const QString &line)
     return true;
 }
 
-bool markdownTableBlockNeedsRewrite(const QStringList &lines, int start, int end)
+QStringList collectLogicalMarkdownTableBlock(const QStringList &lines, int start, int *end)
+{
+    QStringList rows;
+    if (start < 0 || start + 1 >= lines.size()) {
+        if (end != nullptr) {
+            *end = qMax(0, start);
+        }
+        return rows;
+    }
+
+    rows << lines.at(start);
+    rows << lines.at(start + 1);
+
+    int i = start + 2;
+    while (i < lines.size()) {
+        if (!isMarkdownTableLine(lines.at(i))) {
+            break;
+        }
+
+        QString row = lines.at(i);
+        bool inFence = (countMarkdownFenceDelimiters(row) % 2) != 0;
+        while (i + 1 < lines.size()) {
+            const QString next = lines.at(i + 1);
+            if (!inFence) {
+                break;
+            }
+
+            row += QLatin1Char('\n');
+            row += next;
+            ++i;
+            if ((countMarkdownFenceDelimiters(next) % 2) != 0) {
+                inFence = !inFence;
+            }
+        }
+
+        rows << row;
+        ++i;
+    }
+
+    if (end != nullptr) {
+        *end = i;
+    }
+    return rows;
+}
+
+bool markdownTableBlockNeedsRewrite(const QStringList &rows)
 {
     static const QRegularExpression brPattern(QStringLiteral(R"((?i)<br\s*/?>)"));
-    for (int i = start; i < end; ++i) {
-        const QString line = lines.at(i);
-        if (line.contains(QStringLiteral("```")) || line.contains(brPattern)
-                || line.contains(QStringLiteral("<pre"), Qt::CaseInsensitive)
-                || line.contains(QStringLiteral("</pre"), Qt::CaseInsensitive)
-                || line.contains(QStringLiteral("<code"), Qt::CaseInsensitive)
-                || line.contains(QStringLiteral("</code"), Qt::CaseInsensitive)) {
+    for (const QString &row : rows) {
+        if (row.contains(QStringLiteral("```")) || row.contains(brPattern)
+                || row.contains(QStringLiteral("<pre"), Qt::CaseInsensitive)
+                || row.contains(QStringLiteral("</pre"), Qt::CaseInsensitive)
+                || row.contains(QStringLiteral("<code"), Qt::CaseInsensitive)
+                || row.contains(QStringLiteral("</code"), Qt::CaseInsensitive)) {
             return true;
         }
     }
@@ -427,28 +490,26 @@ QString rewriteUnsafeMarkdownTables(const QString &markdown)
     QStringList output;
     int i = 0;
     while (i < lines.size()) {
-        if (!isMarkdownTableLine(lines.at(i))) {
+        if (i + 1 >= lines.size() || !isMarkdownTableLine(lines.at(i)) || !isMarkdownTableSeparatorLine(lines.at(i + 1))) {
             output << lines.at(i);
             ++i;
             continue;
         }
 
-        const int start = i;
-        while (i < lines.size() && isMarkdownTableLine(lines.at(i))) {
-            ++i;
-        }
-        const int end = i;
-        if (end - start < 2 || !isMarkdownTableSeparatorLine(lines.at(start + 1)) || !markdownTableBlockNeedsRewrite(lines, start, end)) {
-            for (int j = start; j < end; ++j) {
+        int end = i;
+        const QStringList rows = collectLogicalMarkdownTableBlock(lines, i, &end);
+        if (rows.size() < 3 || !markdownTableBlockNeedsRewrite(rows)) {
+            for (int j = i; j < end; ++j) {
                 output << lines.at(j);
             }
+            i = end;
             continue;
         }
 
-        const QStringList headers = splitMarkdownTableRow(lines.at(start));
+        const QStringList headers = splitMarkdownTableRow(rows.at(0));
         int rowNumber = 0;
-        for (int row = start + 2; row < end; ++row) {
-            const QStringList cells = splitMarkdownTableRow(lines.at(row));
+        for (int row = 2; row < rows.size(); ++row) {
+            const QStringList cells = splitMarkdownTableRow(rows.at(row));
             if (cells.isEmpty()) {
                 continue;
             }
@@ -496,11 +557,13 @@ QString rewriteUnsafeMarkdownTables(const QString &markdown)
                     output << QString();
                 }
             }
-            if (row + 1 < end) {
+            if (row + 1 < rows.size()) {
                 output << QStringLiteral("---");
                 output << QString();
             }
         }
+
+        i = end;
     }
 
     return output.join(QLatin1Char('\n'));
