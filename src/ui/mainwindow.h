@@ -248,5 +248,6 @@ private:
     QStringList m_oneShotPrioritizedAssets;
     QStringList m_pinnedKnowledgeAssets;
     QStringList m_transcriptCodeBlocks;
+    QStringList m_transcriptAssistantAnswers;
     QHash<QString, QString> m_knowledgeDisplayNames;
 };

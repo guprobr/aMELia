@@ -1,4 +1,4 @@
-# aMELia Qt6 v9.14.3
+# aMELia Qt6 v9.15.1
 
 Amelia is a local-first Qt6/C++ coding and cloud assistant that talks to a local Ollama server, stores its state under `~/.amelia_qt6`, indexes a local knowledge base, and can optionally use sanitized external web search through SearXNG.
 

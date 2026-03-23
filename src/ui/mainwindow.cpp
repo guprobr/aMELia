@@ -484,80 +484,6 @@ bool markdownTableBlockNeedsRewrite(const QStringList &rows)
     return false;
 }
 
-QString normalizeInlineSingleLineFences(const QString &text)
-{
-    const QStringList lines = text.split(QLatin1Char('\n'), Qt::KeepEmptyParts);
-    QStringList output;
-    output.reserve(lines.size());
-
-    static const QSet<QString> supportedLanguages = {
-        QStringLiteral("text"), QStringLiteral("plain"), QStringLiteral("plaintext"),
-        QStringLiteral("bash"), QStringLiteral("sh"), QStringLiteral("shell"),
-        QStringLiteral("zsh"), QStringLiteral("fish"), QStringLiteral("powershell"),
-        QStringLiteral("ps1"), QStringLiteral("cmd"), QStringLiteral("bat"),
-        QStringLiteral("c"), QStringLiteral("h"), QStringLiteral("cpp"),
-        QStringLiteral("cxx"), QStringLiteral("cc"), QStringLiteral("hpp"),
-        QStringLiteral("c++"), QStringLiteral("objective-c"), QStringLiteral("objc"),
-        QStringLiteral("swift"), QStringLiteral("java"), QStringLiteral("kotlin"),
-        QStringLiteral("scala"), QStringLiteral("go"), QStringLiteral("rust"),
-        QStringLiteral("zig"), QStringLiteral("python"), QStringLiteral("py"),
-        QStringLiteral("ruby"), QStringLiteral("rb"), QStringLiteral("php"),
-        QStringLiteral("perl"), QStringLiteral("lua"), QStringLiteral("javascript"),
-        QStringLiteral("js"), QStringLiteral("typescript"), QStringLiteral("ts"),
-        QStringLiteral("tsx"), QStringLiteral("jsx"), QStringLiteral("json"),
-        QStringLiteral("yaml"), QStringLiteral("yml"), QStringLiteral("toml"),
-        QStringLiteral("ini"), QStringLiteral("xml"), QStringLiteral("html"),
-        QStringLiteral("css"), QStringLiteral("sql"), QStringLiteral("cmake"),
-        QStringLiteral("dockerfile"), QStringLiteral("makefile")
-    };
-
-    for (const QString &line : lines) {
-        const int openFence = line.indexOf(QStringLiteral("```"));
-        const int closeFence = openFence >= 0 ? line.indexOf(QStringLiteral("```"), openFence + 3) : -1;
-        if (openFence < 0 || closeFence < 0) {
-            output << line;
-            continue;
-        }
-
-        const QString prefix = line.left(openFence).trimmed();
-        const QString suffix = line.mid(closeFence + 3).trimmed();
-        const QString inner = line.mid(openFence + 3, closeFence - openFence - 3).trimmed();
-        if (inner.isEmpty() || inner.contains(QLatin1Char('\n'))) {
-            output << line;
-            continue;
-        }
-
-        QString language;
-        QString payload = inner;
-        const QRegularExpression whitespacePattern(QStringLiteral(R"(\s+)"));
-        const QRegularExpressionMatch whitespaceMatch = whitespacePattern.match(inner);
-        if (whitespaceMatch.hasMatch() && whitespaceMatch.capturedStart() > 0) {
-            const QString candidate = inner.left(whitespaceMatch.capturedStart()).trimmed();
-            if (supportedLanguages.contains(candidate.toLower())) {
-                language = candidate;
-                payload = inner.mid(whitespaceMatch.capturedEnd()).trimmed();
-            }
-        }
-
-        if (payload.isEmpty()) {
-            output << line;
-            continue;
-        }
-
-        if (!prefix.isEmpty()) {
-            output << prefix;
-        }
-        output << QStringLiteral("```%1").arg(language);
-        output << payload;
-        output << QStringLiteral("```");
-        if (!suffix.isEmpty()) {
-            output << suffix;
-        }
-    }
-
-    return output.join(QLatin1Char('\n'));
-}
-
 QString rewriteUnsafeMarkdownTables(const QString &markdown)
 {
     const QStringList lines = markdown.split(QLatin1Char('\n'), Qt::KeepEmptyParts);
@@ -620,7 +546,7 @@ QString rewriteUnsafeMarkdownTables(const QString &markdown)
                         output << QStringLiteral("**%1**").arg(header);
                         output << QString();
                     }
-                    output << normalizeInlineSingleLineFences(afterFence);
+                    output << afterFence;
                     output << QString();
                 } else if (value.contains(QLatin1Char('\n'))) {
                     output << QStringLiteral("**%1:**").arg(header);
@@ -645,15 +571,8 @@ QString rewriteUnsafeMarkdownTables(const QString &markdown)
 
 QString normalizeRenderableMarkdown(const QString &text)
 {
-    QString normalized = TranscriptFormatter::sanitizeRenderableMarkdown(text);
-    normalized = rewriteUnsafeMarkdownTables(normalized);
-    normalized = normalizeInlineSingleLineFences(normalized);
-    normalized.replace(QRegularExpression(QStringLiteral(R"(```([A-Za-z0-9_+\-]*)<br\s*/?>)"), QRegularExpression::CaseInsensitiveOption),
-                       QStringLiteral("```\\1\n"));
-    normalized.replace(QRegularExpression(QStringLiteral(R"((?i)<br\s*/?>```)")), QStringLiteral("\n```"));
-    return normalized;
+    return TranscriptFormatter::sanitizeRenderableMarkdown(text);
 }
-
 
 QVector<TranscriptSegment> splitTranscriptSegments(const QString &text)
 {
@@ -838,7 +757,10 @@ QString markdownFragmentToHtml(const QString &markdown)
     return html;
 }
 
-QString messageToRichHtml(const QString &role, const QString &text, QStringList *codeBlocks)
+QString messageToRichHtml(const QString &role,
+                          const QString &text,
+                          QStringList *codeBlocks,
+                          int answerIndex)
 {
     const QString rolePrefix = transcriptPrefix(role).toHtmlEscaped();
     const QString prefixColor = transcriptPrefixColor(role).name();
@@ -883,12 +805,22 @@ QString messageToRichHtml(const QString &role, const QString &text, QStringList 
         bodyParts << QStringLiteral("<p>%1</p>").arg(normalizedText.toHtmlEscaped().replace(QStringLiteral("\n"), QStringLiteral("<br>")));
     }
 
+    QString footerHtml;
+    if (role.compare(QStringLiteral("assistant"), Qt::CaseInsensitive) == 0 && answerIndex >= 0) {
+        footerHtml = QStringLiteral(
+            "<div style=\"margin-top:12px;padding-top:8px;border-top:1px solid #1f2937;text-align:right;\">"
+            "<a href=\"copyanswer:%1\" style=\"font-size:12px;color:#93c5fd;text-decoration:none;\">Copy Answer</a>"
+            "</div>")
+            .arg(answerIndex);
+    }
+
     return QStringLiteral(
         "<div style=\"margin:8px 0 14px 0;padding:10px 12px;border-radius:12px;background:#111827;border:1px solid #1f2937;\">"
         "<div style=\"font-weight:700;color:%1;margin:0 0 8px 0;\">%2</div>"
         "<div style=\"color:%3;\">%4</div>"
+        "%5"
         "</div>")
-        .arg(prefixColor, rolePrefix, bodyColor, bodyParts.join(QStringLiteral("\n")));
+        .arg(prefixColor, rolePrefix, bodyColor, bodyParts.join(QStringLiteral("\n")), footerHtml);
 }
 
 QString formatByteCount(qint64 bytes)
@@ -1372,7 +1304,7 @@ MainWindow::MainWindow(const QString &configPath,
     setWidgetTip(m_conversationsList, QStringLiteral("Saved conversations. Select one to restore its transcript and summary."));
     setWidgetTip(m_newConversationButton, QStringLiteral("Start a new conversation without deleting older ones."));
     setWidgetTip(m_deleteConversationButton, QStringLiteral("Delete the selected saved conversation from local storage."));
-    setWidgetTip(m_transcript, QStringLiteral("Formatted transcript view with clickable copy links for code blocks."));
+    setWidgetTip(m_transcript, QStringLiteral("Formatted transcript view with clickable copy links for code blocks and full assistant answers."));
     setWidgetTip(m_input, QStringLiteral("Write your prompt here. Shift+Enter adds a new line; send when ready."));
     setWidgetTip(m_prioritizedAssetsList, QStringLiteral("Knowledge Base assets currently prioritized for the next prompt or pinned across prompts."));
     setWidgetTip(m_removePrioritizedAssetButton, QStringLiteral("Remove the selected prioritized assets from the active retrieval list."));
@@ -1522,7 +1454,12 @@ void MainWindow::insertTranscriptMessage(const QString &role, const QString &tex
     const QString renderText = role == QStringLiteral("assistant")
             ? TranscriptFormatter::sanitizeFinalAssistantMarkdown(text)
             : text;
-    const QString html = messageToRichHtml(role, renderText, &m_transcriptCodeBlocks);
+    int answerIndex = -1;
+    if (role == QStringLiteral("assistant")) {
+        answerIndex = m_transcriptAssistantAnswers.size();
+        m_transcriptAssistantAnswers.push_back(renderText);
+    }
+    const QString html = messageToRichHtml(role, renderText, &m_transcriptCodeBlocks, answerIndex);
     cursor.insertHtml(html);
     cursor.insertBlock();
     m_transcript->setTextCursor(cursor);
@@ -1971,6 +1908,7 @@ void MainWindow::rebuildTranscriptFromPlainText(const QString &text)
     m_streamingAssistantStartPosition = -1;
     m_lastAssistantMessage.clear();
     m_transcriptCodeBlocks.clear();
+    m_transcriptAssistantAnswers.clear();
 
     QString currentRole;
     QStringList currentLines;
@@ -3272,7 +3210,7 @@ void MainWindow::onVerboseDiagnosticsToggleToggled(bool checked)
 
 void MainWindow::onTranscriptAnchorClicked(const QUrl &url)
 {
-    if (url.scheme() == QStringLiteral("copycode")) {
+    const auto extractIndex = [&url]() -> int {
         QString rawIndex = url.host();
         if (rawIndex.isEmpty()) {
             rawIndex = url.path();
@@ -3283,11 +3221,26 @@ void MainWindow::onTranscriptAnchorClicked(const QUrl &url)
 
         bool ok = false;
         const int index = rawIndex.toInt(&ok);
-        if (!ok || index < 0 || index >= m_transcriptCodeBlocks.size()) {
+        return ok ? index : -1;
+    };
+
+    if (url.scheme() == QStringLiteral("copycode")) {
+        const int index = extractIndex();
+        if (index < 0 || index >= m_transcriptCodeBlocks.size()) {
             return;
         }
         QApplication::clipboard()->setText(m_transcriptCodeBlocks.at(index));
         m_statusLabel->setText(QStringLiteral("Code block copied to clipboard."));
+        return;
+    }
+
+    if (url.scheme() == QStringLiteral("copyanswer")) {
+        const int index = extractIndex();
+        if (index < 0 || index >= m_transcriptAssistantAnswers.size()) {
+            return;
+        }
+        QApplication::clipboard()->setText(m_transcriptAssistantAnswers.at(index));
+        m_statusLabel->setText(QStringLiteral("Answer copied to clipboard."));
         return;
     }
 
