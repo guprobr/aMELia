@@ -666,8 +666,10 @@ void ChatController::deleteConversationById(const QString &conversationId)
         return;
     }
 
-    if (m_busy) {
-        const QString message = QStringLiteral("Stop the current generation before deleting a conversation.");
+    if (m_busy || m_indexing) {
+        const QString message = m_indexing
+                ? QStringLiteral("Wait for knowledge indexing to finish before deleting a conversation.")
+                : QStringLiteral("Stop the current generation before deleting a conversation.");
         emit systemNotice(message);
         addDiagnostic(QStringLiteral("chat"), message);
         notifyTaskFailed(QStringLiteral("Conversation delete blocked"), message);
@@ -1136,6 +1138,15 @@ void ChatController::probeBackend()
 
 void ChatController::refreshBackendModels()
 {
+    if (m_busy || m_indexing) {
+        const QString message = m_indexing
+                ? QStringLiteral("Wait for knowledge indexing to finish before listing models.")
+                : QStringLiteral("Stop the current generation before listing models.");
+        emit systemNotice(message);
+        notifyTaskFailed(QStringLiteral("Model listing blocked"), message);
+        return;
+    }
+
     emit statusChanged(QStringLiteral("Listing Ollama models..."));
     addDiagnostic(QStringLiteral("backend"), QStringLiteral("Listing models from %1").arg(m_config.ollamaBaseUrl));
     m_llmClient->listModels(m_config.ollamaBaseUrl);
@@ -1143,8 +1154,10 @@ void ChatController::refreshBackendModels()
 
 void ChatController::newConversation()
 {
-    if (m_busy) {
-        const QString message = QStringLiteral("Stop the current generation before starting a new conversation.");
+    if (m_busy || m_indexing) {
+        const QString message = m_indexing
+                ? QStringLiteral("Wait for knowledge indexing to finish before starting a new conversation.")
+                : QStringLiteral("Stop the current generation before starting a new conversation.");
         emit systemNotice(message);
         notifyTaskFailed(QStringLiteral("New conversation blocked"), message);
         return;
@@ -1171,8 +1184,10 @@ void ChatController::newConversation()
 
 void ChatController::loadConversationById(const QString &conversationId)
 {
-    if (m_busy) {
-        const QString message = QStringLiteral("Stop the current generation before changing conversations.");
+    if (m_busy || m_indexing) {
+        const QString message = m_indexing
+                ? QStringLiteral("Wait for knowledge indexing to finish before changing conversations.")
+                : QStringLiteral("Stop the current generation before changing conversations.");
         emit systemNotice(message);
         refreshConversationList();
         return;
@@ -1265,6 +1280,16 @@ void ChatController::setBackendModel(const QString &model)
 {
     const QString trimmed = model.trimmed();
     if (trimmed.isEmpty() || trimmed == m_config.ollamaModel) {
+        return;
+    }
+
+    if (m_busy || m_indexing) {
+        const QString message = m_indexing
+                ? QStringLiteral("Wait for knowledge indexing to finish before changing models.")
+                : QStringLiteral("Stop the current generation before changing models.");
+        emit systemNotice(message);
+        notifyTaskFailed(QStringLiteral("Model change blocked"), message);
+        emit backendModelsReady(m_availableModels, m_config.ollamaModel);
         return;
     }
 

@@ -2024,13 +2024,18 @@ void MainWindow::setStatusText(const QString &text)
 
 void MainWindow::setBusy(bool busy)
 {
+    const bool allowConversationChanges = !busy && !m_indexingActive;
+    const bool allowModelControls = !busy && !m_indexingActive;
+
     m_sendButton->setEnabled(!busy && !m_indexingActive);
     m_stopButton->setEnabled(busy);
     m_input->setReadOnly(busy || m_indexingActive);
-    if (m_newConversationAction != nullptr) m_newConversationAction->setEnabled(!busy);
-    if (m_conversationsList != nullptr) m_conversationsList->setEnabled(!busy);
-    m_newConversationButton->setEnabled(!busy);
-    if (m_deleteConversationButton != nullptr) m_deleteConversationButton->setEnabled(!busy);
+    if (m_newConversationAction != nullptr) m_newConversationAction->setEnabled(allowConversationChanges);
+    if (m_conversationsList != nullptr) m_conversationsList->setEnabled(allowConversationChanges);
+    m_newConversationButton->setEnabled(allowConversationChanges);
+    if (m_deleteConversationButton != nullptr) m_deleteConversationButton->setEnabled(allowConversationChanges);
+    if (m_modelCombo != nullptr) m_modelCombo->setEnabled(allowModelControls);
+    if (m_refreshModelsButton != nullptr) m_refreshModelsButton->setEnabled(allowModelControls);
     m_importFilesButton->setEnabled(!busy && !m_indexingActive);
     m_importFolderButton->setEnabled(!busy && !m_indexingActive);
     m_reindexButton->setEnabled(!busy && !m_indexingActive);
@@ -2069,8 +2074,16 @@ void MainWindow::setIndexingActive(bool active)
 {
     m_indexingActive = active;
 
+    const bool allowConversationChanges = !active && !m_stopButton->isEnabled();
+    const bool allowModelControls = !active && !m_stopButton->isEnabled();
+
     m_sendButton->setEnabled(!active && !m_stopButton->isEnabled());
-    if (m_deleteConversationButton != nullptr) m_deleteConversationButton->setEnabled(!active && !m_stopButton->isEnabled());
+    if (m_newConversationAction != nullptr) m_newConversationAction->setEnabled(allowConversationChanges);
+    if (m_conversationsList != nullptr) m_conversationsList->setEnabled(allowConversationChanges);
+    m_newConversationButton->setEnabled(allowConversationChanges);
+    if (m_deleteConversationButton != nullptr) m_deleteConversationButton->setEnabled(allowConversationChanges);
+    if (m_modelCombo != nullptr) m_modelCombo->setEnabled(allowModelControls);
+    if (m_refreshModelsButton != nullptr) m_refreshModelsButton->setEnabled(allowModelControls);
     m_input->setReadOnly(active || m_stopButton->isEnabled());
     m_reindexButton->setEnabled(!active && !m_stopButton->isEnabled());
     m_importFilesButton->setEnabled(!active && !m_stopButton->isEnabled());
@@ -3148,6 +3161,11 @@ void MainWindow::onClearKnowledgeBaseClicked()
 
 void MainWindow::onDeleteConversationClicked()
 {
+    if (m_indexingActive || (m_stopButton != nullptr && m_stopButton->isEnabled())) {
+        m_statusLabel->setText(QStringLiteral("Finish the current task before deleting a conversation."));
+        return;
+    }
+
     if (m_conversationsList == nullptr) {
         return;
     }
@@ -3293,7 +3311,7 @@ void MainWindow::onSendClicked()
 void MainWindow::onConversationItemChanged(QListWidgetItem *current, QListWidgetItem *previous)
 {
     Q_UNUSED(previous)
-    if (m_updatingConversationList || current == nullptr || (m_stopButton != nullptr && m_stopButton->isEnabled())) {
+    if (m_updatingConversationList || m_indexingActive || current == nullptr || (m_stopButton != nullptr && m_stopButton->isEnabled())) {
         return;
     }
     emit conversationSelected(current->data(Qt::UserRole).toString());
@@ -3411,7 +3429,7 @@ void MainWindow::onReindexClicked()
 
 void MainWindow::onModelSelectionChanged(const QString &model)
 {
-    if (m_updatingModelList || model.trimmed().isEmpty()) {
+    if (m_updatingModelList || m_indexingActive || (m_stopButton != nullptr && m_stopButton->isEnabled()) || model.trimmed().isEmpty()) {
         return;
     }
     emit backendModelSelected(model.trimmed());
