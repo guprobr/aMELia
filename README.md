@@ -1,16 +1,31 @@
-# aMELia Qt6 v9.17.5
+# aMELia Qt6 v9.19.6
 
 Amelia is a local-first Qt6/C++ coding and cloud assistant that talks to a local Ollama server, stores its state under `~/.amelia_qt6`, indexes a local knowledge base, and can optionally use sanitized external web search through SearXNG.
 
-This build rolls forward the existing bootstrap, indexing, transcript, Prompt Lab, notification, and progress-bar work, and adds a Knowledge Base collection model with preserved folder structure, a tree-view browser, a hard-locked Knowledge Base root and safer workspace-jail boundaries under `~/.amelia_qt6`, stronger transcript code-block handling, first-run service prompts, a full JSON configuration editor, and a context-aware document-study budget policy that now respects Ollama `num_ctx` end-to-end, plus a generic one-shot fallback retry when Ollama reports that the model runner stopped unexpectedly during a large grounded request. Version 9.17.5 also reduces peak RAM during indexing by avoiding whole-corpus chunk-map duplication and by streaming `rag_cache.json` to disk instead of materializing one giant JSON document in memory, and it hard-disables Knowledge Base interaction while a prompt or reindex is in flight. aMELia is also allegorically considered a MEL: Model Enhancement Lab.
+This build rolls forward the existing bootstrap, indexing, transcript, Prompt Lab, notification, and progress-bar work, and adds a Knowledge Base collection model with preserved folder structure, a tree-view browser, a hard-locked Knowledge Base root and safer workspace-jail boundaries under `~/.amelia_qt6`, stronger transcript code-block handling, first-run service prompts, a full JSON configuration editor, and a context-aware document-study budget policy that now respects Ollama `num_ctx` end-to-end, plus a generic one-shot fallback retry when Ollama reports that the model runner stopped unexpectedly during a large grounded request. Version 9.19.6 keeps the earlier indexing RAM fixes, hard-disables Knowledge Base interaction while a prompt or reindex is in flight, fixes the document-study `num_ctx` reserve bug, keeps numbered procedure leads attached to following command/config lines across semantic block building and PDF page breaks, strengthens section-preview stitching, adds an exact-extraction retrieval mode for exhaustive scraper-style prompts so Amelia can emit ordered raw chunk windows instead of only lossy section summaries, and corrects the malformed C++ regex/string-literal injection bug that broke `ragindexer.cpp` compilation in v9.19.5. aMELia is also allegorically considered a MEL: Model Enhancement Lab.
 
 NOTE: prompt transcripts are first generated in markdown but after it finishes, they should be properly formatted.
 
-## What changed in v9.17.5
+## What changed in v9.19.6
 
-- reduced peak RAM during indexing by keeping the previous chunk corpus in place until finalization instead of duplicating it into multiple working hash maps
-- reduced end-of-index memory spikes by streaming `rag_cache.json` directly to disk instead of constructing one giant in-memory `QJsonDocument` with every chunk and embedding
-- locked the Knowledge Base tree, filtering, prioritization, drag-and-drop, and related controls while a prompt is running or while indexing is active
+- fixes the `ragindexer.cpp` build break caused by malformed multiline `QStringLiteral(...)` insertion in the procedural-lead helpers
+- rewrites those helpers to use valid single-literal regex construction and proper `QLatin1Char('\n')` splitting
+- preserves the earlier exact-extraction and chunk-boundary behavior without requiring further logic changes
+
+## What changed in v9.19.5
+
+- fixed the document-study `num_ctx` reserve calculation so large grounded requests no longer fall back to the old `safeNumCtx / 8` floor in common 32768-context setups
+- added an exact-extraction retrieval mode for scraper-style prompts such as `extract all`, `gather all actionable snippets`, `preserve YAML`, and similar exhaustive requests
+- exact-extraction mode emits ordered raw chunk windows from the selected file, biased toward actionable hits plus evenly spaced spans across the document, instead of relying only on outline/section summaries
+- improved semantic chunk building so a procedural lead like `4. Run ...:` stays attached to the following command/config block instead of being split just because the next line looks code-like
+- softened PDF page-break boundaries so `[[PAGE N]]` markers no longer force a mid-procedure semantic split by default
+- improved section preview stitching so procedure headers can pull in more following chunks before balanced trimming, reducing missing command lines after page breaks
+- Knowledge Base controls remain locked while prompt generation or indexing is active
+
+### Reindex note
+
+- the new exact-extraction retrieval path is a runtime-only change and works immediately after upgrade
+- the semantic block/page-break fixes improve how new chunks are built, so reindex once after upgrading if you want existing cached documents to benefit from the better chunk boundaries
 
 ## Ubuntu packages
 

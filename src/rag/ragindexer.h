@@ -67,6 +67,11 @@ public:
                                       int outlineLineLimit = 180,
                                       int maxCharsPerFile = 70000,
                                       int hardPacketBudgetChars = 0) const;
+    QString formatExactExtractionPrompt(const QStringList &preferredPaths,
+                                        const QString &query,
+                                        int maxFiles = 1,
+                                        int maxCharsPerFile = 70000,
+                                        int hardPacketBudgetChars = 0) const;
     QString formatHitsForPrompt(const QVector<RagHit> &hits) const;
     QString formatHitsForUi(const QVector<RagHit> &hits) const;
     QString formatInventoryForUi() const;

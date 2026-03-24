@@ -406,6 +406,70 @@ bool isStructuredCodeLikeLine(const QString &line)
             || trimmed.contains(QLatin1Char('='));
 }
 
+bool isProceduralLeadLine(const QString &trimmed)
+{
+    if (trimmed.isEmpty() || isPageMarkerLine(trimmed)) {
+        return false;
+    }
+
+    static const QRegularExpression numberedProcedure(
+            QString::fromLatin1(R"(^(?:step\s+\d+[:.)]?|\d+(?:\.\d+){0,4}[.)]?|[a-zA-Z][.)])\s+(?:run|execute|apply|install|configure|create|set|verify|check|edit|copy|add|remove|delete|update|enable|disable|start|stop|restart|import|export|move|rename|assign|pull|push|boot|deploy|bootstrap|connect|mount|unmount|launch|open|select|choose|enter|type|use)\b[^\n]{0,220}:?$)"),
+            QRegularExpression::CaseInsensitiveOption);
+    static const QRegularExpression imperativeLead(
+            QString::fromLatin1(R"(^(?:run|execute|apply|install|configure|create|set|verify|check|edit|copy|add|remove|delete|update|enable|disable|start|stop|restart|import|export|move|rename|assign|pull|push|boot|deploy|bootstrap|connect|mount|unmount|launch|open|select|choose|enter|type|use)\b[^\n]{0,220}:$)"),
+            QRegularExpression::CaseInsensitiveOption);
+    static const QRegularExpression genericStep(
+            QString::fromLatin1(R"(^(?:step\s+\d+[:.)]?|\d+(?:\.\d+){0,4}[.)]?)\s+[^\n]{2,220}:$)"),
+            QRegularExpression::CaseInsensitiveOption);
+
+    return numberedProcedure.match(trimmed).hasMatch()
+            || imperativeLead.match(trimmed).hasMatch()
+            || genericStep.match(trimmed).hasMatch();
+}
+
+bool blockEndsWithProceduralLead(const QString &text)
+{
+    const QStringList lines = text.split(QLatin1Char('\n'), Qt::KeepEmptyParts);
+    for (int i = lines.size() - 1; i >= 0; --i) {
+        const QString trimmed = lines.at(i).trimmed();
+        if (trimmed.isEmpty() || isPageMarkerLine(trimmed)) {
+            continue;
+        }
+        return isProceduralLeadLine(trimmed);
+    }
+    return false;
+}
+
+bool blockContainsStructuredContent(const QString &text)
+{
+    const QStringList lines = text.split(QLatin1Char('\n'), Qt::KeepEmptyParts);
+    for (const QString &line : lines) {
+        const QString trimmed = line.trimmed();
+        if (trimmed.isEmpty() || isPageMarkerLine(trimmed)) {
+            continue;
+        }
+        if (isBulletLine(trimmed) || isStructuredCodeLikeLine(line)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool currentBlockLooksProcedural(const QStringList &currentLines)
+{
+    for (int i = currentLines.size() - 1, checked = 0; i >= 0 && checked < 3; --i) {
+        const QString trimmed = currentLines.at(i).trimmed();
+        if (trimmed.isEmpty() || isPageMarkerLine(trimmed)) {
+            continue;
+        }
+        ++checked;
+        if (isProceduralLeadLine(trimmed) || isStructuredCodeLikeLine(currentLines.at(i))) {
+            return true;
+        }
+    }
+    return false;
+}
+
 QString normalizeBlockText(const QString &text)
 {
     return collapseExcessBlankLines(trimTrailingWhitespacePerLine(text)).trimmed();
@@ -581,8 +645,15 @@ QVector<QString> buildSemanticBlocks(const QString &text, const std::atomic_bool
         const QString trimmed = line.trimmed();
 
         if (isPageMarkerLine(trimmed)) {
-            flushCurrent();
-            pendingPrefix = trimmed;
+            if (currentLines.isEmpty()) {
+                flushCurrent();
+                pendingPrefix = trimmed;
+            } else {
+                pendingPrefix = trimmed;
+                if (!currentBlockLooksProcedural(currentLines)) {
+                    flushCurrent();
+                }
+            }
             continue;
         }
 
@@ -608,6 +679,9 @@ QVector<QString> buildSemanticBlocks(const QString &text, const std::atomic_bool
         }
 
         if (trimmed.isEmpty()) {
+            if (!pendingPrefix.isEmpty() && !currentLines.isEmpty()) {
+                continue;
+            }
             flushCurrent();
             continue;
         }
@@ -627,12 +701,13 @@ QVector<QString> buildSemanticBlocks(const QString &text, const std::atomic_bool
         if (startsStructuredBlock && !currentLines.isEmpty()) {
             const QString previousTrimmed = currentLines.constLast().trimmed();
             const bool previousStructured = isBulletLine(previousTrimmed) || isStructuredCodeLikeLine(currentLines.constLast());
-            if (!previousStructured) {
+            const bool previousProceduralLead = isProceduralLeadLine(previousTrimmed);
+            if (!previousStructured && !previousProceduralLead) {
                 flushCurrent();
             }
         }
 
-        if (!pendingPrefix.isEmpty() && currentLines.isEmpty()) {
+        if (!pendingPrefix.isEmpty()) {
             currentLines << pendingPrefix;
             pendingPrefix.clear();
         }
@@ -3163,10 +3238,17 @@ QString RagIndexer::formatDocumentStudyPrompt(const QStringList &preferredPaths,
             endPosExclusive = qBound(startPos + 1, endPosExclusive, orderedFileChunks.size());
             const QString marker = QStringLiteral("\n[... later in this section ...]\n");
             QString headText = orderedFileChunks.at(startPos)->text.trimmed();
-            if (headText.size() < 700 && startPos + 1 < endPosExclusive) {
-                headText = normalizeBlockText(headText + QStringLiteral("\n\n") + orderedFileChunks.at(startPos + 1)->text.trimmed());
+            int nextPos = startPos + 1;
+            while (nextPos < endPosExclusive && nextPos <= startPos + 3) {
+                const bool shouldMerge = headText.size() < 1200
+                        || (blockEndsWithProceduralLead(headText) && !blockContainsStructuredContent(headText));
+                if (!shouldMerge) {
+                    break;
+                }
+                headText = normalizeBlockText(headText + QStringLiteral("\n\n") + orderedFileChunks.at(nextPos)->text.trimmed());
+                ++nextPos;
             }
-            headText = balancedTrimForStudy(headText, qMin(maxChars, qMax(500, static_cast<int>(maxChars * 0.68))));
+            headText = balancedTrimForStudy(headText, qMin(maxChars, qMax(700, static_cast<int>(maxChars * 0.75))));
             if (endPosExclusive - startPos <= 1 || headText.size() >= maxChars - 160) {
                 return headText;
             }
@@ -3176,8 +3258,13 @@ QString RagIndexer::formatDocumentStudyPrompt(const QStringList &preferredPaths,
                 return headText;
             }
 
-            QString tailText = orderedFileChunks.at(endPosExclusive - 1)->text.trimmed();
-            if (tailText == headText) {
+            int tailPos = endPosExclusive - 1;
+            QString tailText = orderedFileChunks.at(tailPos)->text.trimmed();
+            while (tailPos > startPos && (tailText.trimmed().isEmpty() || tailText == headText)) {
+                --tailPos;
+                tailText = orderedFileChunks.at(tailPos)->text.trimmed();
+            }
+            if (tailPos <= startPos || tailText == headText) {
                 return headText;
             }
             tailText = balancedTrimForStudy(tailText, tailBudget);
@@ -3403,6 +3490,223 @@ QString RagIndexer::formatDocumentStudyPrompt(const QStringList &preferredPaths,
                 : effectiveMaxCharsPerFile;
         packet = balancedTrimForStudy(packet, effectivePacketBudget);
         packets << packet;
+    }
+
+    return packets.join(QStringLiteral("\n\n"));
+}
+
+QString RagIndexer::formatExactExtractionPrompt(const QStringList &preferredPaths,
+                                               const QString &query,
+                                               int maxFiles,
+                                               int maxCharsPerFile,
+                                               int hardPacketBudgetChars) const
+{
+    if (preferredPaths.isEmpty() || maxFiles <= 0) {
+        return QString();
+    }
+
+    QSet<QString> selectedPaths;
+    QStringList orderedPaths;
+    for (const QString &path : preferredPaths) {
+        const QString cleaned = QDir::cleanPath(path.trimmed());
+        if (cleaned.isEmpty() || selectedPaths.contains(cleaned)) {
+            continue;
+        }
+        selectedPaths.insert(cleaned);
+        orderedPaths << cleaned;
+        if (orderedPaths.size() >= maxFiles) {
+            break;
+        }
+    }
+    if (orderedPaths.isEmpty()) {
+        return QString();
+    }
+
+    QHash<QString, QVector<const Chunk *>> chunksByPath;
+    for (const Chunk &chunk : m_chunks) {
+        const QString cleanedPath = QDir::cleanPath(chunk.filePath);
+        if (selectedPaths.contains(cleanedPath)) {
+            chunksByPath[cleanedPath].push_back(&chunk);
+        }
+    }
+
+    QStringList packets;
+    const QString actionableQuery = query.trimmed().isEmpty()
+            ? QStringLiteral("commands snippets yaml config example procedures warnings placeholders appendix")
+            : query + QStringLiteral(" commands snippets yaml config example procedures warnings placeholders appendix");
+
+    for (const QString &path : std::as_const(orderedPaths)) {
+        QVector<const Chunk *> fileChunks = chunksByPath.value(path);
+        if (fileChunks.isEmpty()) {
+            continue;
+        }
+        std::sort(fileChunks.begin(), fileChunks.end(), [](const Chunk *a, const Chunk *b) {
+            return a->chunkIndex < b->chunkIndex;
+        });
+
+        const Chunk *firstChunk = fileChunks.constFirst();
+        const QString fileName = firstChunk != nullptr ? firstChunk->fileName : QFileInfo(path).fileName();
+        const QString sourceRole = firstChunk != nullptr ? firstChunk->sourceRole : QStringLiteral("reference");
+        const QString sourceType = firstChunk != nullptr ? firstChunk->sourceType : QStringLiteral("doc");
+
+        const int effectiveBudget = hardPacketBudgetChars > 0
+                ? qMax(16000, qMin(hardPacketBudgetChars, qMax(16000, maxCharsPerFile)))
+                : qMax(16000, maxCharsPerFile);
+        int remainingBudget = effectiveBudget;
+
+        QStringList allChunks;
+        allChunks.reserve(fileChunks.size());
+        int totalChars = 0;
+        for (const Chunk *chunk : std::as_const(fileChunks)) {
+            const QString chunkText = normalizeBlockText(chunk->text);
+            allChunks << chunkText;
+            totalChars += chunkText.size();
+        }
+
+        QString packet = QStringLiteral("=== EXACT_EXTRACTION_PACKET: %1 | role=%2 | type=%3 ===\n")
+                .arg(fileName, sourceRole, sourceType);
+        packet += QStringLiteral("SOURCE_PATH: %1\n").arg(path);
+        packet += QStringLiteral("EXTRACTION_MODE: ordered raw chunk coverage\n");
+        packet += QStringLiteral("NOTE: Prefer exact snippets, commands, YAML, config fragments, placeholders, warnings, and procedures from the raw chunk windows below.\n\n");
+        remainingBudget -= packet.size();
+        if (remainingBudget <= 1200) {
+            packets << packet.trimmed();
+            continue;
+        }
+
+        if (totalChars <= remainingBudget) {
+            for (int i = 0; i < fileChunks.size(); ++i) {
+                const Chunk *chunk = fileChunks.at(i);
+                const QString chunkBlock = QStringLiteral("--- RAW_CHUNK %1 ---\n%2\n\n")
+                        .arg(chunk->chunkIndex)
+                        .arg(allChunks.at(i));
+                if (chunkBlock.size() > remainingBudget) {
+                    break;
+                }
+                packet += chunkBlock;
+                remainingBudget -= chunkBlock.size();
+            }
+            packets << packet.trimmed();
+            continue;
+        }
+
+        QHash<int, int> chunkIndexToPos;
+        for (int i = 0; i < fileChunks.size(); ++i) {
+            chunkIndexToPos.insert(fileChunks.at(i)->chunkIndex, i);
+        }
+
+        QVector<RagHit> focusHits = searchHitsInFiles(actionableQuery,
+                                                      QStringList{path},
+                                                      18,
+                                                      RetrievalIntent::DocumentGeneration);
+        QVector<int> focusPositions;
+        for (const RagHit &hit : std::as_const(focusHits)) {
+            const int pos = chunkIndexToPos.value(hit.chunkIndex, -1);
+            if (pos >= 0) {
+                focusPositions.push_back(pos);
+            }
+        }
+
+        const int sampleWindowCount = qBound(4,
+                                             qMax(4, qMin(12, effectiveBudget / 2400)),
+                                             12);
+        if (!fileChunks.isEmpty()) {
+            const int lastPos = fileChunks.size() - 1;
+            for (int sampleIndex = 0; sampleIndex < sampleWindowCount; ++sampleIndex) {
+                const int denominator = qMax(1, sampleWindowCount - 1);
+                const int samplePos = qRound(lastPos * (sampleIndex / static_cast<double>(denominator)));
+                focusPositions.push_back(samplePos);
+            }
+        }
+
+        std::sort(focusPositions.begin(), focusPositions.end());
+        focusPositions.erase(std::unique(focusPositions.begin(), focusPositions.end()), focusPositions.end());
+
+        struct ChunkRange {
+            int start = -1;
+            int end = -1;
+        };
+        QVector<ChunkRange> ranges;
+        const int focusCount = focusPositions.isEmpty() ? sampleWindowCount : focusPositions.size();
+        const int targetWindowChars = qBound(1400,
+                                             effectiveBudget / qMax(4, qMin(10, focusCount)),
+                                             3200);
+        for (int focusPos : std::as_const(focusPositions)) {
+            if (focusPos < 0 || focusPos >= fileChunks.size()) {
+                continue;
+            }
+            int start = focusPos;
+            int end = focusPos;
+            int windowChars = allChunks.at(focusPos).size();
+            int left = focusPos - 1;
+            int right = focusPos + 1;
+            while ((left >= 0 || right < fileChunks.size()) && windowChars < targetWindowChars) {
+                const int leftChars = left >= 0 ? allChunks.at(left).size() : -1;
+                const int rightChars = right < fileChunks.size() ? allChunks.at(right).size() : -1;
+                const bool takeRight = rightChars >= 0 && (leftChars < 0 || rightChars <= leftChars || end <= focusPos);
+                if (takeRight) {
+                    windowChars += rightChars + 2;
+                    end = right;
+                    ++right;
+                } else if (leftChars >= 0) {
+                    windowChars += leftChars + 2;
+                    start = left;
+                    --left;
+                } else {
+                    break;
+                }
+            }
+            ranges.push_back({start, end});
+        }
+
+        std::sort(ranges.begin(), ranges.end(), [](const ChunkRange &a, const ChunkRange &b) {
+            if (a.start != b.start) {
+                return a.start < b.start;
+            }
+            return a.end < b.end;
+        });
+
+        QVector<ChunkRange> mergedRanges;
+        for (const ChunkRange &range : std::as_const(ranges)) {
+            if (mergedRanges.isEmpty() || range.start > mergedRanges.constLast().end + 1) {
+                mergedRanges.push_back(range);
+            } else {
+                mergedRanges.last().end = qMax(mergedRanges.constLast().end, range.end);
+            }
+        }
+
+        for (const ChunkRange &range : std::as_const(mergedRanges)) {
+            if (range.start < 0 || range.end < range.start) {
+                continue;
+            }
+            QString rangeText = QStringLiteral("--- RAW_CHUNK_RANGE %1-%2 ---\n")
+                    .arg(fileChunks.at(range.start)->chunkIndex)
+                    .arg(fileChunks.at(range.end)->chunkIndex);
+            for (int pos = range.start; pos <= range.end; ++pos) {
+                rangeText += QStringLiteral("[chunk %1]\n%2\n\n")
+                        .arg(fileChunks.at(pos)->chunkIndex)
+                        .arg(allChunks.at(pos));
+            }
+            if (rangeText.size() > remainingBudget) {
+                if (remainingBudget < 1200) {
+                    break;
+                }
+                rangeText = balancedTrimForStudy(rangeText, remainingBudget);
+            }
+            if (rangeText.trimmed().isEmpty() || rangeText.size() > remainingBudget) {
+                break;
+            }
+            packet += rangeText;
+            remainingBudget -= rangeText.size();
+            if (remainingBudget < 1200) {
+                break;
+            }
+        }
+
+        if (remainingBudget >= 280) {
+            packet += QStringLiteral("\n[Coverage note] Raw chunk windows were emitted in source order and biased toward actionable hits plus evenly spaced spans across the file. If the document is larger than the packet budget, continue in another batch for full coverage.\n");
+        }
+        packets << packet.trimmed();
     }
 
     return packets.join(QStringLiteral("\n\n"));

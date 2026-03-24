@@ -155,8 +155,51 @@ bool isStructuredDocumentRequest(const QString &prompt)
             || lower.contains(QStringLiteral(".md"));
 }
 
+bool looksLikeExactExtractionPrompt(const QString &prompt)
+{
+    const QString lower = prompt.toLower();
+    const bool extractionVerb = lower.contains(QStringLiteral("extract all"))
+            || lower.contains(QStringLiteral("gather all"))
+            || lower.contains(QStringLiteral("collect all"))
+            || lower.contains(QStringLiteral("capture all"))
+            || lower.contains(QStringLiteral("list all"))
+            || lower.contains(QStringLiteral("scrape"))
+            || lower.contains(QStringLiteral("scraper"))
+            || lower.contains(QStringLiteral("exhaustive"))
+            || lower.contains(QStringLiteral("verbatim"))
+            || lower.contains(QStringLiteral("exact snippet"))
+            || lower.contains(QStringLiteral("exact snippets"))
+            || lower.contains(QStringLiteral("exact instruction"))
+            || lower.contains(QStringLiteral("preserve indentation"))
+            || lower.contains(QStringLiteral("do not skip"));
+    const bool actionableTarget = lower.contains(QStringLiteral("actionable"))
+            || lower.contains(QStringLiteral("snippet"))
+            || lower.contains(QStringLiteral("snippets"))
+            || lower.contains(QStringLiteral("commands"))
+            || lower.contains(QStringLiteral("config snippets"))
+            || lower.contains(QStringLiteral("yaml"))
+            || lower.contains(QStringLiteral("example files"))
+            || lower.contains(QStringLiteral("prerequisites"))
+            || lower.contains(QStringLiteral("warnings"))
+            || lower.contains(QStringLiteral("ordered procedures"))
+            || lower.contains(QStringLiteral("placeholders"))
+            || lower.contains(QStringLiteral("appendixes"))
+            || lower.contains(QStringLiteral("appendix"));
+
+    return (extractionVerb && actionableTarget)
+            || lower.contains(QStringLiteral("return, where applicable:"))
+            || lower.contains(QStringLiteral("for each item include"))
+            || lower.contains(QStringLiteral("search the entire document"))
+            || lower.contains(QStringLiteral("do not skip repeated sections"))
+            || lower.contains(QStringLiteral("use one code block per snippet"));
+}
+
 bool looksLikeDocumentStudyPrompt(const QString &prompt)
 {
+    if (looksLikeExactExtractionPrompt(prompt)) {
+        return true;
+    }
+
     const QString lower = prompt.toLower();
     return lower.contains(QStringLiteral("summary"))
             || lower.contains(QStringLiteral("summarize"))
@@ -171,7 +214,6 @@ bool looksLikeDocumentStudyPrompt(const QString &prompt)
             || lower.contains(QStringLiteral("overview"))
             || lower.contains(QStringLiteral("high-level design"))
             || lower.contains(QStringLiteral("hld"))
-            // ── new ──
             || lower.contains(QStringLiteral("document"))
             || lower.contains(QStringLiteral("entire"))
             || lower.contains(QStringLiteral("every section"))
@@ -293,7 +335,7 @@ int safeRetrievedContextTokenBudget(int numCtx, bool documentStudy, OllamaRuntim
 {
     const int safeNumCtx = qMax(4096, numCtx);
     if (documentStudy) {
-        const int answerReserve = qBound(4096, safeNumCtx / 8, 8192);
+        const int answerReserve = qBound(4096, safeNumCtx / 4, 8192);
         const int scaffoldingReserve = qBound(1800, safeNumCtx / 10, 3200);
         const int historyReserve = qBound(600, safeNumCtx / 24, 1200);
         const int available = qMax(2200, safeNumCtx - answerReserve - scaffoldingReserve - historyReserve);
@@ -345,6 +387,7 @@ double normalizedDocumentScale(int textChars, int chunkCount)
 
 DocumentStudyRuntimeTuning tuneDocumentStudyRuntime(const DocumentSelectionStats &stats,
                                                     bool prioritized,
+                                                    bool exactExtraction,
                                                     int numCtx,
                                                     OllamaRuntimeProfile runtimeProfile)
 {
@@ -383,6 +426,18 @@ DocumentStudyRuntimeTuning tuneDocumentStudyRuntime(const DocumentSelectionStats
                                     qMin(coverageFromScale, coverageFromBudget),
                                     maxCoverage);
     tuning.studyHitFloor = qBound(10, tuning.coveragePerFile + 4, 18);
+
+    if (exactExtraction) {
+        tuning.maxCharsPerFile = qMin(tuning.localContextBudget,
+                                      qMax(tuning.maxCharsPerFile,
+                                           qMin(qMax(22000, availablePerFileBudget),
+                                                qMax(22000, tuning.localContextBudget - 1400))));
+        tuning.coveragePerFile = qBound(10, tuning.coveragePerFile + 4, 24);
+        tuning.studyHitFloor = qBound(14, tuning.coveragePerFile + 6, 24);
+        tuning.hitPromptFallbackBudget = qBound(1200,
+                                                qRound(static_cast<double>(tuning.localContextBudget) * 0.07),
+                                                2400);
+    }
     return tuning;
 }
 
@@ -1141,6 +1196,7 @@ void ChatController::sendUserPrompt(const QString &prompt, bool allowExternalSea
             result.localUi = uiSections.isEmpty() ? QStringLiteral("<none>") : uiSections.join(QStringLiteral("\n\n----------------\n\n"));
         } else {
             RetrievalIntent intent = RetrievalIntent::General;
+            const bool exactExtractionRequest = looksLikeExactExtractionPrompt(trimmed);
             const bool looksLikeDocumentStudy = looksLikeDocumentStudyPrompt(trimmed);
             if (trimmed.contains(QStringLiteral("error"), Qt::CaseInsensitive)
                     || trimmed.contains(QStringLiteral("failed"), Qt::CaseInsensitive)
@@ -1159,26 +1215,46 @@ void ChatController::sendUserPrompt(const QString &prompt, bool allowExternalSea
                 intent = RetrievalIntent::Implementation;
             }
 
-            const int prioritizedLimit = looksLikeDocumentStudy ? qMax(3, qMin(config.maxLocalHits, 6))
-                                                                : qMax(1, qMin(config.maxLocalHits, 4));
+            const int prioritizedLimit = exactExtractionRequest ? qMax(4, qMin(config.maxLocalHits * 2, 10))
+                                                                : (looksLikeDocumentStudy ? qMax(3, qMin(config.maxLocalHits, 6))
+                                                                                          : qMax(1, qMin(config.maxLocalHits, 4)));
             const QVector<RagHit> prioritizedHits = prioritizedAssets.isEmpty()
                     ? QVector<RagHit>()
                     : m_rag->searchHitsInFiles(trimmed,
                                                prioritizedAssets,
                                                prioritizedLimit,
                                                intent);
-            QVector<RagHit> generalHits = m_rag->searchHits(trimmed, config.maxLocalHits, intent);
+            const int generalHitLimit = exactExtractionRequest ? qMax(config.maxLocalHits, 10) : config.maxLocalHits;
+            QVector<RagHit> generalHits = m_rag->searchHits(trimmed, generalHitLimit, intent);
             if (looksLikeDocumentStudy) {
                 const QString structureQuery = trimmed + QStringLiteral(" table of contents contents chapter section headings");
+                const int structureLimit = exactExtractionRequest
+                        ? qMax(4, qMin(8, generalHitLimit / 2))
+                        : qMax(2, qMin(4, config.maxLocalHits / 2));
                 const QVector<RagHit> structureHits = prioritizedAssets.isEmpty()
-                        ? m_rag->searchHits(structureQuery, qMax(2, qMin(4, config.maxLocalHits / 2)), intent)
+                        ? m_rag->searchHits(structureQuery, structureLimit, intent)
                         : m_rag->searchHitsInFiles(structureQuery,
                                                    prioritizedAssets,
-                                                   qMax(2, qMin(4, config.maxLocalHits / 2)),
+                                                   structureLimit,
                                                    intent);
                 generalHits = mergePreferredHits(structureHits,
                                                  generalHits,
-                                                 config.maxLocalHits,
+                                                 generalHitLimit,
+                                                 nullptr,
+                                                 nullptr,
+                                                 nullptr);
+            }
+            if (exactExtractionRequest) {
+                const QString extractionQuery = trimmed + QStringLiteral(" commands snippets yaml config example procedures warnings placeholders appendix exact");
+                const QVector<RagHit> extractionHits = prioritizedAssets.isEmpty()
+                        ? m_rag->searchHits(extractionQuery, qMax(6, generalHitLimit), intent)
+                        : m_rag->searchHitsInFiles(extractionQuery,
+                                                   prioritizedAssets,
+                                                   qMax(6, generalHitLimit),
+                                                   intent);
+                generalHits = mergePreferredHits(extractionHits,
+                                                 generalHits,
+                                                 qMax(generalHitLimit, config.maxLocalHits + 6),
                                                  nullptr,
                                                  nullptr,
                                                  nullptr);
@@ -1219,12 +1295,13 @@ void ChatController::sendUserPrompt(const QString &prompt, bool allowExternalSea
                     }
                 }
 
-                const int maxStudyFiles = prioritizedAssets.isEmpty() ? 1 : qMin(2, studyPaths.size());
+                const int maxStudyFiles = exactExtractionRequest ? 1 : (prioritizedAssets.isEmpty() ? 1 : qMin(2, studyPaths.size()));
                 const DocumentSelectionStats studyStats = m_rag->estimateDocumentSelectionStats(studyPaths,
                                                                                                 maxStudyFiles);
                 const OllamaRuntimeProfile runtimeProfile = detectOllamaRuntimeProfile();
                 const DocumentStudyRuntimeTuning documentTuning = tuneDocumentStudyRuntime(studyStats,
                                                                                             !prioritizedAssets.isEmpty(),
+                                                                                            exactExtractionRequest,
                                                                                             m_config.ollamaNumCtx,
                                                                                             runtimeProfile);
                 const QVector<RagHit> coverageHits = m_rag->representativeHitsInFiles(studyPaths,
@@ -1239,14 +1316,21 @@ void ChatController::sendUserPrompt(const QString &prompt, bool allowExternalSea
                                                &result.prioritizedAssetsUsed,
                                                &result.prioritizedHits);
 
-                documentStudyPacket = m_rag->formatDocumentStudyPrompt(studyPaths,
-                                                                       maxStudyFiles,
-                                                                       180,
-                                                                       documentTuning.maxCharsPerFile,
-                                                                       documentTuning.maxCharsPerFile);
+                documentStudyPacket = exactExtractionRequest
+                        ? m_rag->formatExactExtractionPrompt(studyPaths,
+                                                             trimmed,
+                                                             maxStudyFiles,
+                                                             documentTuning.maxCharsPerFile,
+                                                             documentTuning.maxCharsPerFile)
+                        : m_rag->formatDocumentStudyPrompt(studyPaths,
+                                                           maxStudyFiles,
+                                                           180,
+                                                           documentTuning.maxCharsPerFile,
+                                                           documentTuning.maxCharsPerFile);
                 const QString hitPromptContextRaw = m_rag->formatHitsForPrompt(localHits);
                 const bool heavyDocumentStudyPacket = documentStudyPacket.size() >= 18000;
-                const bool structuredDocumentStudyPacket = documentStudyPacket.contains(QStringLiteral("SECTION_COVERAGE_PACKET:"));
+                const bool structuredDocumentStudyPacket = documentStudyPacket.contains(QStringLiteral("SECTION_COVERAGE_PACKET:"))
+                        || documentStudyPacket.contains(QStringLiteral("EXACT_EXTRACTION_PACKET:"));
                 const QString hitPromptContext = (heavyDocumentStudyPacket || structuredDocumentStudyPacket)
                         ? QString()
                         : trimForBudget(hitPromptContextRaw, documentTuning.hitPromptFallbackBudget);
@@ -2020,7 +2104,8 @@ void ChatController::startGeneration(const QString &prompt,
     }
 
     const bool heavyDocumentStudyRequest = looksLikeDocumentStudyPrompt(prompt)
-            && localContext.contains(QStringLiteral("SECTION_COVERAGE_PACKET:"));
+            && (localContext.contains(QStringLiteral("SECTION_COVERAGE_PACKET:"))
+                || localContext.contains(QStringLiteral("EXACT_EXTRACTION_PACKET:")));
 
     if (heavyDocumentStudyRequest && !m_forceDisableReasoningForActiveRequest) {
         addDiagnostic(QStringLiteral("backend"),
@@ -2403,6 +2488,7 @@ QVector<LlmChatMessage> ChatController::buildPromptMessages(const QString &userP
                                                             const QString &sessionSummary,
                                                             bool contextIsWeak) const
 {
+    const bool exactExtractionPrompt = looksLikeExactExtractionPrompt(userPrompt);
     const bool documentStudyPrompt = looksLikeDocumentStudyPrompt(userPrompt);
     const OllamaRuntimeProfile runtimeProfile = detectOllamaRuntimeProfile();
     const int requestNumCtx = effectiveRequestNumCtx();
@@ -2415,7 +2501,7 @@ QVector<LlmChatMessage> ChatController::buildPromptMessages(const QString &userP
     const int localBudget = m_outlineOnlyFirstPass
             ? 4800
             : (documentStudyPrompt
-               ? qMin(qBound(14000, localContext.size() + 1024, 98000), safeDocumentLocalBudget)
+               ? qMin(qBound(exactExtractionPrompt ? 18000 : 14000, localContext.size() + 1024, 98000), safeDocumentLocalBudget)
                : qMin(9600, safeGeneralLocalBudget));
     const int externalBudget = m_outlineOnlyFirstPass ? 1400 : 2400;
     const int memoryBudget = 900;
