@@ -155,7 +155,18 @@ bool looksLikeDocumentStudyPrompt(const QString &prompt)
             || lower.contains(QStringLiteral("guide"))
             || lower.contains(QStringLiteral("overview"))
             || lower.contains(QStringLiteral("high-level design"))
-            || lower.contains(QStringLiteral("hld"));
+            || lower.contains(QStringLiteral("hld"))
+            // ── new ──
+            || lower.contains(QStringLiteral("document"))
+            || lower.contains(QStringLiteral("entire"))
+            || lower.contains(QStringLiteral("every section"))
+            || lower.contains(QStringLiteral("every chapter"))
+            || lower.contains(QStringLiteral("all sections"))
+            || lower.contains(QStringLiteral("step by step"))
+            || lower.contains(QStringLiteral("cover all"))
+            || lower.contains(QStringLiteral("no gaps"))
+            || lower.contains(QStringLiteral("installation doc"))
+            || lower.contains(QStringLiteral("install doc"));
 }
 
 bool containsAny(const QString &text, const QStringList &needles)
@@ -1005,7 +1016,8 @@ void ChatController::sendUserPrompt(const QString &prompt, bool allowExternalSea
                     }
                 }
 
-                const int coveragePerFile = prioritizedAssets.isEmpty() ? 6 : 8;
+// FIXED — more representative samples for large non-pinned docs
+                const int coveragePerFile = prioritizedAssets.isEmpty() ? 12 : 16;
                 const QVector<RagHit> coverageHits = m_rag->representativeHitsInFiles(studyPaths,
                                                                                       coveragePerFile,
                                                                                       true);
@@ -1021,7 +1033,7 @@ void ChatController::sendUserPrompt(const QString &prompt, bool allowExternalSea
                 documentStudyPacket = m_rag->formatDocumentStudyPrompt(studyPaths,
                                                                        maxStudyFiles,
                                                                        180,
-                                                                       22000);
+                                                                       40000);  // gives the section sweeper real room
             }
             result.retrievedHits = localHits.size();
             const QString hitPromptContextRaw = m_rag->formatHitsForPrompt(localHits);
@@ -1035,7 +1047,7 @@ void ChatController::sendUserPrompt(const QString &prompt, bool allowExternalSea
                     ? hitPromptContext
                     : documentStudyPacket + QStringLiteral("\n\n") + hitPromptContext;
             result.localContext = trimForBudget(combinedLocalContext,
-                                                result.outlineOnlyFirstPass ? 4800 : (looksLikeDocumentStudy ? 28000 : 9600));
+                                                result.outlineOnlyFirstPass ? 4800 : (looksLikeDocumentStudy ? 52000 : 9600));
             result.localUi = m_rag->formatHitsForUi(localHits);
         }
 
@@ -2130,8 +2142,11 @@ QVector<LlmChatMessage> ChatController::buildPromptMessages(const QString &userP
         "- For document or PDF requests, follow any retrieved table of contents, section headings, "
         "or chapter structure before inventing your own structure.\n"
         "- When LOCAL_CONTEXT contains DOCUMENT_OUTLINE_MAP or SECTION_COVERAGE_PACKET, cover every "
-        "available top-level section or chapter in original order before expanding details. If "
-        "space is tight, keep one short line per section instead of omitting later sections.\n"
+        "available section in original document order. For each section write only what the "
+        "SECTION_COVERAGE_PACKET explicitly provides. If a section's packet is short, write one "
+        "sentence from it — do NOT expand, infer, or invent commands, paths, or steps that are "
+        "not literally present in the supplied text. A short accurate entry is better than a "
+        "long fabricated one.\n"
         "- For chapter-specific tutorials or instructions, only include steps and commands that "
         "are explicitly present in the retrieved chapter context. Do not extrapolate missing steps.\n"
         "- RELEVANT_MEMORIES are stable user preferences or facts. Never treat them as a hidden "
@@ -2214,7 +2229,14 @@ QVector<LlmChatMessage> ChatController::buildPromptMessages(const QString &userP
     messages.push_back({QStringLiteral("developer"), developerSections.join(QStringLiteral("\n\n"))});
 
     QStringList userSections;
-    const QString localTrimmed = trimForBudget(deduplicatePromptSection(localContext), localBudget);
+
+    // FIXED — allow one repeat for doc-study (same command in two chapters is intentional)
+    const QString localTrimmed = trimForBudget(
+        documentStudyPrompt
+            ? deduplicatePromptSection(localContext, 2)
+            : deduplicatePromptSection(localContext),
+        localBudget);
+
     if (!localTrimmed.trimmed().isEmpty()) {
         userSections << QStringLiteral("LOCAL_CONTEXT:\n%1").arg(localTrimmed);
     }

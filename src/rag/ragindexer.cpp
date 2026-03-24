@@ -2933,7 +2933,7 @@ QString RagIndexer::formatDocumentStudyPrompt(const QStringList &preferredPaths,
         }
         anchors = uniqueAnchors;
 
-        const bool hugeDocument = fileChunks.size() >= 1200 || text.size() >= 250000;
+        const bool hugeDocument = fileChunks.size() >= 2000 || text.size() >= 500000;
         if (hugeDocument && anchors.size() > 64) {
             QVector<SectionAnchor> sampledAnchors;
             sampledAnchors.reserve(64);
@@ -2955,8 +2955,8 @@ QString RagIndexer::formatDocumentStudyPrompt(const QStringList &preferredPaths,
         const int effectiveMaxCharsPerFile = hugeDocument ? qMin(maxCharsPerFile, 18000) : maxCharsPerFile;
         const int previewBudget = hugeDocument ? 0 : qMin(8000, qMax(2400, effectiveMaxCharsPerFile / 8));
         const int coverageBudget = qMax(2400, effectiveMaxCharsPerFile - previewBudget - 800);
-        const int minSectionChars = hugeDocument ? 280 : 650;
-        const int maxSectionCharsCap = hugeDocument ? 950 : 3600;
+        const int minSectionChars = hugeDocument ? 400 : 800;
+        const int maxSectionCharsCap = hugeDocument ? 1600 : 4000;
         QStringList coverageSections;
         int remainingBudget = coverageBudget;
         int remainingSections = anchors.size();
