@@ -269,7 +269,7 @@ int safeRetrievedContextTokenBudget(int numCtx, bool documentStudy, OllamaRuntim
 {
     const int safeNumCtx = qMax(4096, numCtx);
     if (documentStudy) {
-        const int answerReserve = qBound(2048, safeNumCtx / 8, 4096);
+        const int answerReserve = qBound(4096, safeNumCtx / 8, 8192);
         const int scaffoldingReserve = qBound(1800, safeNumCtx / 10, 3200);
         const int historyReserve = qBound(600, safeNumCtx / 24, 1200);
         const int available = qMax(2200, safeNumCtx - answerReserve - scaffoldingReserve - historyReserve);
@@ -347,7 +347,9 @@ DocumentStudyRuntimeTuning tuneDocumentStudyRuntime(const DocumentSelectionStats
     const int dynamicPacketBudget = qBound(16000,
                                            22000 + qRound(scale * 18000.0) + (prioritized ? 2000 : 0),
                                            52000);
-    tuning.maxCharsPerFile = qMin(dynamicPacketBudget, availablePerFileBudget);
+    tuning.maxCharsPerFile = qMin(dynamicPacketBudget,
+                              qMin(availablePerFileBudget,
+                                   tuning.localContextBudget));
     tuning.hitPromptFallbackBudget = qBound(800,
                                             qRound(static_cast<double>(tuning.localContextBudget) * 0.05),
                                             1800);
@@ -1988,8 +1990,8 @@ void ChatController::startGeneration(const QString &prompt,
     }
 
     const bool heavyDocumentStudyRequest = looksLikeDocumentStudyPrompt(prompt)
-            && localContext.contains(QStringLiteral("SECTION_COVERAGE_PACKET:"))
-            && localContext.size() >= 16000;
+            && localContext.contains(QStringLiteral("SECTION_COVERAGE_PACKET:"));
+
     if (heavyDocumentStudyRequest && !m_forceDisableReasoningForActiveRequest) {
         addDiagnostic(QStringLiteral("backend"),
                       QStringLiteral("Large document-study request detected; forcing think=false for this request to reduce Ollama load."));
