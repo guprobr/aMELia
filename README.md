@@ -1,10 +1,16 @@
-# aMELia Qt6 v9.17.0
+# aMELia Qt6 v9.17.5
 
 Amelia is a local-first Qt6/C++ coding and cloud assistant that talks to a local Ollama server, stores its state under `~/.amelia_qt6`, indexes a local knowledge base, and can optionally use sanitized external web search through SearXNG.
 
-This build rolls forward the existing bootstrap, indexing, transcript, Prompt Lab, notification, and progress-bar work, and adds a Knowledge Base collection model with preserved folder structure, a tree-view browser, a hard-locked Knowledge Base root and safer workspace-jail boundaries under `~/.amelia_qt6`, stronger transcript code-block handling, first-run service prompts, a full JSON configuration editor, and a context-aware document-study budget policy that now respects Ollama `num_ctx` end-to-end. aMELia is also allegorically considered a MEL: Model Enhancement Lab.
+This build rolls forward the existing bootstrap, indexing, transcript, Prompt Lab, notification, and progress-bar work, and adds a Knowledge Base collection model with preserved folder structure, a tree-view browser, a hard-locked Knowledge Base root and safer workspace-jail boundaries under `~/.amelia_qt6`, stronger transcript code-block handling, first-run service prompts, a full JSON configuration editor, and a context-aware document-study budget policy that now respects Ollama `num_ctx` end-to-end, plus a generic one-shot fallback retry when Ollama reports that the model runner stopped unexpectedly during a large grounded request. Version 9.17.5 also reduces peak RAM during indexing by avoiding whole-corpus chunk-map duplication and by streaming `rag_cache.json` to disk instead of materializing one giant JSON document in memory, and it hard-disables Knowledge Base interaction while a prompt or reindex is in flight. aMELia is also allegorically considered a MEL: Model Enhancement Lab.
 
 NOTE: prompt transcripts are first generated in markdown but after it finishes, they should be properly formatted.
+
+## What changed in v9.17.5
+
+- reduced peak RAM during indexing by keeping the previous chunk corpus in place until finalization instead of duplicating it into multiple working hash maps
+- reduced end-of-index memory spikes by streaming `rag_cache.json` directly to disk instead of constructing one giant in-memory `QJsonDocument` with every chunk and embedding
+- locked the Knowledge Base tree, filtering, prioritization, drag-and-drop, and related controls while a prompt is running or while indexing is active
 
 ## Ubuntu packages
 
@@ -101,6 +107,8 @@ The effective policy is now:
 - keep a reserve for system/developer text, history, and the model's answer
 - scale representative coverage and section sweep density to the available budget
 - hard-trim each document-study packet so the formatter cannot outgrow the runtime budget
+- preserve both the beginning and end of oversized prompt sections instead of left-trimming away the tail of the document
+- supplement heading-based section anchors with evenly distributed document spans so late sections and appendixes still receive explicit coverage even when heading extraction is sparse
 
 By default Amelia uses an `auto` runtime profile for these limits. If your Ollama setup is CPU-only or unstable under heavy loads, you can force a more conservative policy with:
 
@@ -134,6 +142,7 @@ export AMELIA_OLLAMA_RUNTIME_PROFILE=gpu
 
 Notes:
 
+- If Ollama accepts a large grounded request but later returns `model runner has unexpectedly stopped`, Amelia v9.17.5 retries once with `think=false`, a lower request `num_ctx`, and a smaller balanced local-context packet. This fallback is generic and applies to any large document-heavy request; it does not hardcode subject-specific knowledge.
 - `OLLAMA_CONTEXT_LENGTH` is the main capacity knob for large grounded prompts.
 - `OLLAMA_NUM_PARALLEL=1` is important for big prompts because parallel request handling multiplies KV/context memory pressure.
 - `OLLAMA_MAX_LOADED_MODELS=1` keeps other models from competing for VRAM or RAM while a large prompt is running.

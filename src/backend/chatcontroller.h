@@ -149,8 +149,13 @@ private:
     void resetReasoningLoopGuard();
     void maybeRecoverFromReasoningOnlyLoop(const QString &text);
     void restartActiveGenerationWithoutReasoning();
+    void restartActiveGenerationAfterRunnerFailure();
     QString normalizeReasoningTraceForLoopDetection(const QString &text) const;
     QString buildReasoningLoopEvidence() const;
+    bool shouldRetryAfterRunnerFailure(const QString &message) const;
+    QString trimLocalContextForRunnerFallback(const QString &text, int maxChars) const;
+    int effectiveRequestNumCtx() const;
+    void restoreDefaultGenerationConfig();
     QString sanitizePromptSection(const QString &text) const;
     QString deduplicatePromptSection(const QString &text, int maxRepeatedParagraphs = 1) const;
     bool hasSubstantialPromptOverlap(const QString &a, const QString &b) const;
@@ -237,4 +242,6 @@ private:
     int m_reasoningRepeatStreak = 0;
     bool m_forceDisableReasoningForActiveRequest = false;
     bool m_reasoningFallbackRetryAttempted = false;
+    bool m_runnerFailureRetryAttempted = false;
+    int m_activeRequestNumCtxOverride = 0;
 };

@@ -1,0 +1,38 @@
+Extract all actionable snippets and instructions from the indexed guides, prioritized by KB ranking.
+
+Return:
+- code
+- commands
+- config snippets
+- YAML with preserved indentation
+- example files
+- prerequisites
+- warnings
+- ordered procedures
+- placeholders and their meanings
+
+For each item include:
+- topic
+- type
+- source section
+- exact snippet or exact instruction
+- purpose
+- prerequisites
+- risks/gotchas
+
+If deployment context exists, also include:
+- install phase
+- subsystem
+- deployment model
+
+Rules:
+- Search the entire document, including appendixes, notes, tables, and examples.
+- Do not stop at summaries.
+- Do not skip repeated sections unless they are identical.
+- If repeated content differs, keep all variants and note the differences.
+- Preserve syntax exactly.
+- Use one code block per snippet.
+- Preserve YAML indentation.
+- Preserve original order for procedures.
+- Extract warnings and caveats as separate items.
+- Continue in batches until all relevant indexed material is covered.

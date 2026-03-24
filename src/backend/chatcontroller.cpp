@@ -42,12 +42,26 @@ qint64 nowMs()
 
 QString trimForBudget(const QString &text, int maxChars)
 {
-    if (maxChars <= 0 || text.size() <= maxChars) {
-        return text.trimmed();
+    const QString normalized = text.trimmed();
+    if (maxChars <= 0 || normalized.size() <= maxChars) {
+        return normalized;
     }
 
-    const QString trimmed = text.left(maxChars).trimmed();
-    return trimmed + QStringLiteral("\n[... budget-trimmed ...]");
+    const QString marker = QStringLiteral("\n[... budget-trimmed ...]\n");
+    const int markerChars = marker.size();
+    if (maxChars <= markerChars + 32) {
+        return normalized.left(maxChars).trimmed();
+    }
+
+    const int remaining = qMax(0, maxChars - markerChars);
+    const int headChars = qMax(0, static_cast<int>(remaining * 0.58));
+    const int tailChars = qMax(0, remaining - headChars);
+    const QString head = normalized.left(headChars).trimmed();
+    const QString tail = normalized.right(tailChars).trimmed();
+    if (tail.isEmpty() || head == tail) {
+        return head;
+    }
+    return head + marker + tail;
 }
 
 
@@ -258,6 +272,16 @@ QString ollamaRuntimeProfileName(OllamaRuntimeProfile profile)
     default:
         return QStringLiteral("auto");
     }
+}
+
+int computeRunnerFallbackNumCtx(int baseNumCtx)
+{
+    const int safeBase = qMax(8192, baseNumCtx);
+    int fallback = qMax(12288, qMin(24576, (safeBase * 3) / 4));
+    if (fallback >= safeBase) {
+        fallback = qMax(12288, safeBase - 4096);
+    }
+    return qMin(fallback, safeBase);
 }
 
 int estimatedCharsForTokens(int tokens)
@@ -1019,6 +1043,8 @@ void ChatController::sendUserPrompt(const QString &prompt, bool allowExternalSea
     m_requestStartedMs = nowMs();
     m_forceDisableReasoningForActiveRequest = false;
     m_reasoningFallbackRetryAttempted = false;
+    m_runnerFailureRetryAttempted = false;
+    m_activeRequestNumCtxOverride = 0;
     resetReasoningLoopGuard();
     emit busyChanged(true);
     emit statusChanged(QStringLiteral("Analyzing knowledge base and preparing grounded context..."));
@@ -1267,6 +1293,7 @@ void ChatController::stopGeneration()
     } else {
         m_llmClient->stop();
         m_llmClient->setReasoningTraceEnabled(m_reasoningTraceEnabled);
+        restoreDefaultGenerationConfig();
     }
     m_busy = false;
     emit busyChanged(false);
@@ -1838,6 +1865,7 @@ void ChatController::onModelFinished(const QString &fullText)
     }
     addDiagnostic(QStringLiteral("backend"), QStringLiteral("Generation finished in %1 ms with %2 streamed chunk(s) and %3 chars")
                   .arg(nowMs() - m_requestStartedMs).arg(m_streamChunkCount).arg(cleaned.size()));
+    restoreDefaultGenerationConfig();
     m_llmClient->setReasoningTraceEnabled(m_reasoningTraceEnabled);
     notifyTaskSucceeded(QStringLiteral("Prompt complete"), QStringLiteral("Amelia finished generating the answer."));
 }
@@ -1979,13 +2007,15 @@ void ChatController::startGeneration(const QString &prompt,
     addDiagnostic(QStringLiteral("backend"), QStringLiteral("Final message payload | %1")
                   .arg(summarizeMessagePayload(messages)));
 
+    const int requestNumCtx = effectiveRequestNumCtx();
+
     if (looksLikeDocumentStudyPrompt(prompt)) {
         const OllamaRuntimeProfile runtimeProfile = detectOllamaRuntimeProfile();
         addDiagnostic(QStringLiteral("budget"),
                       QStringLiteral("Document budget policy | runtime=%1 | num_ctx=%2 | safe_local_budget≈%3 chars | actual_local=%4 chars")
                       .arg(ollamaRuntimeProfileName(runtimeProfile))
-                      .arg(m_config.ollamaNumCtx)
-                      .arg(safeRetrievedContextCharBudget(m_config.ollamaNumCtx, true, runtimeProfile))
+                      .arg(requestNumCtx)
+                      .arg(safeRetrievedContextCharBudget(requestNumCtx, true, runtimeProfile))
                       .arg(localContext.size()));
     }
 
@@ -2002,9 +2032,13 @@ void ChatController::startGeneration(const QString &prompt,
     m_llmClient->setReasoningTraceEnabled(requestReasoningTrace);
     m_llmClient->setForceThinkOff(heavyDocumentStudyRequest);
 
+    AppConfig requestConfig = m_config;
+    requestConfig.ollamaNumCtx = requestNumCtx;
+    m_llmClient->setGenerationConfig(requestConfig);
+
     addDiagnostic(QStringLiteral("backend"), QStringLiteral("Sending chat request to Ollama (%1 message(s), num_ctx=%2, temperature=%3, top_p=%4, top_k=%5, think=%6)")
                   .arg(messages.size())
-                  .arg(m_config.ollamaNumCtx)
+                  .arg(requestNumCtx)
                   .arg(m_config.ollamaTemperature, 0, 'f', 2)
                   .arg(m_config.ollamaTopP, 0, 'f', 2)
                   .arg(m_config.ollamaTopK)
@@ -2153,6 +2187,101 @@ void ChatController::maybeRecoverFromReasoningOnlyLoop(const QString &text)
     restartActiveGenerationWithoutReasoning();
 }
 
+bool ChatController::shouldRetryAfterRunnerFailure(const QString &message) const
+{
+    if (!m_busy || m_runnerFailureRetryAttempted) {
+        return false;
+    }
+
+    const QString normalized = message.toLower();
+    const bool runnerStopped = normalized.contains(QStringLiteral("model runner has unexpectedly stopped"));
+    const bool internalServerError = normalized.contains(QStringLiteral("internal server error"));
+    const bool remoteClosed = normalized.contains(QStringLiteral("forcibly closed by the remote host"))
+            || normalized.contains(QStringLiteral("wsarecv"));
+    if (!(runnerStopped || internalServerError || remoteClosed)) {
+        return false;
+    }
+
+    return looksLikeDocumentStudyPrompt(m_activePrompt)
+            || m_activeLocalContext.contains(QStringLiteral("SECTION_COVERAGE_PACKET:"))
+            || m_activeLocalContext.size() >= 12000;
+}
+
+QString ChatController::trimLocalContextForRunnerFallback(const QString &text, int maxChars) const
+{
+    QString cleaned = deduplicatePromptSection(text, 1).trimmed();
+    if (maxChars <= 0 || cleaned.size() <= maxChars) {
+        return cleaned;
+    }
+
+    const QString marker = QStringLiteral("\n\n<amelia_retry_compacted_context/>\n\n");
+    const int usable = qMax(512, maxChars - marker.size());
+    const int headChars = qMax(256, (usable * 11) / 20);
+    const int tailChars = qMax(256, usable - headChars);
+
+    QString head = cleaned.left(headChars).trimmed();
+    QString tail = cleaned.right(tailChars).trimmed();
+    QString compacted = head + marker + tail;
+    if (compacted.size() > maxChars) {
+        compacted.truncate(maxChars);
+    }
+    return compacted.trimmed();
+}
+
+int ChatController::effectiveRequestNumCtx() const
+{
+    return m_activeRequestNumCtxOverride > 0 ? m_activeRequestNumCtxOverride : m_config.ollamaNumCtx;
+}
+
+void ChatController::restoreDefaultGenerationConfig()
+{
+    m_activeRequestNumCtxOverride = 0;
+    if (m_llmClient != nullptr) {
+        m_llmClient->setGenerationConfig(m_config);
+    }
+}
+
+void ChatController::restartActiveGenerationAfterRunnerFailure()
+{
+    if (!m_busy) {
+        return;
+    }
+
+    m_runnerFailureRetryAttempted = true;
+    m_forceDisableReasoningForActiveRequest = true;
+    resetReasoningLoopGuard();
+    m_streamChunkCount = 0;
+    m_requestStartedMs = nowMs();
+
+    const int retryNumCtx = computeRunnerFallbackNumCtx(m_config.ollamaNumCtx);
+    m_activeRequestNumCtxOverride = retryNumCtx;
+
+    const int retryLocalBudget = qMax(12000, qMin(26000, qRound(static_cast<double>(safeRetrievedContextCharBudget(retryNumCtx,
+                                                                                                                    looksLikeDocumentStudyPrompt(m_activePrompt),
+                                                                                                                    OllamaRuntimeProfile::CpuConservative)) * 0.84)));
+    m_activeLocalContext = trimLocalContextForRunnerFallback(m_activeLocalContext, retryLocalBudget);
+
+    addDiagnostic(QStringLiteral("backend"),
+                  QStringLiteral("Detected Ollama runner failure on a grounded request. Retrying once with safer settings (think=false, num_ctx=%1, local_context=%2 chars).")
+                      .arg(retryNumCtx)
+                      .arg(m_activeLocalContext.size()));
+    emit statusChanged(QStringLiteral("Local model runner stopped. Retrying once with a smaller grounded context..."));
+
+    m_llmClient->stop();
+
+    const QString prompt = m_activePrompt;
+    const QString localContext = m_activeLocalContext;
+    const QString externalContext = m_activeExternalContext;
+    const QString memoryContext = m_activeMemoryContext;
+
+    QTimer::singleShot(0, this, [this, prompt, localContext, externalContext, memoryContext]() {
+        if (!m_busy) {
+            return;
+        }
+        startGeneration(prompt, localContext, externalContext, memoryContext);
+    });
+}
+
 void ChatController::restartActiveGenerationWithoutReasoning()
 {
     if (!m_busy) {
@@ -2276,10 +2405,11 @@ QVector<LlmChatMessage> ChatController::buildPromptMessages(const QString &userP
 {
     const bool documentStudyPrompt = looksLikeDocumentStudyPrompt(userPrompt);
     const OllamaRuntimeProfile runtimeProfile = detectOllamaRuntimeProfile();
-    const int safeDocumentLocalBudget = safeRetrievedContextCharBudget(m_config.ollamaNumCtx,
+    const int requestNumCtx = effectiveRequestNumCtx();
+    const int safeDocumentLocalBudget = safeRetrievedContextCharBudget(requestNumCtx,
                                                                        true,
                                                                        runtimeProfile);
-    const int safeGeneralLocalBudget = safeRetrievedContextCharBudget(m_config.ollamaNumCtx,
+    const int safeGeneralLocalBudget = safeRetrievedContextCharBudget(requestNumCtx,
                                                                       false,
                                                                       runtimeProfile);
     const int localBudget = m_outlineOnlyFirstPass
@@ -2357,6 +2487,10 @@ QVector<LlmChatMessage> ChatController::buildPromptMessages(const QString &userP
         "sentence from it — do NOT expand, infer, or invent commands, paths, or steps that are "
         "not literally present in the supplied text. A short accurate entry is better than a "
         "long fabricated one.\n"
+        "- If a large document packet was budget-trimmed or represented as DOCUMENT_SPAN sections, "
+        "never invent the missing middle of the source. Summarize only the sections or spans that "
+        "are explicitly present in LOCAL_CONTEXT, and describe uncovered material only as absent "
+        "from the retrieved packet.\n"
         "- For chapter-specific tutorials or instructions, only include steps and commands that "
         "are explicitly present in the retrieved chapter context. Do not extrapolate missing steps.\n"
         "- RELEVANT_MEMORIES are stable user preferences or facts. Never treat them as a hidden "

@@ -24,6 +24,51 @@
 namespace {
 bool isCancelRequested(const std::atomic_bool *cancelRequested);
 
+QByteArray jsonQuotedUtf8(const QString &value)
+{
+    const QByteArray utf8 = value.toUtf8();
+    QByteArray encoded;
+    encoded.reserve(utf8.size() + 2);
+    encoded.push_back('"');
+    for (unsigned char ch : utf8) {
+        switch (ch) {
+        case '\\':
+            encoded += "\\\\";
+            break;
+        case '"':
+            encoded += "\\\"";
+            break;
+        case '\b':
+            encoded += "\\b";
+            break;
+        case '\f':
+            encoded += "\\f";
+            break;
+        case '\n':
+            encoded += "\\n";
+            break;
+        case '\r':
+            encoded += "\\r";
+            break;
+        case '\t':
+            encoded += "\\t";
+            break;
+        default:
+            if (ch < 0x20) {
+                encoded += "\\u00";
+                const char digits[] = "0123456789abcdef";
+                encoded.push_back(digits[(ch >> 4) & 0x0f]);
+                encoded.push_back(digits[ch & 0x0f]);
+            } else {
+                encoded.push_back(static_cast<char>(ch));
+            }
+            break;
+        }
+    }
+    encoded.push_back('"');
+    return encoded;
+}
+
 struct DocumentStudyPacketProfile {
     int effectiveOutlineLineLimit = 180;
     int effectiveMaxCharsPerFile = 40000;
@@ -1808,47 +1853,8 @@ int RagIndexer::reindex(const std::function<void(int, int, const QString &)> &pr
     m_cancelRequested.store(false, std::memory_order_relaxed);
     m_lastReindexCanceled = false;
 
-    auto finalizeWorkingState = [this, &progressCallback](const QHash<QString, SourceInfo> &workingSourcesByPath,
-                                                          const QHash<QString, QVector<Chunk>> &workingChunksByPath,
-                                                          const QString &label,
-                                                          bool canceled,
-                                                          int progressValue,
-                                                          int progressMaximum) -> int {
-        QVector<SourceInfo> finalizedSources;
-        finalizedSources.reserve(workingSourcesByPath.size());
-        for (auto it = workingSourcesByPath.cbegin(); it != workingSourcesByPath.cend(); ++it) {
-            finalizedSources.push_back(it.value());
-        }
-        std::sort(finalizedSources.begin(), finalizedSources.end(), [](const SourceInfo &a, const SourceInfo &b) {
-            if (a.collectionLabel != b.collectionLabel) {
-                return a.collectionLabel.toLower() < b.collectionLabel.toLower();
-            }
-            if (a.groupLabel != b.groupLabel) {
-                return a.groupLabel.toLower() < b.groupLabel.toLower();
-            }
-            if (a.relativePath != b.relativePath) {
-                return a.relativePath.toLower() < b.relativePath.toLower();
-            }
-            return a.fileName.toLower() < b.fileName.toLower();
-        });
-
-        QVector<Chunk> finalizedChunks;
-        for (const SourceInfo &source : finalizedSources) {
-            const QVector<Chunk> chunksForPath = workingChunksByPath.value(source.filePath);
-            for (const Chunk &chunk : chunksForPath) {
-                finalizedChunks.push_back(chunk);
-            }
-        }
-
-        m_sources = finalizedSources;
-        m_chunks = finalizedChunks;
-        saveCache();
-        m_lastReindexCanceled = canceled;
-
-        if (progressCallback) {
-            progressCallback(progressValue, progressMaximum, label);
-        }
-        return m_chunks.size();
+    auto countChunksForIndexes = [](const QVector<int> &indexes) {
+        return indexes.size();
     };
 
     if (m_docsRoot.trimmed().isEmpty()) {
@@ -1865,11 +1871,14 @@ int RagIndexer::reindex(const std::function<void(int, int, const QString &)> &pr
     QDirIterator gatherIt(m_docsRoot, extensions(), QDir::Files, QDirIterator::Subdirectories);
     while (gatherIt.hasNext()) {
         if (m_cancelRequested.load(std::memory_order_relaxed)) {
-            return finalizeWorkingState({}, {},
-                                        QStringLiteral("Indexing canceled. Partial cache saved; the in-flight file was discarded."),
-                                        true,
-                                        0,
-                                        1);
+            m_sources.clear();
+            m_chunks.clear();
+            saveCache();
+            m_lastReindexCanceled = true;
+            if (progressCallback) {
+                progressCallback(0, 1, QStringLiteral("Indexing canceled. Partial cache saved; the in-flight file was discarded."));
+            }
+            return 0;
         }
 
         const QString path = gatherIt.next();
@@ -1892,12 +1901,13 @@ int RagIndexer::reindex(const std::function<void(int, int, const QString &)> &pr
         existingSourcesByPath.insert(source.filePath, source);
     }
 
-    QHash<QString, QVector<Chunk>> existingChunksByPath;
-    existingChunksByPath.reserve(m_sources.size());
+    QHash<QString, QVector<int>> existingChunkIndexesByPath;
+    existingChunkIndexesByPath.reserve(m_sources.size());
     QHash<QString, QVector<float>> cachedEmbeddingsByFingerprint;
     cachedEmbeddingsByFingerprint.reserve(m_chunks.size());
-    for (const Chunk &chunk : m_chunks) {
-        existingChunksByPath[chunk.filePath].push_back(chunk);
+    for (int chunkIndex = 0; chunkIndex < m_chunks.size(); ++chunkIndex) {
+        const Chunk &chunk = m_chunks.at(chunkIndex);
+        existingChunkIndexesByPath[chunk.filePath].push_back(chunkIndex);
         if (m_semanticEnabled && !chunk.embedding.isEmpty()) {
             const QString fingerprint = chunk.textFingerprint.trimmed().isEmpty()
                     ? stableHashHex(chunk.text.simplified())
@@ -1908,8 +1918,112 @@ int RagIndexer::reindex(const std::function<void(int, int, const QString &)> &pr
         }
     }
 
+    const auto materializeExistingChunks = [this, &existingChunkIndexesByPath](const QString &path) {
+        QVector<Chunk> chunksForPath;
+        const auto indexesIt = existingChunkIndexesByPath.constFind(path);
+        if (indexesIt == existingChunkIndexesByPath.cend()) {
+            return chunksForPath;
+        }
+        const QVector<int> &indexes = indexesIt.value();
+        chunksForPath.reserve(indexes.size());
+        for (int index : indexes) {
+            if (index >= 0 && index < m_chunks.size()) {
+                chunksForPath.push_back(m_chunks.at(index));
+            }
+        }
+        return chunksForPath;
+    };
+
+    auto countWorkingChunks = [&existingChunkIndexesByPath, &countChunksForIndexes](const QHash<QString, SourceInfo> &workingSourcesByPath,
+                                                             const QHash<QString, QVector<Chunk>> &workingChunksByPath) {
+        int count = 0;
+        for (auto it = workingSourcesByPath.cbegin(); it != workingSourcesByPath.cend(); ++it) {
+            const auto updatedIt = workingChunksByPath.constFind(it.key());
+            if (updatedIt != workingChunksByPath.cend()) {
+                count += updatedIt.value().size();
+                continue;
+            }
+            const auto existingIt = existingChunkIndexesByPath.constFind(it.key());
+            if (existingIt != existingChunkIndexesByPath.cend()) {
+                count += countChunksForIndexes(existingIt.value());
+            }
+        }
+        return count;
+    };
+
+    auto finalizeWorkingState = [this, &progressCallback, &existingChunkIndexesByPath](const QHash<QString, SourceInfo> &workingSourcesByPath,
+                                                                                       const QHash<QString, QVector<Chunk>> &workingChunksByPath,
+                                                                                       const QString &label,
+                                                                                       bool canceled,
+                                                                                       int progressValue,
+                                                                                       int progressMaximum) -> int {
+        QVector<SourceInfo> finalizedSources;
+        finalizedSources.reserve(workingSourcesByPath.size());
+        for (auto it = workingSourcesByPath.cbegin(); it != workingSourcesByPath.cend(); ++it) {
+            finalizedSources.push_back(it.value());
+        }
+        std::sort(finalizedSources.begin(), finalizedSources.end(), [](const SourceInfo &a, const SourceInfo &b) {
+            if (a.collectionLabel != b.collectionLabel) {
+                return a.collectionLabel.toLower() < b.collectionLabel.toLower();
+            }
+            if (a.groupLabel != b.groupLabel) {
+                return a.groupLabel.toLower() < b.groupLabel.toLower();
+            }
+            if (a.relativePath != b.relativePath) {
+                return a.relativePath.toLower() < b.relativePath.toLower();
+            }
+            return a.fileName.toLower() < b.fileName.toLower();
+        });
+
+        int totalChunkCount = 0;
+        for (const SourceInfo &source : finalizedSources) {
+            const auto updatedIt = workingChunksByPath.constFind(source.filePath);
+            if (updatedIt != workingChunksByPath.cend()) {
+                totalChunkCount += updatedIt.value().size();
+                continue;
+            }
+            const auto existingIt = existingChunkIndexesByPath.constFind(source.filePath);
+            if (existingIt != existingChunkIndexesByPath.cend()) {
+                totalChunkCount += existingIt.value().size();
+            }
+        }
+
+        QVector<Chunk> finalizedChunks;
+        finalizedChunks.reserve(totalChunkCount);
+        for (const SourceInfo &source : finalizedSources) {
+            const auto updatedIt = workingChunksByPath.constFind(source.filePath);
+            if (updatedIt != workingChunksByPath.cend()) {
+                const QVector<Chunk> &chunksForPath = updatedIt.value();
+                for (const Chunk &chunk : chunksForPath) {
+                    finalizedChunks.push_back(chunk);
+                }
+                continue;
+            }
+
+            const auto existingIt = existingChunkIndexesByPath.constFind(source.filePath);
+            if (existingIt == existingChunkIndexesByPath.cend()) {
+                continue;
+            }
+            for (int index : existingIt.value()) {
+                if (index >= 0 && index < m_chunks.size()) {
+                    finalizedChunks.push_back(m_chunks.at(index));
+                }
+            }
+        }
+
+        m_sources = std::move(finalizedSources);
+        m_chunks = std::move(finalizedChunks);
+        saveCache();
+        m_lastReindexCanceled = canceled;
+
+        if (progressCallback) {
+            progressCallback(progressValue, progressMaximum, label);
+        }
+        return m_chunks.size();
+    };
+
     QHash<QString, SourceInfo> workingSourcesByPath = existingSourcesByPath;
-    QHash<QString, QVector<Chunk>> workingChunksByPath = existingChunksByPath;
+    QHash<QString, QVector<Chunk>> workingChunksByPath;
     QHash<QString, QVector<float>> workingEmbeddingsByFingerprint = cachedEmbeddingsByFingerprint;
 
     QSet<QString> currentPathSet;
@@ -1994,8 +2108,8 @@ int RagIndexer::reindex(const std::function<void(int, int, const QString &)> &pr
         const QString sourceType = detectSourceType(info);
 
         const auto sourceIt = existingSourcesByPath.constFind(path);
-        const auto chunksIt = existingChunksByPath.constFind(path);
-        const bool hasExistingCacheEntry = sourceIt != existingSourcesByPath.cend() && chunksIt != existingChunksByPath.cend();
+        const auto chunkIndexesIt = existingChunkIndexesByPath.constFind(path);
+        const bool hasExistingCacheEntry = sourceIt != existingSourcesByPath.cend() && chunkIndexesIt != existingChunkIndexesByPath.cend();
         const bool canReuseFast = hasExistingCacheEntry && sourceMatchesFile(sourceIt.value(), info);
 
         auto commitReusedSource = [&](SourceInfo source,
@@ -2011,8 +2125,8 @@ int RagIndexer::reindex(const std::function<void(int, int, const QString &)> &pr
             }
             source.chunkCount = reusedChunks.size();
             workingSourcesByPath.insert(path, source);
-            workingChunksByPath.insert(path, reusedChunks);
             registerChunkEmbeddings(reusedChunks);
+            workingChunksByPath.insert(path, std::move(reusedChunks));
             ++reusedFiles;
             if (countedAsHashReuse) {
                 ++reusedByHashFiles;
@@ -2028,9 +2142,11 @@ int RagIndexer::reindex(const std::function<void(int, int, const QString &)> &pr
         };
 
         if (canReuseFast) {
+            QVector<Chunk> reusedChunks = materializeExistingChunks(path);
+            const int reusedChunkCount = reusedChunks.size();
             commitReusedSource(sourceIt.value(),
-                               chunksIt.value(),
-                               QStringLiteral("Using cached index %1 / %2: %3 (%4 chunks)").arg(i + 1).arg(totalFiles).arg(info.fileName()).arg(chunksIt.value().size()),
+                               std::move(reusedChunks),
+                               QStringLiteral("Using cached index %1 / %2: %3 (%4 chunks)").arg(i + 1).arg(totalFiles).arg(info.fileName()).arg(reusedChunkCount),
                                false);
             continue;
         }
@@ -2057,13 +2173,14 @@ int RagIndexer::reindex(const std::function<void(int, int, const QString &)> &pr
             reusedSource.fileModifiedMs = info.lastModified().toMSecsSinceEpoch();
             reusedSource.fileSizeBytes = info.size();
             reusedSource.fileContentHash = fileContentHash;
-            QVector<Chunk> reusedChunks = chunksIt.value();
+            QVector<Chunk> reusedChunks = materializeExistingChunks(path);
             for (Chunk &chunk : reusedChunks) {
                 chunk.fileModifiedMs = reusedSource.fileModifiedMs;
             }
+            const int reusedChunkCount = reusedChunks.size();
             commitReusedSource(reusedSource,
-                               reusedChunks,
-                               QStringLiteral("Using content-hash cache %1 / %2: %3 (%4 chunks)").arg(i + 1).arg(totalFiles).arg(info.fileName()).arg(reusedChunks.size()),
+                               std::move(reusedChunks),
+                               QStringLiteral("Using content-hash cache %1 / %2: %3 (%4 chunks)").arg(i + 1).arg(totalFiles).arg(info.fileName()).arg(reusedChunkCount),
                                true);
             continue;
         }
@@ -2169,14 +2286,13 @@ int RagIndexer::reindex(const std::function<void(int, int, const QString &)> &pr
                     }
                 }
 
-                pendingChunks.push_back(pendingChunk);
-                if (m_semanticEnabled && pendingChunk.embedding.isEmpty()) {
+                pendingChunks.push_back(std::move(pendingChunk));
+                if (m_semanticEnabled && pendingChunks.constLast().embedding.isEmpty()) {
                     embeddingIndexes.push_back(pendingChunks.size() - 1);
                     embeddingsInput.push_back(normalizedChunk);
                 }
             }
 
-            QVector<QVector<float>> embeddings;
             if (m_semanticEnabled && !embeddingsInput.isEmpty()) {
                 if (progressCallback) {
                     progressCallback(0, embeddingsInput.size(),
@@ -2186,29 +2302,33 @@ int RagIndexer::reindex(const std::function<void(int, int, const QString &)> &pr
                                          .arg(info.fileName())
                                          .arg(embeddingsInput.size()));
                 }
-                embeddings = m_embeddingClient.embedTexts(embeddingsInput,
-                                                          [progressCallback, i, totalFiles, info](int completed, int total) {
-                                                              if (progressCallback) {
-                                                                  progressCallback(completed, total,
-                                                                                   QStringLiteral("Embedding %1 / %2: %3 — %4/%5 chunks")
-                                                                                       .arg(i + 1)
-                                                                                       .arg(totalFiles)
-                                                                                       .arg(info.fileName())
-                                                                                       .arg(completed)
-                                                                                       .arg(total));
-                                                              }
-                                                          },
-                                                          &m_cancelRequested);
+                QVector<QVector<float>> embeddings = m_embeddingClient.embedTexts(embeddingsInput,
+                                                                                  [progressCallback, i, totalFiles, info](int completed, int total) {
+                                                                                      if (progressCallback) {
+                                                                                          progressCallback(completed, total,
+                                                                                                           QStringLiteral("Embedding %1 / %2: %3 — %4/%5 chunks")
+                                                                                                               .arg(i + 1)
+                                                                                                               .arg(totalFiles)
+                                                                                                               .arg(info.fileName())
+                                                                                                               .arg(completed)
+                                                                                                               .arg(total));
+                                                                                      }
+                                                                                  },
+                                                                                  &m_cancelRequested);
+                if (m_cancelRequested.load(std::memory_order_relaxed)) {
+                    return cancelWithPartialCommit(QStringLiteral("Indexing canceled. Partial cache saved; the in-flight file was discarded."));
+                }
+
+                const int assignCount = qMin(embeddingIndexes.size(), embeddings.size());
+                for (int assignIndex = 0; assignIndex < assignCount; ++assignIndex) {
+                    pendingChunks[embeddingIndexes.at(assignIndex)].embedding = std::move(embeddings[assignIndex]);
+                }
             }
             if (m_cancelRequested.load(std::memory_order_relaxed)) {
                 return cancelWithPartialCommit(QStringLiteral("Indexing canceled. Partial cache saved; the in-flight file was discarded."));
             }
 
-            const int assignCount = qMin(embeddingIndexes.size(), embeddings.size());
-            for (int assignIndex = 0; assignIndex < assignCount; ++assignIndex) {
-                pendingChunks[embeddingIndexes.at(assignIndex)].embedding = embeddings.at(assignIndex);
-            }
-
+            rebuiltChunksForPath.reserve(pendingChunks.size());
             int chunkIndex = 0;
             for (const PendingChunk &pendingChunk : std::as_const(pendingChunks)) {
                 if (m_cancelRequested.load(std::memory_order_relaxed)) {
@@ -2227,7 +2347,7 @@ int RagIndexer::reindex(const std::function<void(int, int, const QString &)> &pr
                 if (m_semanticEnabled && !pendingChunk.embedding.isEmpty()) {
                     chunk.embedding = pendingChunk.embedding;
                 }
-                rebuiltChunksForPath.push_back(chunk);
+                rebuiltChunksForPath.push_back(std::move(chunk));
                 ++source.chunkCount;
             }
         }
@@ -2258,9 +2378,10 @@ int RagIndexer::reindex(const std::function<void(int, int, const QString &)> &pr
             source.zeroChunkReason.clear();
         }
 
+        const int committedChunkCount = rebuiltChunksForPath.size();
         workingSourcesByPath.insert(path, source);
-        workingChunksByPath.insert(path, rebuiltChunksForPath);
         registerChunkEmbeddings(rebuiltChunksForPath);
+        workingChunksByPath.insert(path, std::move(rebuiltChunksForPath));
         reusedChunkEmbeddings += reusedChunkEmbeddingsForFile;
         ++rebuiltFiles;
         ++committedFiles;
@@ -2276,7 +2397,7 @@ int RagIndexer::reindex(const std::function<void(int, int, const QString &)> &pr
                                  .arg(i + 1)
                                  .arg(totalFiles)
                                  .arg(info.fileName())
-                                 .arg(rebuiltChunksForPath.size())
+                                 .arg(committedChunkCount)
                                  .arg(speedSuffix));
         }
     }
@@ -2289,13 +2410,7 @@ int RagIndexer::reindex(const std::function<void(int, int, const QString &)> &pr
                                     .arg(rebuiltFiles)
                                     .arg(reusedByHashFiles)
                                     .arg(reusedChunkEmbeddings)
-                                    .arg([&workingChunksByPath]() {
-                                        int count = 0;
-                                        for (auto it = workingChunksByPath.cbegin(); it != workingChunksByPath.cend(); ++it) {
-                                            count += it.value().size();
-                                        }
-                                        return count;
-                                    }()),
+                                    .arg(countWorkingChunks(workingSourcesByPath, workingChunksByPath)),
                                 false,
                                 totalFiles > 0 ? totalFiles : 1,
                                 totalFiles > 0 ? totalFiles : 1);
@@ -2416,68 +2531,111 @@ bool RagIndexer::saveCache() const
         return false;
     }
 
-    QJsonObject root;
-    root.insert(QStringLiteral("format"), QStringLiteral("amelia-rag-cache-v3"));
-    root.insert(QStringLiteral("docsRoot"), m_docsRoot);
-    root.insert(QStringLiteral("semanticEnabled"), m_semanticEnabled);
-    root.insert(QStringLiteral("chunkingStrategy"), chunkingStrategyName());
-    root.insert(QStringLiteral("embeddingBackend"), m_embeddingClient.backendName());
-    root.insert(QStringLiteral("embeddingCacheKey"), m_embeddingClient.cacheKey());
-
-    QJsonArray chunkArray;
-    for (const Chunk &chunk : m_chunks) {
-        QJsonObject obj;
-        obj.insert(QStringLiteral("filePath"), chunk.filePath);
-        obj.insert(QStringLiteral("fileName"), chunk.fileName);
-        obj.insert(QStringLiteral("sourceType"), chunk.sourceType);
-        obj.insert(QStringLiteral("sourceRole"), chunk.sourceRole);
-        obj.insert(QStringLiteral("text"), chunk.text);
-        obj.insert(QStringLiteral("chunkIndex"), chunk.chunkIndex);
-        obj.insert(QStringLiteral("textFingerprint"), chunk.textFingerprint);
-        obj.insert(QStringLiteral("fileModifiedMs"), static_cast<double>(chunk.fileModifiedMs));
-        if (!chunk.embedding.isEmpty()) {
-            QJsonArray embeddingArray;
-            for (float value : chunk.embedding) {
-                embeddingArray.push_back(static_cast<double>(value));
-            }
-            obj.insert(QStringLiteral("embedding"), embeddingArray);
-        }
-        chunkArray.push_back(obj);
-    }
-    root.insert(QStringLiteral("chunks"), chunkArray);
-
-    QJsonArray sourceArray;
-    for (const SourceInfo &source : m_sources) {
-        QJsonObject obj;
-        obj.insert(QStringLiteral("filePath"), source.filePath);
-        obj.insert(QStringLiteral("fileName"), source.fileName);
-        obj.insert(QStringLiteral("sourceType"), source.sourceType);
-        obj.insert(QStringLiteral("sourceRole"), source.sourceRole);
-        obj.insert(QStringLiteral("extractor"), source.extractor);
-        obj.insert(QStringLiteral("collectionId"), source.collectionId);
-        obj.insert(QStringLiteral("collectionLabel"), source.collectionLabel);
-        obj.insert(QStringLiteral("groupId"), source.groupId);
-        obj.insert(QStringLiteral("groupLabel"), source.groupLabel);
-        obj.insert(QStringLiteral("relativePath"), source.relativePath);
-        obj.insert(QStringLiteral("originalPath"), source.originalPath);
-        obj.insert(QStringLiteral("fileModifiedMs"), static_cast<double>(source.fileModifiedMs));
-        obj.insert(QStringLiteral("fileSizeBytes"), static_cast<double>(source.fileSizeBytes));
-        obj.insert(QStringLiteral("chunkCount"), source.chunkCount);
-        obj.insert(QStringLiteral("fileContentHash"), source.fileContentHash);
-        obj.insert(QStringLiteral("lineCount"), source.lineCount);
-        obj.insert(QStringLiteral("wordCount"), source.wordCount);
-        obj.insert(QStringLiteral("textCharCount"), source.textCharCount);
-        obj.insert(QStringLiteral("chunkingProfile"), source.chunkingProfile);
-        obj.insert(QStringLiteral("zeroChunkReason"), source.zeroChunkReason);
-        sourceArray.push_back(obj);
-    }
-    root.insert(QStringLiteral("sources"), sourceArray);
-
     QSaveFile file(m_cachePath);
     if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) {
         return false;
     }
-    if (file.write(QJsonDocument(root).toJson(QJsonDocument::Indented)) < 0) {
+
+    auto writeBytes = [&file](const QByteArray &bytes) {
+        return file.write(bytes) == bytes.size();
+    };
+    auto writeLiteral = [&writeBytes](const char *literal) {
+        return writeBytes(QByteArray(literal));
+    };
+    auto writeJsonString = [&writeBytes](const QString &value) {
+        return writeBytes(jsonQuotedUtf8(value));
+    };
+    auto writeJsonIntegerField = [&writeJsonString, &writeLiteral, &writeBytes](const QString &key, qint64 value, bool trailingComma) {
+        return writeJsonString(key)
+                && writeLiteral(":")
+                && writeBytes(QByteArray::number(value))
+                && (!trailingComma || writeLiteral(","));
+    };
+    auto writeJsonBoolField = [&writeJsonString, &writeLiteral](const QString &key, bool value, bool trailingComma) {
+        return writeJsonString(key)
+                && writeLiteral(":")
+                && writeLiteral(value ? "true" : "false")
+                && (!trailingComma || writeLiteral(","));
+    };
+    auto writeJsonStringField = [&writeJsonString, &writeLiteral](const QString &key, const QString &value, bool trailingComma) {
+        return writeJsonString(key)
+                && writeLiteral(":")
+                && writeJsonString(value)
+                && (!trailingComma || writeLiteral(","));
+    };
+
+    bool ok = true;
+    ok = ok && writeLiteral("{");
+    ok = ok && writeJsonStringField(QStringLiteral("format"), QStringLiteral("amelia-rag-cache-v3"), true);
+    ok = ok && writeJsonStringField(QStringLiteral("docsRoot"), m_docsRoot, true);
+    ok = ok && writeJsonBoolField(QStringLiteral("semanticEnabled"), m_semanticEnabled, true);
+    ok = ok && writeJsonStringField(QStringLiteral("chunkingStrategy"), chunkingStrategyName(), true);
+    ok = ok && writeJsonStringField(QStringLiteral("embeddingBackend"), m_embeddingClient.backendName(), true);
+    ok = ok && writeJsonStringField(QStringLiteral("embeddingCacheKey"), m_embeddingClient.cacheKey(), true);
+    ok = ok && writeJsonString(QStringLiteral("chunks"));
+    ok = ok && writeLiteral(":[");
+    for (int chunkIndex = 0; ok && chunkIndex < m_chunks.size(); ++chunkIndex) {
+        if (chunkIndex > 0) {
+            ok = ok && writeLiteral(",");
+        }
+        const Chunk &chunk = m_chunks.at(chunkIndex);
+        ok = ok && writeLiteral("{");
+        ok = ok && writeJsonStringField(QStringLiteral("filePath"), chunk.filePath, true);
+        ok = ok && writeJsonStringField(QStringLiteral("fileName"), chunk.fileName, true);
+        ok = ok && writeJsonStringField(QStringLiteral("sourceType"), chunk.sourceType, true);
+        ok = ok && writeJsonStringField(QStringLiteral("sourceRole"), chunk.sourceRole, true);
+        ok = ok && writeJsonStringField(QStringLiteral("text"), chunk.text, true);
+        ok = ok && writeJsonIntegerField(QStringLiteral("chunkIndex"), chunk.chunkIndex, true);
+        ok = ok && writeJsonStringField(QStringLiteral("textFingerprint"), chunk.textFingerprint, true);
+        ok = ok && writeJsonIntegerField(QStringLiteral("fileModifiedMs"), chunk.fileModifiedMs, !chunk.embedding.isEmpty());
+        if (ok && !chunk.embedding.isEmpty()) {
+            ok = ok && writeJsonString(QStringLiteral("embedding"));
+            ok = ok && writeLiteral(":[");
+            for (int embeddingIndex = 0; ok && embeddingIndex < chunk.embedding.size(); ++embeddingIndex) {
+                if (embeddingIndex > 0) {
+                    ok = ok && writeLiteral(",");
+                }
+                ok = ok && writeBytes(QByteArray::number(static_cast<double>(chunk.embedding.at(embeddingIndex)), 'g', 9));
+            }
+            ok = ok && writeLiteral("]");
+        }
+        ok = ok && writeLiteral("}");
+    }
+    ok = ok && writeLiteral("],");
+
+    ok = ok && writeJsonString(QStringLiteral("sources"));
+    ok = ok && writeLiteral(":[");
+    for (int sourceIndex = 0; ok && sourceIndex < m_sources.size(); ++sourceIndex) {
+        if (sourceIndex > 0) {
+            ok = ok && writeLiteral(",");
+        }
+        const SourceInfo &source = m_sources.at(sourceIndex);
+        ok = ok && writeLiteral("{");
+        ok = ok && writeJsonStringField(QStringLiteral("filePath"), source.filePath, true);
+        ok = ok && writeJsonStringField(QStringLiteral("fileName"), source.fileName, true);
+        ok = ok && writeJsonStringField(QStringLiteral("sourceType"), source.sourceType, true);
+        ok = ok && writeJsonStringField(QStringLiteral("sourceRole"), source.sourceRole, true);
+        ok = ok && writeJsonStringField(QStringLiteral("extractor"), source.extractor, true);
+        ok = ok && writeJsonStringField(QStringLiteral("collectionId"), source.collectionId, true);
+        ok = ok && writeJsonStringField(QStringLiteral("collectionLabel"), source.collectionLabel, true);
+        ok = ok && writeJsonStringField(QStringLiteral("groupId"), source.groupId, true);
+        ok = ok && writeJsonStringField(QStringLiteral("groupLabel"), source.groupLabel, true);
+        ok = ok && writeJsonStringField(QStringLiteral("relativePath"), source.relativePath, true);
+        ok = ok && writeJsonStringField(QStringLiteral("originalPath"), source.originalPath, true);
+        ok = ok && writeJsonIntegerField(QStringLiteral("fileModifiedMs"), source.fileModifiedMs, true);
+        ok = ok && writeJsonIntegerField(QStringLiteral("fileSizeBytes"), source.fileSizeBytes, true);
+        ok = ok && writeJsonIntegerField(QStringLiteral("chunkCount"), source.chunkCount, true);
+        ok = ok && writeJsonStringField(QStringLiteral("fileContentHash"), source.fileContentHash, true);
+        ok = ok && writeJsonIntegerField(QStringLiteral("lineCount"), source.lineCount, true);
+        ok = ok && writeJsonIntegerField(QStringLiteral("wordCount"), source.wordCount, true);
+        ok = ok && writeJsonIntegerField(QStringLiteral("textCharCount"), source.textCharCount, true);
+        ok = ok && writeJsonStringField(QStringLiteral("chunkingProfile"), source.chunkingProfile, true);
+        ok = ok && writeJsonStringField(QStringLiteral("zeroChunkReason"), source.zeroChunkReason, false);
+        ok = ok && writeLiteral("}");
+    }
+    ok = ok && writeLiteral("]}");
+
+    if (!ok) {
         file.cancelWriting();
         return false;
     }
@@ -2964,6 +3122,24 @@ QString RagIndexer::formatDocumentStudyPrompt(const QStringList &preferredPaths,
             majorHeadings = extractMajorSectionHeadings(outlineText, 64);
         }
 
+        QStringList coverageHeadingCandidates = majorHeadings;
+        QSet<QString> seenCoverageHeadingKeys;
+        for (const QString &heading : std::as_const(coverageHeadingCandidates)) {
+            seenCoverageHeadingKeys.insert(normalizeOutlineKey(stripTrailingOutlinePageNumber(heading)));
+        }
+        for (const QString &outlineLine : std::as_const(outlineLines)) {
+            const QString cleaned = stripTrailingOutlinePageNumber(outlineLine).trimmed();
+            const QString normalized = normalizeOutlineKey(cleaned);
+            if (cleaned.isEmpty() || normalized.isEmpty() || seenCoverageHeadingKeys.contains(normalized)) {
+                continue;
+            }
+            if (cleaned.size() > 140) {
+                continue;
+            }
+            seenCoverageHeadingKeys.insert(normalized);
+            coverageHeadingCandidates << cleaned;
+        }
+
         struct SectionAnchor {
             QString heading;
             int chunkPos = -1;
@@ -2971,7 +3147,8 @@ QString RagIndexer::formatDocumentStudyPrompt(const QStringList &preferredPaths,
 
         auto headingBodyKey = [](QString heading) {
             heading = stripTrailingOutlinePageNumber(heading).trimmed();
-            heading.remove(QRegularExpression(QStringLiteral(R"(^\d+[.)]?\s*)")));
+            heading.remove(QRegularExpression(QStringLiteral(R"(^\d+(?:\.\d+){0,4}[.)]?\s*)")));
+            heading.remove(QRegularExpression(QStringLiteral(R"(^[A-Z][.)]\s*)")));
             return heading.simplified().toLower();
         };
 
@@ -3010,9 +3187,61 @@ QString RagIndexer::formatDocumentStudyPrompt(const QStringList &preferredPaths,
             return headText + marker + tailText;
         };
 
+        auto chunkHeadingFallback = [&](int chunkPos, int spanOrdinal) {
+            if (chunkPos < 0 || chunkPos >= fileChunks.size()) {
+                return QStringLiteral("DOCUMENT_SPAN_%1").arg(spanOrdinal);
+            }
+
+            const QString chunkText = fileChunks.at(chunkPos)->text;
+            const QStringList chunkOutlineLines = extractDocumentOutlineLines(chunkText, 4);
+            for (const QString &candidate : std::as_const(chunkOutlineLines)) {
+                const QString cleaned = stripTrailingOutlinePageNumber(candidate).trimmed();
+                if (!cleaned.isEmpty() && cleaned.size() <= 120 && !looksLikeContentsEntry(cleaned)) {
+                    return cleaned;
+                }
+            }
+
+            const QStringList chunkHeadings = extractMajorSectionHeadings(chunkText, 2);
+            for (const QString &candidate : std::as_const(chunkHeadings)) {
+                const QString cleaned = stripTrailingOutlinePageNumber(candidate).trimmed();
+                if (!cleaned.isEmpty() && cleaned.size() <= 120) {
+                    return cleaned;
+                }
+            }
+
+            return QStringLiteral("DOCUMENT_SPAN_%1").arg(spanOrdinal);
+        };
+
+        auto normalizeAnchors = [](QVector<SectionAnchor> inputAnchors) {
+            std::sort(inputAnchors.begin(), inputAnchors.end(), [](const SectionAnchor &a, const SectionAnchor &b) {
+                if (a.chunkPos != b.chunkPos) {
+                    return a.chunkPos < b.chunkPos;
+                }
+                return a.heading < b.heading;
+            });
+
+            QVector<SectionAnchor> normalizedAnchors;
+            QSet<QString> seenAnchorKeys;
+            QSet<int> seenChunkPositions;
+            for (const SectionAnchor &anchor : std::as_const(inputAnchors)) {
+                const QString anchorKey = normalizeOutlineKey(anchor.heading);
+                if (anchor.chunkPos < 0 || anchorKey.isEmpty() || seenAnchorKeys.contains(anchorKey)) {
+                    continue;
+                }
+                if (seenChunkPositions.contains(anchor.chunkPos) && !anchor.heading.startsWith(QStringLiteral("DOCUMENT_SPAN_"))) {
+                    continue;
+                }
+                seenAnchorKeys.insert(anchorKey);
+                seenChunkPositions.insert(anchor.chunkPos);
+                normalizedAnchors.push_back(anchor);
+            }
+            return normalizedAnchors;
+        };
+
         QVector<SectionAnchor> anchors;
-        for (const QString &heading : std::as_const(majorHeadings)) {
-            const QString normalizedHeading = normalizeOutlineKey(stripTrailingOutlinePageNumber(heading));
+        for (const QString &heading : std::as_const(coverageHeadingCandidates)) {
+            const QString cleanedHeading = stripTrailingOutlinePageNumber(heading).trimmed();
+            const QString normalizedHeading = normalizeOutlineKey(cleanedHeading);
             const QString bodyKey = headingBodyKey(heading);
             if (normalizedHeading.isEmpty()) {
                 continue;
@@ -3030,13 +3259,31 @@ QString RagIndexer::formatDocumentStudyPrompt(const QStringList &preferredPaths,
                 if (loweredChunk.contains(normalizedHeading)) {
                     score += 5;
                 }
-                const QStringList chunkHeadings = extractMajorSectionHeadings(chunkText, 4);
-                for (const QString &chunkHeading : chunkHeadings) {
-                    if (normalizeOutlineKey(chunkHeading) == normalizedHeading) {
+
+                const QStringList chunkOutlineLines = extractDocumentOutlineLines(chunkText, 4);
+                for (const QString &chunkLine : std::as_const(chunkOutlineLines)) {
+                    const QString normalizedChunkLine = normalizeOutlineKey(stripTrailingOutlinePageNumber(chunkLine));
+                    if (normalizedChunkLine == normalizedHeading) {
                         score += 8;
                         break;
                     }
+                    if (!bodyKey.isEmpty() && normalizedChunkLine.contains(bodyKey)) {
+                        score += 3;
+                    }
                 }
+
+                const QStringList chunkHeadings = extractMajorSectionHeadings(chunkText, 4);
+                for (const QString &chunkHeading : std::as_const(chunkHeadings)) {
+                    const QString normalizedChunkHeading = normalizeOutlineKey(chunkHeading);
+                    if (normalizedChunkHeading == normalizedHeading) {
+                        score += 8;
+                        break;
+                    }
+                    if (!bodyKey.isEmpty() && normalizedChunkHeading.contains(bodyKey)) {
+                        score += 3;
+                    }
+                }
+
                 if (score >= bestScore && score > 0) {
                     bestScore = score;
                     bestChunkPos = i;
@@ -3044,28 +3291,39 @@ QString RagIndexer::formatDocumentStudyPrompt(const QStringList &preferredPaths,
             }
 
             if (bestChunkPos >= 0) {
-                anchors.push_back({heading, bestChunkPos});
+                anchors.push_back({cleanedHeading, bestChunkPos});
             }
         }
 
-        std::sort(anchors.begin(), anchors.end(), [](const SectionAnchor &a, const SectionAnchor &b) {
-            if (a.chunkPos != b.chunkPos) {
-                return a.chunkPos < b.chunkPos;
-            }
-            return a.heading < b.heading;
-        });
+        anchors = normalizeAnchors(anchors);
 
-        QVector<SectionAnchor> uniqueAnchors;
-        QSet<QString> seenAnchorKeys;
-        for (const SectionAnchor &anchor : std::as_const(anchors)) {
-            const QString anchorKey = normalizeOutlineKey(anchor.heading);
-            if (anchor.chunkPos < 0 || seenAnchorKeys.contains(anchorKey)) {
-                continue;
+        const int desiredCoverageAnchors = qBound(6,
+                                                  qMax(anchors.size(), qMin(fileChunks.size(), qMax(6, packetProfile.coverageBudget / qMax(420, packetProfile.minSectionChars)))),
+                                                  packetProfile.anchorCap);
+        auto hasNearbyAnchor = [&](int chunkPos, int distance) {
+            for (const SectionAnchor &anchor : std::as_const(anchors)) {
+                if (std::abs(anchor.chunkPos - chunkPos) <= distance) {
+                    return true;
+                }
             }
-            seenAnchorKeys.insert(anchorKey);
-            uniqueAnchors.push_back(anchor);
+            return false;
+        };
+
+        if (!fileChunks.isEmpty() && anchors.size() < desiredCoverageAnchors) {
+            const int lastChunkPos = fileChunks.size() - 1;
+            for (int sampleIndex = 0; sampleIndex < desiredCoverageAnchors; ++sampleIndex) {
+                const int denominator = qMax(1, desiredCoverageAnchors - 1);
+                const int chunkPos = qRound(lastChunkPos * (sampleIndex / static_cast<double>(denominator)));
+                if (chunkPos < 0 || chunkPos > lastChunkPos || hasNearbyAnchor(chunkPos, 2)) {
+                    continue;
+                }
+                anchors.push_back({chunkHeadingFallback(chunkPos, sampleIndex + 1), chunkPos});
+            }
+            if (!hasNearbyAnchor(lastChunkPos, 1)) {
+                anchors.push_back({chunkHeadingFallback(lastChunkPos, anchors.size() + 1), lastChunkPos});
+            }
+            anchors = normalizeAnchors(anchors);
         }
-        anchors = uniqueAnchors;
 
         if (anchors.size() > packetProfile.anchorCap) {
             QVector<SectionAnchor> sampledAnchors;
@@ -3085,7 +3343,6 @@ QString RagIndexer::formatDocumentStudyPrompt(const QStringList &preferredPaths,
                 anchors = sampledAnchors;
             }
         }
-
         const int effectiveMaxCharsPerFile = packetProfile.effectiveMaxCharsPerFile;
         const int previewBudget = packetProfile.previewBudget;
         const int coverageBudget = packetProfile.coverageBudget;

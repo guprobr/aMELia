@@ -1509,6 +1509,29 @@ void MainWindow::resetTaskProgressBar()
     m_taskProgressBar->setFormat(QStringLiteral("%p%"));
 }
 
+void MainWindow::updateKnowledgeBaseControlsEnabled()
+{
+    const bool busy = m_stopButton != nullptr && m_stopButton->isEnabled();
+    const bool enableKbControls = !busy && !m_indexingActive && !m_knowledgeInventoryRefreshVisible;
+
+    if (m_sourceInventoryFilter != nullptr) m_sourceInventoryFilter->setEnabled(enableKbControls);
+    if (m_sourceInventorySortCombo != nullptr) m_sourceInventorySortCombo->setEnabled(enableKbControls);
+    if (m_sourceInventoryTree != nullptr) {
+        m_sourceInventoryTree->setEnabled(enableKbControls);
+        m_sourceInventoryTree->setDragEnabled(enableKbControls);
+        m_sourceInventoryTree->setAcceptDrops(enableKbControls);
+        m_sourceInventoryTree->viewport()->setAcceptDrops(enableKbControls);
+    }
+    if (m_prioritizedAssetsList != nullptr) m_prioritizedAssetsList->setEnabled(enableKbControls);
+    if (m_prioritizeSelectedAssetButton != nullptr) m_prioritizeSelectedAssetButton->setEnabled(enableKbControls);
+    if (m_pinSelectedAssetButton != nullptr) m_pinSelectedAssetButton->setEnabled(enableKbControls);
+    if (m_renameKnowledgeLabelButton != nullptr) m_renameKnowledgeLabelButton->setEnabled(enableKbControls);
+    if (m_removeSelectedAssetButton != nullptr) m_removeSelectedAssetButton->setEnabled(enableKbControls);
+    if (m_clearKnowledgeBaseButton != nullptr) m_clearKnowledgeBaseButton->setEnabled(enableKbControls);
+    if (m_removePrioritizedAssetButton != nullptr) m_removePrioritizedAssetButton->setEnabled(enableKbControls);
+    if (m_clearPrioritizedAssetsButton != nullptr) m_clearPrioritizedAssetsButton->setEnabled(enableKbControls);
+}
+
 bool MainWindow::confirmKnowledgeBaseReindexAction(const QString &action, const QString &details) const
 {
     QString prompt = action.trimmed();
@@ -1542,15 +1565,7 @@ void MainWindow::setKnowledgeInventoryRefreshVisible(bool visible, const QString
         m_sourceInventoryRefreshLabel->setText(visible ? QStringLiteral("%1 %2").arg(frame, m_knowledgeInventoryRefreshBaseLabel) : QString());
     }
 
-    const bool enableKbControls = !visible && !m_indexingActive && (m_stopButton == nullptr || !m_stopButton->isEnabled());
-    if (m_sourceInventoryFilter != nullptr) m_sourceInventoryFilter->setEnabled(enableKbControls);
-    if (m_sourceInventorySortCombo != nullptr) m_sourceInventorySortCombo->setEnabled(enableKbControls);
-    if (m_sourceInventoryTree != nullptr) m_sourceInventoryTree->setEnabled(enableKbControls);
-    if (m_prioritizeSelectedAssetButton != nullptr) m_prioritizeSelectedAssetButton->setEnabled(enableKbControls);
-    if (m_pinSelectedAssetButton != nullptr) m_pinSelectedAssetButton->setEnabled(enableKbControls);
-    if (m_renameKnowledgeLabelButton != nullptr) m_renameKnowledgeLabelButton->setEnabled(enableKbControls);
-    if (m_removeSelectedAssetButton != nullptr) m_removeSelectedAssetButton->setEnabled(enableKbControls);
-    if (m_clearKnowledgeBaseButton != nullptr) m_clearKnowledgeBaseButton->setEnabled(enableKbControls);
+    updateKnowledgeBaseControlsEnabled();
 
     if (visible) {
         if (m_busyIndicatorTimer != nullptr && !m_busyIndicatorTimer->isActive()) {
@@ -2045,15 +2060,8 @@ void MainWindow::setBusy(bool busy)
     if (m_promptLabBrowseFilesButton != nullptr) m_promptLabBrowseFilesButton->setEnabled(!busy && !m_indexingActive);
     if (m_promptLabBrowseFolderButton != nullptr) m_promptLabBrowseFolderButton->setEnabled(!busy && !m_indexingActive);
     if (m_promptLabCopyRecipeButton != nullptr) m_promptLabCopyRecipeButton->setEnabled(!busy);
-    if (m_prioritizeSelectedAssetButton != nullptr) m_prioritizeSelectedAssetButton->setEnabled(!busy && !m_indexingActive);
-    if (m_pinSelectedAssetButton != nullptr) m_pinSelectedAssetButton->setEnabled(!busy && !m_indexingActive);
-    if (m_removeSelectedAssetButton != nullptr) m_removeSelectedAssetButton->setEnabled(!busy && !m_indexingActive);
-    if (m_clearKnowledgeBaseButton != nullptr) m_clearKnowledgeBaseButton->setEnabled(!busy && !m_indexingActive);
-    if (m_removePrioritizedAssetButton != nullptr) m_removePrioritizedAssetButton->setEnabled(!busy);
-    if (m_clearPrioritizedAssetsButton != nullptr) m_clearPrioritizedAssetsButton->setEnabled(!busy);
     if (m_cancelIndexingButton != nullptr) m_cancelIndexingButton->setEnabled(m_indexingActive && !busy);
-    if (m_sourceInventoryTree != nullptr) m_sourceInventoryTree->setDragEnabled(!busy && !m_indexingActive);
-    if (m_sourceInventoryTree != nullptr) { m_sourceInventoryTree->setAcceptDrops(!busy && !m_indexingActive); m_sourceInventoryTree->viewport()->setAcceptDrops(!busy && !m_indexingActive); }
+    updateKnowledgeBaseControlsEnabled();
 
     if (busy) {
         beginResponseProgress(QStringLiteral("Preparing prompt..."));
@@ -2091,22 +2099,11 @@ void MainWindow::setIndexingActive(bool active)
     m_promptLabImportButton->setEnabled(!active && !m_stopButton->isEnabled());
     if (m_promptLabBrowseFilesButton != nullptr) m_promptLabBrowseFilesButton->setEnabled(!active && !m_stopButton->isEnabled());
     if (m_promptLabBrowseFolderButton != nullptr) m_promptLabBrowseFolderButton->setEnabled(!active && !m_stopButton->isEnabled());
-    if (m_prioritizeSelectedAssetButton != nullptr) m_prioritizeSelectedAssetButton->setEnabled(!active && !m_stopButton->isEnabled());
-    if (m_pinSelectedAssetButton != nullptr) m_pinSelectedAssetButton->setEnabled(!active && !m_stopButton->isEnabled());
-    if (m_removeSelectedAssetButton != nullptr) m_removeSelectedAssetButton->setEnabled(!active && !m_stopButton->isEnabled());
-    if (m_clearKnowledgeBaseButton != nullptr) m_clearKnowledgeBaseButton->setEnabled(!active && !m_stopButton->isEnabled());
-    if (m_removePrioritizedAssetButton != nullptr) m_removePrioritizedAssetButton->setEnabled(!active && !m_stopButton->isEnabled());
-    if (m_clearPrioritizedAssetsButton != nullptr) m_clearPrioritizedAssetsButton->setEnabled(!active && !m_stopButton->isEnabled());
     if (m_cancelIndexingButton != nullptr) {
         m_cancelIndexingButton->setVisible(active);
         m_cancelIndexingButton->setEnabled(active);
     }
-    if (m_sourceInventoryTree != nullptr) {
-        const bool allowTreeDragDrop = !active && !m_stopButton->isEnabled();
-        m_sourceInventoryTree->setDragEnabled(allowTreeDragDrop);
-        m_sourceInventoryTree->setAcceptDrops(allowTreeDragDrop);
-        m_sourceInventoryTree->viewport()->setAcceptDrops(allowTreeDragDrop);
-    }
+    updateKnowledgeBaseControlsEnabled();
 
     if (m_taskProgressBar == nullptr) {
         return;

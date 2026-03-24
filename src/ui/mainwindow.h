@@ -154,6 +154,7 @@ private:
     void finishResponseProgress(const QString &label = QString());
     void cancelResponseProgress(const QString &label = QString());
     void resetTaskProgressBar();
+    void updateKnowledgeBaseControlsEnabled();
     bool saveConfigurationJson(const QString &text, QString *errorMessage = nullptr);
 
     QTextEdit *m_transcript = nullptr;
