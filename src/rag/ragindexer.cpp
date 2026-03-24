@@ -3,6 +3,7 @@
 #include "rag/embeddingclient.h"
 
 #include <algorithm>
+#include <cmath>
 
 #include <QCryptographicHash>
 #include <QDateTime>
@@ -22,6 +23,78 @@
 
 namespace {
 bool isCancelRequested(const std::atomic_bool *cancelRequested);
+
+struct DocumentStudyPacketProfile {
+    int effectiveOutlineLineLimit = 180;
+    int effectiveMaxCharsPerFile = 40000;
+    int previewBudget = 0;
+    int coverageBudget = 0;
+    int minSectionChars = 400;
+    int maxSectionCharsCap = 1600;
+    int anchorCap = 64;
+    bool includeFullDocumentPreview = false;
+    int fullDocumentInlineThreshold = 0;
+};
+
+double normalizedDocumentScale(int textChars, int chunkCount)
+{
+    const double safeChars = static_cast<double>(qMax(textChars, 1000));
+    const double safeChunks = static_cast<double>(qMax(chunkCount, 1));
+    const double charScale = (std::log10(safeChars) - std::log10(50000.0))
+            / (std::log10(5000000.0) - std::log10(50000.0));
+    const double chunkScale = (std::log10(safeChunks) - std::log10(150.0))
+            / (std::log10(15000.0) - std::log10(150.0));
+    return qBound(0.0, qMax(charScale, chunkScale), 1.0);
+}
+
+DocumentStudyPacketProfile buildDocumentStudyPacketProfile(int textChars,
+                                                           int chunkCount,
+                                                           int requestedOutlineLineLimit,
+                                                           int requestedMaxCharsPerFile)
+{
+    const double scale = normalizedDocumentScale(textChars, chunkCount);
+    const bool mediumDocument = textChars >= 180000 || chunkCount >= 500;
+    const bool largeDocument = textChars >= 500000 || chunkCount >= 1800;
+    const bool hugeDocument = textChars >= 1500000 || chunkCount >= 6000;
+    const bool massiveDocument = textChars >= 5000000 || chunkCount >= 20000;
+
+    DocumentStudyPacketProfile profile;
+    profile.effectiveOutlineLineLimit = qBound(120,
+                                               requestedOutlineLineLimit + qRound(scale * 80.0),
+                                               280);
+
+    const int requestedBudget = qMax(12000, requestedMaxCharsPerFile);
+    profile.effectiveMaxCharsPerFile = requestedBudget;
+
+    if (!mediumDocument) {
+        profile.previewBudget = qMin(9000, qMax(2200, profile.effectiveMaxCharsPerFile / 5));
+    } else if (!hugeDocument) {
+        profile.previewBudget = qMin(4800, qMax(1200, profile.effectiveMaxCharsPerFile / 11));
+    } else if (!massiveDocument) {
+        profile.previewBudget = qMin(1600, qMax(0, profile.effectiveMaxCharsPerFile / 36));
+    } else {
+        profile.previewBudget = 0;
+    }
+
+    profile.coverageBudget = qMax(2800, profile.effectiveMaxCharsPerFile - profile.previewBudget - 900);
+    profile.minSectionChars = !mediumDocument ? 800 : (largeDocument ? (massiveDocument ? 260 : (hugeDocument ? 340 : 520)) : 700);
+    profile.maxSectionCharsCap = !mediumDocument ? 4000 : (largeDocument ? (massiveDocument ? 900 : (hugeDocument ? 1300 : 2200)) : 3200);
+    profile.anchorCap = qBound(48, 56 + qRound(scale * 40.0), 96);
+    if (largeDocument) {
+        profile.anchorCap = qMax(profile.anchorCap, 72);
+    }
+    if (hugeDocument) {
+        profile.anchorCap = qMax(profile.anchorCap, 84);
+    }
+    if (massiveDocument) {
+        profile.anchorCap = 96;
+    }
+
+    profile.includeFullDocumentPreview = !largeDocument;
+    profile.fullDocumentInlineThreshold = qMin(profile.effectiveMaxCharsPerFile,
+                                               mediumDocument ? 24000 : 36000);
+    return profile;
+}
 
 QString detectSourceType(const QFileInfo &info)
 {
@@ -2733,10 +2806,67 @@ QVector<RagHit> RagIndexer::representativeHitsInFiles(const QStringList &preferr
     return hits;
 }
 
+DocumentSelectionStats RagIndexer::estimateDocumentSelectionStats(const QStringList &preferredPaths,
+                                                                 int maxFiles) const
+{
+    DocumentSelectionStats stats;
+    if (preferredPaths.isEmpty()) {
+        return stats;
+    }
+
+    QSet<QString> selectedPaths;
+    QStringList orderedPaths;
+    for (const QString &path : preferredPaths) {
+        const QString cleaned = QDir::cleanPath(path.trimmed());
+        if (cleaned.isEmpty() || selectedPaths.contains(cleaned)) {
+            continue;
+        }
+        selectedPaths.insert(cleaned);
+        orderedPaths << cleaned;
+        if (maxFiles > 0 && orderedPaths.size() >= maxFiles) {
+            break;
+        }
+    }
+
+    for (const QString &path : std::as_const(orderedPaths)) {
+        int textChars = 0;
+        int chunkCount = 0;
+        bool matchedSource = false;
+        for (const SourceInfo &source : m_sources) {
+            if (QDir::cleanPath(source.filePath) != path) {
+                continue;
+            }
+            textChars = qMax(0, source.textCharCount);
+            chunkCount = qMax(0, source.chunkCount);
+            matchedSource = true;
+            break;
+        }
+
+        if (!matchedSource) {
+            for (const Chunk &chunk : m_chunks) {
+                if (QDir::cleanPath(chunk.filePath) != path) {
+                    continue;
+                }
+                textChars += chunk.text.size();
+                ++chunkCount;
+            }
+        }
+
+        ++stats.fileCount;
+        stats.totalChars += textChars;
+        stats.totalChunks += chunkCount;
+        stats.maxCharsInFile = qMax(stats.maxCharsInFile, textChars);
+        stats.maxChunksInFile = qMax(stats.maxChunksInFile, chunkCount);
+    }
+
+    return stats;
+}
+
 QString RagIndexer::formatDocumentStudyPrompt(const QStringList &preferredPaths,
                                                    int maxFiles,
                                                    int outlineLineLimit,
-                                                   int maxCharsPerFile) const
+                                                   int maxCharsPerFile,
+                                                   int hardPacketBudgetChars) const
 {
     if (preferredPaths.isEmpty() || maxFiles <= 0) {
         return QString();
@@ -2820,7 +2950,11 @@ QString RagIndexer::formatDocumentStudyPrompt(const QStringList &preferredPaths,
             return a->chunkIndex < b->chunkIndex;
         });
 
-        const QStringList outlineLines = extractDocumentOutlineLines(text, outlineLineLimit);
+        const DocumentStudyPacketProfile packetProfile = buildDocumentStudyPacketProfile(text.size(),
+                                                                                        fileChunks.size(),
+                                                                                        outlineLineLimit,
+                                                                                        maxCharsPerFile);
+        const QStringList outlineLines = extractDocumentOutlineLines(text, packetProfile.effectiveOutlineLineLimit);
         const QString outlineText = outlineLines.isEmpty()
                 ? QStringLiteral("<no explicit outline lines extracted>")
                 : outlineLines.join(QStringLiteral("\n"));
@@ -2933,12 +3067,12 @@ QString RagIndexer::formatDocumentStudyPrompt(const QStringList &preferredPaths,
         }
         anchors = uniqueAnchors;
 
-        const bool hugeDocument = fileChunks.size() >= 2000 || text.size() >= 500000;
-        if (hugeDocument && anchors.size() > 64) {
+        if (anchors.size() > packetProfile.anchorCap) {
             QVector<SectionAnchor> sampledAnchors;
-            sampledAnchors.reserve(64);
-            for (int sampleIndex = 0; sampleIndex < 64; ++sampleIndex) {
-                const int pos = qRound((anchors.size() - 1) * (sampleIndex / 63.0));
+            sampledAnchors.reserve(packetProfile.anchorCap);
+            for (int sampleIndex = 0; sampleIndex < packetProfile.anchorCap; ++sampleIndex) {
+                const int denominator = qMax(1, packetProfile.anchorCap - 1);
+                const int pos = qRound((anchors.size() - 1) * (sampleIndex / static_cast<double>(denominator)));
                 if (pos < 0 || pos >= anchors.size()) {
                     continue;
                 }
@@ -2952,11 +3086,11 @@ QString RagIndexer::formatDocumentStudyPrompt(const QStringList &preferredPaths,
             }
         }
 
-        const int effectiveMaxCharsPerFile = hugeDocument ? qMin(maxCharsPerFile, 18000) : maxCharsPerFile;
-        const int previewBudget = hugeDocument ? 0 : qMin(8000, qMax(2400, effectiveMaxCharsPerFile / 8));
-        const int coverageBudget = qMax(2400, effectiveMaxCharsPerFile - previewBudget - 800);
-        const int minSectionChars = hugeDocument ? 400 : 800;
-        const int maxSectionCharsCap = hugeDocument ? 1600 : 4000;
+        const int effectiveMaxCharsPerFile = packetProfile.effectiveMaxCharsPerFile;
+        const int previewBudget = packetProfile.previewBudget;
+        const int coverageBudget = packetProfile.coverageBudget;
+        const int minSectionChars = packetProfile.minSectionChars;
+        const int maxSectionCharsCap = packetProfile.maxSectionCharsCap;
         QStringList coverageSections;
         int remainingBudget = coverageBudget;
         int remainingSections = anchors.size();
@@ -2987,8 +3121,9 @@ QString RagIndexer::formatDocumentStudyPrompt(const QStringList &preferredPaths,
             sectionCoverageText = QStringLiteral("<section sweep unavailable; falling back to balanced document preview>");
         }
 
-        const int fullDocumentInlineThreshold = qMin(effectiveMaxCharsPerFile, 32000);
-        const bool includeFullDocumentPreview = !hugeDocument && text.size() <= fullDocumentInlineThreshold;
+        const int fullDocumentInlineThreshold = packetProfile.fullDocumentInlineThreshold;
+        const bool includeFullDocumentPreview = packetProfile.includeFullDocumentPreview
+                && text.size() <= fullDocumentInlineThreshold;
         const QString fullDocumentPreview = includeFullDocumentPreview
                 ? balancedTrimForStudy(text, previewBudget)
                 : QString();
@@ -3006,6 +3141,10 @@ QString RagIndexer::formatDocumentStudyPrompt(const QStringList &preferredPaths,
         if (!fullDocumentPreview.trimmed().isEmpty()) {
             packet += QStringLiteral("\n\nFULL_DOCUMENT_TEXT:\n%1").arg(fullDocumentPreview);
         }
+        const int effectivePacketBudget = hardPacketBudgetChars > 0
+                ? qMax(12000, qMin(hardPacketBudgetChars, effectiveMaxCharsPerFile))
+                : effectiveMaxCharsPerFile;
+        packet = balancedTrimForStudy(packet, effectivePacketBudget);
         packets << packet;
     }
 

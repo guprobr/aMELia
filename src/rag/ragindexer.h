@@ -25,6 +25,14 @@ struct RagHit {
     double rerankScore = 0.0;
 };
 
+struct DocumentSelectionStats {
+    int fileCount = 0;
+    int totalChars = 0;
+    int totalChunks = 0;
+    int maxCharsInFile = 0;
+    int maxChunksInFile = 0;
+};
+
 class RagIndexer {
 public:
     void setDocsRoot(const QString &rootPath);
@@ -52,10 +60,13 @@ public:
     QVector<RagHit> representativeHitsInFiles(const QStringList &preferredPaths,
                                               int perFileLimit = 8,
                                               bool preferStructure = true) const;
+    DocumentSelectionStats estimateDocumentSelectionStats(const QStringList &preferredPaths,
+                                                          int maxFiles = -1) const;
     QString formatDocumentStudyPrompt(const QStringList &preferredPaths,
                                       int maxFiles = 1,
                                       int outlineLineLimit = 180,
-                                      int maxCharsPerFile = 70000) const;
+                                      int maxCharsPerFile = 70000,
+                                      int hardPacketBudgetChars = 0) const;
     QString formatHitsForPrompt(const QVector<RagHit> &hits) const;
     QString formatHitsForUi(const QVector<RagHit> &hits) const;
     QString formatInventoryForUi() const;

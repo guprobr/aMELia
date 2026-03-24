@@ -13,6 +13,7 @@
 #include "backend/toolexecutor.h"
 
 #include <algorithm>
+#include <cmath>
 
 #include <QDateTime>
 #include <QFile>
@@ -184,6 +185,180 @@ struct TransformPromptSpec {
     QString instruction;
     QString source;
 };
+
+struct DocumentStudyRuntimeTuning {
+    int coveragePerFile = 10;
+    int studyHitFloor = 14;
+    int maxCharsPerFile = 26000;
+    int hitPromptFallbackBudget = 1200;
+    int localContextBudget = 32000;
+};
+
+enum class OllamaRuntimeProfile {
+    Auto,
+    CpuConservative,
+    GpuBalanced,
+};
+
+constexpr double kPromptBudgetCharsPerToken = 3.2;
+
+QString readEnvironmentValue(const char *name)
+{
+    return qEnvironmentVariableIsSet(name)
+            ? QString::fromLocal8Bit(qgetenv(name)).trimmed()
+            : QString();
+}
+
+OllamaRuntimeProfile detectOllamaRuntimeProfile()
+{
+    const QString overrideValue = readEnvironmentValue("AMELIA_OLLAMA_RUNTIME_PROFILE").toLower();
+    if (overrideValue == QStringLiteral("cpu")
+            || overrideValue == QStringLiteral("cpu-only")
+            || overrideValue == QStringLiteral("conservative")) {
+        return OllamaRuntimeProfile::CpuConservative;
+    }
+    if (overrideValue == QStringLiteral("gpu")
+            || overrideValue == QStringLiteral("balanced")) {
+        return OllamaRuntimeProfile::GpuBalanced;
+    }
+    if (overrideValue == QStringLiteral("auto")) {
+        return OllamaRuntimeProfile::Auto;
+    }
+
+    const QString vkVisible = readEnvironmentValue("GGML_VK_VISIBLE_DEVICES");
+    if (vkVisible == QStringLiteral("-1")) {
+        return OllamaRuntimeProfile::CpuConservative;
+    }
+
+    const auto looksGpuEnabled = [](const QString &value) {
+        return !value.isEmpty() && value != QStringLiteral("-1") && value.toLower() != QStringLiteral("none");
+    };
+
+    if (looksGpuEnabled(readEnvironmentValue("CUDA_VISIBLE_DEVICES"))
+            || looksGpuEnabled(readEnvironmentValue("HIP_VISIBLE_DEVICES"))
+            || looksGpuEnabled(vkVisible)) {
+        return OllamaRuntimeProfile::GpuBalanced;
+    }
+
+    if (readEnvironmentValue("OLLAMA_VULKAN") == QStringLiteral("1")) {
+        return OllamaRuntimeProfile::GpuBalanced;
+    }
+
+    return OllamaRuntimeProfile::Auto;
+}
+
+QString ollamaRuntimeProfileName(OllamaRuntimeProfile profile)
+{
+    switch (profile) {
+    case OllamaRuntimeProfile::CpuConservative:
+        return QStringLiteral("cpu");
+    case OllamaRuntimeProfile::GpuBalanced:
+        return QStringLiteral("gpu");
+    case OllamaRuntimeProfile::Auto:
+    default:
+        return QStringLiteral("auto");
+    }
+}
+
+int estimatedCharsForTokens(int tokens)
+{
+    return qMax(0, qRound(static_cast<double>(qMax(tokens, 0)) * kPromptBudgetCharsPerToken));
+}
+
+int safeRetrievedContextTokenBudget(int numCtx, bool documentStudy, OllamaRuntimeProfile runtimeProfile)
+{
+    const int safeNumCtx = qMax(4096, numCtx);
+    if (documentStudy) {
+        const int answerReserve = qBound(2048, safeNumCtx / 8, 4096);
+        const int scaffoldingReserve = qBound(1800, safeNumCtx / 10, 3200);
+        const int historyReserve = qBound(600, safeNumCtx / 24, 1200);
+        const int available = qMax(2200, safeNumCtx - answerReserve - scaffoldingReserve - historyReserve);
+
+        double contextRatio = 0.40;
+        if (runtimeProfile == OllamaRuntimeProfile::CpuConservative) {
+            contextRatio = 0.34;
+        } else if (runtimeProfile == OllamaRuntimeProfile::GpuBalanced) {
+            contextRatio = 0.50;
+        }
+
+        return qBound(2200,
+                      qRound(static_cast<double>(available) * contextRatio),
+                      qMax(2200, safeNumCtx / 2));
+    }
+
+    const int answerReserve = qBound(1024, safeNumCtx / 10, 2048);
+    const int scaffoldingReserve = qBound(1000, safeNumCtx / 14, 1800);
+    const int historyReserve = qBound(300, safeNumCtx / 30, 700);
+    const int available = qMax(900, safeNumCtx - answerReserve - scaffoldingReserve - historyReserve);
+
+    double contextRatio = 0.26;
+    if (runtimeProfile == OllamaRuntimeProfile::CpuConservative) {
+        contextRatio = 0.22;
+    } else if (runtimeProfile == OllamaRuntimeProfile::GpuBalanced) {
+        contextRatio = 0.32;
+    }
+
+    return qBound(900,
+                  qRound(static_cast<double>(available) * contextRatio),
+                  qMax(900, safeNumCtx / 3));
+}
+
+int safeRetrievedContextCharBudget(int numCtx, bool documentStudy, OllamaRuntimeProfile runtimeProfile)
+{
+    return estimatedCharsForTokens(safeRetrievedContextTokenBudget(numCtx, documentStudy, runtimeProfile));
+}
+
+double normalizedDocumentScale(int textChars, int chunkCount)
+{
+    const double safeChars = static_cast<double>(qMax(textChars, 1000));
+    const double safeChunks = static_cast<double>(qMax(chunkCount, 1));
+    const double charScale = (std::log10(safeChars) - std::log10(50000.0))
+            / (std::log10(5000000.0) - std::log10(50000.0));
+    const double chunkScale = (std::log10(safeChunks) - std::log10(150.0))
+            / (std::log10(15000.0) - std::log10(150.0));
+    return qBound(0.0, qMax(charScale, chunkScale), 1.0);
+}
+
+DocumentStudyRuntimeTuning tuneDocumentStudyRuntime(const DocumentSelectionStats &stats,
+                                                    bool prioritized,
+                                                    int numCtx,
+                                                    OllamaRuntimeProfile runtimeProfile)
+{
+    DocumentStudyRuntimeTuning tuning;
+    tuning.localContextBudget = safeRetrievedContextCharBudget(numCtx, true, runtimeProfile);
+    if (stats.fileCount <= 0) {
+        return tuning;
+    }
+
+    const int sizingChars = qMax(stats.maxCharsInFile,
+                                 stats.fileCount > 0 ? stats.totalChars / stats.fileCount : stats.totalChars);
+    const int sizingChunks = qMax(stats.maxChunksInFile,
+                                  stats.fileCount > 0 ? stats.totalChunks / stats.fileCount : stats.totalChunks);
+    const double scale = normalizedDocumentScale(sizingChars, sizingChunks);
+    const int fileBudgetDivisor = qMax(1, qMin(stats.fileCount, 2));
+    const int availablePerFileBudget = qMax(14000,
+                                            (tuning.localContextBudget - 2200) / fileBudgetDivisor);
+
+    const int minCoverage = prioritized ? 8 : 6;
+    const int maxCoverage = prioritized ? 18 : 14;
+    const int coverageBase = prioritized ? 10 : 8;
+    const int coverageFromScale = coverageBase + qRound(scale * 6.0);
+
+    const int dynamicPacketBudget = qBound(16000,
+                                           22000 + qRound(scale * 18000.0) + (prioritized ? 2000 : 0),
+                                           52000);
+    tuning.maxCharsPerFile = qMin(dynamicPacketBudget, availablePerFileBudget);
+    tuning.hitPromptFallbackBudget = qBound(800,
+                                            qRound(static_cast<double>(tuning.localContextBudget) * 0.05),
+                                            1800);
+
+    const int coverageFromBudget = qMax(minCoverage, tuning.maxCharsPerFile / 1800);
+    tuning.coveragePerFile = qBound(minCoverage,
+                                    qMin(coverageFromScale, coverageFromBudget),
+                                    maxCoverage);
+    tuning.studyHitFloor = qBound(10, tuning.coveragePerFile + 4, 18);
+    return tuning;
+}
 
 TransformPromptSpec detectTransformPrompt(const QString &prompt)
 {
@@ -1016,12 +1191,19 @@ void ChatController::sendUserPrompt(const QString &prompt, bool allowExternalSea
                     }
                 }
 
-// FIXED — more representative samples for large non-pinned docs
-                const int coveragePerFile = prioritizedAssets.isEmpty() ? 12 : 16;
+                const int maxStudyFiles = prioritizedAssets.isEmpty() ? 1 : qMin(2, studyPaths.size());
+                const DocumentSelectionStats studyStats = m_rag->estimateDocumentSelectionStats(studyPaths,
+                                                                                                maxStudyFiles);
+                const OllamaRuntimeProfile runtimeProfile = detectOllamaRuntimeProfile();
+                const DocumentStudyRuntimeTuning documentTuning = tuneDocumentStudyRuntime(studyStats,
+                                                                                            !prioritizedAssets.isEmpty(),
+                                                                                            m_config.ollamaNumCtx,
+                                                                                            runtimeProfile);
                 const QVector<RagHit> coverageHits = m_rag->representativeHitsInFiles(studyPaths,
-                                                                                      coveragePerFile,
+                                                                                      documentTuning.coveragePerFile,
                                                                                       true);
-                const int studyHitLimit = qMax(config.maxLocalHits + qMin(coverageHits.size(), 10), 14);
+                const int studyHitLimit = qMax(config.maxLocalHits + qMin(coverageHits.size(), 12),
+                                               documentTuning.studyHitFloor);
                 localHits = mergePreferredHits(coverageHits,
                                                localHits,
                                                studyHitLimit,
@@ -1029,25 +1211,28 @@ void ChatController::sendUserPrompt(const QString &prompt, bool allowExternalSea
                                                &result.prioritizedAssetsUsed,
                                                &result.prioritizedHits);
 
-                const int maxStudyFiles = prioritizedAssets.isEmpty() ? 1 : qMin(2, studyPaths.size());
                 documentStudyPacket = m_rag->formatDocumentStudyPrompt(studyPaths,
                                                                        maxStudyFiles,
                                                                        180,
-                                                                       40000);  // gives the section sweeper real room
+                                                                       documentTuning.maxCharsPerFile,
+                                                                       documentTuning.maxCharsPerFile);
+                const QString hitPromptContextRaw = m_rag->formatHitsForPrompt(localHits);
+                const bool heavyDocumentStudyPacket = documentStudyPacket.size() >= 18000;
+                const bool structuredDocumentStudyPacket = documentStudyPacket.contains(QStringLiteral("SECTION_COVERAGE_PACKET:"));
+                const QString hitPromptContext = (heavyDocumentStudyPacket || structuredDocumentStudyPacket)
+                        ? QString()
+                        : trimForBudget(hitPromptContextRaw, documentTuning.hitPromptFallbackBudget);
+                const QString combinedLocalContext = documentStudyPacket.trimmed().isEmpty()
+                        ? hitPromptContext
+                        : documentStudyPacket + QStringLiteral("\n\n") + hitPromptContext;
+                result.localContext = trimForBudget(combinedLocalContext,
+                                                    result.outlineOnlyFirstPass ? 4800 : documentTuning.localContextBudget);
+            } else {
+                const QString hitPromptContextRaw = m_rag->formatHitsForPrompt(localHits);
+                result.localContext = trimForBudget(hitPromptContextRaw,
+                                                    result.outlineOnlyFirstPass ? 4800 : 9600);
             }
             result.retrievedHits = localHits.size();
-            const QString hitPromptContextRaw = m_rag->formatHitsForPrompt(localHits);
-            const bool heavyDocumentStudyPacket = looksLikeDocumentStudy && documentStudyPacket.size() >= 18000;
-            const bool structuredDocumentStudyPacket = looksLikeDocumentStudy
-                    && documentStudyPacket.contains(QStringLiteral("SECTION_COVERAGE_PACKET:"));
-            const QString hitPromptContext = looksLikeDocumentStudy
-                    ? ((heavyDocumentStudyPacket || structuredDocumentStudyPacket) ? QString() : trimForBudget(hitPromptContextRaw, 1600))
-                    : hitPromptContextRaw;
-            const QString combinedLocalContext = documentStudyPacket.trimmed().isEmpty()
-                    ? hitPromptContext
-                    : documentStudyPacket + QStringLiteral("\n\n") + hitPromptContext;
-            result.localContext = trimForBudget(combinedLocalContext,
-                                                result.outlineOnlyFirstPass ? 4800 : (looksLikeDocumentStudy ? 52000 : 9600));
             result.localUi = m_rag->formatHitsForUi(localHits);
         }
 
@@ -1792,6 +1977,16 @@ void ChatController::startGeneration(const QString &prompt,
     addDiagnostic(QStringLiteral("backend"), QStringLiteral("Final message payload | %1")
                   .arg(summarizeMessagePayload(messages)));
 
+    if (looksLikeDocumentStudyPrompt(prompt)) {
+        const OllamaRuntimeProfile runtimeProfile = detectOllamaRuntimeProfile();
+        addDiagnostic(QStringLiteral("budget"),
+                      QStringLiteral("Document budget policy | runtime=%1 | num_ctx=%2 | safe_local_budget≈%3 chars | actual_local=%4 chars")
+                      .arg(ollamaRuntimeProfileName(runtimeProfile))
+                      .arg(m_config.ollamaNumCtx)
+                      .arg(safeRetrievedContextCharBudget(m_config.ollamaNumCtx, true, runtimeProfile))
+                      .arg(localContext.size()));
+    }
+
     const bool heavyDocumentStudyRequest = looksLikeDocumentStudyPrompt(prompt)
             && localContext.contains(QStringLiteral("SECTION_COVERAGE_PACKET:"))
             && localContext.size() >= 16000;
@@ -2078,13 +2273,26 @@ QVector<LlmChatMessage> ChatController::buildPromptMessages(const QString &userP
                                                             bool contextIsWeak) const
 {
     const bool documentStudyPrompt = looksLikeDocumentStudyPrompt(userPrompt);
-    const int localBudget    = m_outlineOnlyFirstPass ? 4800  : (documentStudyPrompt ? 52000 : 9600);
-    const int externalBudget = m_outlineOnlyFirstPass ? 1400  : 2400;
-    const int memoryBudget   = 900;
-    const int summaryBudget  = 1200;
-    const int outlineBudget  = 1400;
-    const int historyBudget  = 2400;
-    const int sourceBudget   = m_outlineOnlyFirstPass ? 7000 : (documentStudyPrompt ? 22000 : 14000);
+    const OllamaRuntimeProfile runtimeProfile = detectOllamaRuntimeProfile();
+    const int safeDocumentLocalBudget = safeRetrievedContextCharBudget(m_config.ollamaNumCtx,
+                                                                       true,
+                                                                       runtimeProfile);
+    const int safeGeneralLocalBudget = safeRetrievedContextCharBudget(m_config.ollamaNumCtx,
+                                                                      false,
+                                                                      runtimeProfile);
+    const int localBudget = m_outlineOnlyFirstPass
+            ? 4800
+            : (documentStudyPrompt
+               ? qMin(qBound(14000, localContext.size() + 1024, 98000), safeDocumentLocalBudget)
+               : qMin(9600, safeGeneralLocalBudget));
+    const int externalBudget = m_outlineOnlyFirstPass ? 1400 : 2400;
+    const int memoryBudget = 900;
+    const int summaryBudget = 1200;
+    const int outlineBudget = 1400;
+    const int historyBudget = 2400;
+    const int sourceBudget = m_outlineOnlyFirstPass
+            ? 7000
+            : (documentStudyPrompt ? qBound(8000, localBudget / 2, 24000) : 14000);
     const TransformPromptSpec transformPrompt = detectTransformPrompt(userPrompt);
 
     QVector<LlmChatMessage> messages;

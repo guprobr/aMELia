@@ -1,8 +1,8 @@
-# aMELia Qt6 v9.15.2
+# aMELia Qt6 v9.16.2
 
 Amelia is a local-first Qt6/C++ coding and cloud assistant that talks to a local Ollama server, stores its state under `~/.amelia_qt6`, indexes a local knowledge base, and can optionally use sanitized external web search through SearXNG.
 
-This build rolls forward the existing bootstrap, indexing, transcript, Prompt Lab, notification, and progress-bar work, and adds a Knowledge Base collection model with preserved folder structure, a tree-view browser, a hard-locked Knowledge Base root and safer workspace-jail boundaries under `~/.amelia_qt6`, stronger transcript code-block handling, first-run service prompts, and a full JSON configuration editor. aMELia is also allegorically considered a MEL: Model Enhancement Lab.
+This build rolls forward the existing bootstrap, indexing, transcript, Prompt Lab, notification, and progress-bar work, and adds a Knowledge Base collection model with preserved folder structure, a tree-view browser, a hard-locked Knowledge Base root and safer workspace-jail boundaries under `~/.amelia_qt6`, stronger transcript code-block handling, first-run service prompts, a full JSON configuration editor, and a context-aware document-study budget policy that now respects Ollama `num_ctx` end-to-end. aMELia is also allegorically considered a MEL: Model Enhancement Lab.
 
 NOTE: prompt transcripts are first generated in markdown but after it finishes, they should be properly formatted.
 
@@ -70,6 +70,8 @@ ollama pull embeddinggemma:latest
 
 `gpt-oss:20b` is the recommended default in Amelia because it is available directly in the Ollama library and is designed for powerful reasoning and developer use cases. On Windows, Amelia pairs well with Ollama's Vulkan GPU path when your driver / hardware stack supports it.
 
+If your machine is CPU-only in practice, or if `ollama ps` shows the generation model staying on `100% CPU`, smaller reasoning-capable alternatives such as `qwen3:8b` or `deepseek-r1:8b` are often a better fit for document-study mode than forcing very large grounded prompts through a 20B model on CPU.
+
 Quick API tests:
 
 ```bash
@@ -87,6 +89,61 @@ curl http://localhost:11434/api/embed -d '{
 ```
 
 If your Ollama runtime is older and responds with 404 on `/api/embed`, Amelia automatically retries the legacy `/api/embeddings` route.
+
+### Large document study / big PDFs
+
+For document-study prompts against very large manuals or PDFs, Amelia v9.16.2 now does more than scale budgets from source size. It also derives a safe retrieved-context budget from Ollama's configured `num_ctx`, then applies that cap all the way through document-packet assembly. This avoids the previous failure mode where ChatController computed a reasonable target but the packet formatter quietly expanded it again for very large books.
+
+The effective policy is now:
+
+- estimate document size from indexed characters and chunk counts
+- compute a safe retrieved-context ceiling from `ollamaNumCtx`
+- keep a reserve for system/developer text, history, and the model's answer
+- scale representative coverage and section sweep density to the available budget
+- hard-trim each document-study packet so the formatter cannot outgrow the runtime budget
+
+By default Amelia uses an `auto` runtime profile for these limits. If your Ollama setup is CPU-only or unstable under heavy loads, you can force a more conservative policy with:
+
+```bash
+export AMELIA_OLLAMA_RUNTIME_PROFILE=cpu
+```
+
+If your Ollama runtime is genuinely stable on GPU and you want Amelia to be a little less conservative:
+
+```bash
+export AMELIA_OLLAMA_RUNTIME_PROFILE=gpu
+```
+
+Recommended Ollama-side tuning for large document prompts:
+
+```bash
+OLLAMA_CONTEXT_LENGTH=65536 OLLAMA_NUM_PARALLEL=1 OLLAMA_MAX_LOADED_MODELS=1 OLLAMA_FLASH_ATTENTION=1 OLLAMA_KV_CACHE_TYPE=q8_0 OLLAMA_KEEP_ALIVE=30m ollama serve
+```
+
+For CPU-only systems or for Windows hosts where Vulkan is unstable or unavailable, Amelia usually behaves best with:
+
+```bash
+export AMELIA_OLLAMA_RUNTIME_PROFILE=cpu
+```
+
+For GPU-backed systems where `ollama ps` confirms the chat model is actually offloaded to GPU, you can let Amelia spend a little more of `num_ctx` on retrieved context:
+
+```bash
+export AMELIA_OLLAMA_RUNTIME_PROFILE=gpu
+```
+
+Notes:
+
+- `OLLAMA_CONTEXT_LENGTH` is the main capacity knob for large grounded prompts.
+- `OLLAMA_NUM_PARALLEL=1` is important for big prompts because parallel request handling multiplies KV/context memory pressure.
+- `OLLAMA_MAX_LOADED_MODELS=1` keeps other models from competing for VRAM or RAM while a large prompt is running.
+- `OLLAMA_FLASH_ATTENTION=1` reduces memory pressure at larger context sizes on supported backends.
+- `OLLAMA_KV_CACHE_TYPE=q8_0` is a good first compromise when you need more room. If you are desperate for headroom, `q4_0` saves more memory but may reduce answer fidelity.
+- `OLLAMA_KEEP_ALIVE` helps amortize reload cost, but it does not increase prompt capacity.
+- `AMELIA_OLLAMA_RUNTIME_PROFILE=cpu` tells Amelia to spend a smaller fraction of `num_ctx` on retrieved context, which is usually the safer choice when `ollama ps` shows the chat model on CPU.
+- `AMELIA_OLLAMA_RUNTIME_PROFILE=gpu` lets Amelia be less conservative only when Ollama is truly GPU-backed.
+
+For truly massive corpora (for example, thousands of pages), no single prompt budget is enough to preserve the entire source verbatim. The correct approach is hierarchical coverage: outline extraction, representative section sweeps, and grounded answer synthesis over staged context packets. Amelia now leans further in that direction automatically.
 
 ### Ollama in Docker
 
