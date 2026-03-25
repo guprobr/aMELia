@@ -136,8 +136,9 @@ DocumentStudyPacketProfile buildDocumentStudyPacketProfile(int textChars,
     }
 
     profile.includeFullDocumentPreview = !largeDocument;
-    profile.fullDocumentInlineThreshold = qMin(profile.effectiveMaxCharsPerFile,
-                                               mediumDocument ? 24000 : 36000);
+    profile.fullDocumentInlineThreshold = qMin(profile.effectiveMaxCharsPerFile, 48000);
+    profile.previewBudget = qMin(profile.effectiveMaxCharsPerFile,
+                                 qMax(profile.previewBudget, profile.effectiveMaxCharsPerFile / 3));
     return profile;
 }
 
@@ -3468,8 +3469,12 @@ QString RagIndexer::formatDocumentStudyPrompt(const QStringList &preferredPaths,
         const int fullDocumentInlineThreshold = packetProfile.fullDocumentInlineThreshold;
         const bool includeFullDocumentPreview = packetProfile.includeFullDocumentPreview
                 && text.size() <= fullDocumentInlineThreshold;
+        // use the full file budget for small files, fall back to previewBudget when needed
+        const int fullPreviewBudget = (text.size() <= fullDocumentInlineThreshold)
+                ? qMin(text.size(), packetProfile.effectiveMaxCharsPerFile)
+                : previewBudget;
         const QString fullDocumentPreview = includeFullDocumentPreview
-                ? balancedTrimForStudy(text, previewBudget)
+                ? balancedTrimForStudy(text, fullPreviewBudget)
                 : QString();
 
         QString packet = QStringLiteral(
@@ -3574,22 +3579,14 @@ QString RagIndexer::formatExactExtractionPrompt(const QStringList &preferredPath
             continue;
         }
 
-        if (totalChars <= remainingBudget) {
-            for (int i = 0; i < fileChunks.size(); ++i) {
-                const Chunk *chunk = fileChunks.at(i);
-                const QString chunkBlock = QStringLiteral("--- RAW_CHUNK %1 ---\n%2\n\n")
-                        .arg(chunk->chunkIndex)
-                        .arg(allChunks.at(i));
-                if (chunkBlock.size() > remainingBudget) {
-                    break;
-                }
-                packet += chunkBlock;
-                remainingBudget -= chunkBlock.size();
-            }
+       // near-fit path — if file is within 40% of budget, just trim it gracefully
+        if (totalChars <= remainingBudget * 1.40) {
+            const QString joined = allChunks.join(QStringLiteral("\n\n"));
+            const QString trimmed = balancedTrimForStudy(joined, remainingBudget - 120);
+            packet += QStringLiteral("--- FULL_FILE (budget-trimmed) ---\n") + trimmed + QStringLiteral("\n\n");
             packets << packet.trimmed();
             continue;
         }
-
         QHash<int, int> chunkIndexToPos;
         for (int i = 0; i < fileChunks.size(); ++i) {
             chunkIndexToPos.insert(fileChunks.at(i)->chunkIndex, i);
