@@ -1561,23 +1561,112 @@ double roleBias(RetrievalIntent intent, const QString &role, const QStringList &
 
 QString makeExcerpt(const QString &text, const QStringList &terms)
 {
-    const QString lower = text.toLower();
-    int firstIndex = -1;
+    const QString normalized = normalizeBlockText(text);
+    if (normalized.isEmpty()) {
+        return QString();
+    }
+
+    const QString lower = normalized.toLower();
+    QVector<int> matchIndexes;
+    matchIndexes.reserve(terms.size());
     for (const QString &term : terms) {
-        const int idx = lower.indexOf(term);
-        if (idx >= 0 && (firstIndex < 0 || idx < firstIndex)) {
-            firstIndex = idx;
+        const QString trimmed = term.trimmed().toLower();
+        if (trimmed.isEmpty()) {
+            continue;
+        }
+        const int idx = lower.indexOf(trimmed);
+        if (idx >= 0) {
+            matchIndexes.push_back(idx);
         }
     }
 
-    if (firstIndex < 0) {
-        return text.left(300).trimmed();
+    if (matchIndexes.isEmpty()) {
+        return compactPreviewText(normalized, 520);
     }
 
-    const int start = qMax(0, firstIndex - 90);
-    return text.mid(start, 360).trimmed();
+    std::sort(matchIndexes.begin(), matchIndexes.end());
+    const int anchor = matchIndexes.constFirst();
+    int start = qMax(0, anchor - 140);
+    int end = qMin(normalized.size(), anchor + 420);
+
+    const int previousBreak = normalized.lastIndexOf(QLatin1Char('\n'), start);
+    if (previousBreak >= 0 && start - previousBreak <= 120) {
+        start = previousBreak + 1;
+    }
+    const int nextBreak = normalized.indexOf(QLatin1Char('\n'), end);
+    if (nextBreak >= 0 && nextBreak - end <= 180) {
+        end = nextBreak;
+    }
+
+    QString excerpt = normalized.mid(start, end - start).trimmed();
+    if (matchIndexes.size() >= 2) {
+        const int tailAnchor = matchIndexes.constLast();
+        if (tailAnchor - anchor > 280) {
+            int tailStart = qMax(0, tailAnchor - 110);
+            int tailEnd = qMin(normalized.size(), tailAnchor + 260);
+            const int tailPreviousBreak = normalized.lastIndexOf(QLatin1Char('\n'), tailStart);
+            if (tailPreviousBreak >= 0 && tailStart - tailPreviousBreak <= 120) {
+                tailStart = tailPreviousBreak + 1;
+            }
+            const int tailNextBreak = normalized.indexOf(QLatin1Char('\n'), tailEnd);
+            if (tailNextBreak >= 0 && tailNextBreak - tailEnd <= 180) {
+                tailEnd = tailNextBreak;
+            }
+            const QString tailExcerpt = normalized.mid(tailStart, tailEnd - tailStart).trimmed();
+            if (!tailExcerpt.isEmpty() && tailExcerpt != excerpt) {
+                excerpt += QStringLiteral("\n[... matching content later in this chunk ...]\n") + tailExcerpt;
+            }
+        }
+    }
+
+    return compactPreviewText(excerpt, 720);
 }
 
+int chunkActionabilityScore(const QString &text)
+{
+    const QString normalized = normalizeBlockText(text);
+    if (normalized.isEmpty()) {
+        return 0;
+    }
+
+    const QString lower = normalized.toLower();
+    int score = 0;
+
+    if (normalized.contains(QStringLiteral("```"))) {
+        score += 6;
+    }
+    if (normalized.contains(QRegularExpression(
+                QStringLiteral(R"((?:^|\n)\s*(?:\$|#|sudo\s+|kubectl\s+|helm\s+|docker\s+|podman\s+|ansible\s+|openstack\s+|systemctl\s+|nmcli\s+|ip\s+link)\b)"),
+                QRegularExpression::CaseInsensitiveOption | QRegularExpression::MultilineOption))) {
+        score += 7;
+    }
+    if (lower.contains(QStringLiteral("warning")) || lower.contains(QStringLiteral("caution")) || lower.contains(QStringLiteral("important"))) {
+        score += 5;
+    }
+    if (lower.contains(QStringLiteral("prerequisite")) || lower.contains(QStringLiteral("requirements")) || lower.contains(QStringLiteral("before you begin"))) {
+        score += 4;
+    }
+    if (lower.contains(QStringLiteral("example")) || lower.contains(QStringLiteral("sample")) || lower.contains(QStringLiteral("template"))) {
+        score += 3;
+    }
+    if (lower.contains(QStringLiteral("yaml")) || lower.contains(QStringLiteral("json")) || lower.contains(QStringLiteral("config")) || lower.contains(QStringLiteral("ini"))) {
+        score += 4;
+    }
+    if (normalized.contains(QRegularExpression(QStringLiteral(R"((?:^|\n)\s*[-*]\s+)"), QRegularExpression::MultilineOption))) {
+        score += 2;
+    }
+    if (normalized.contains(QRegularExpression(QStringLiteral(R"((?:^|\n)\s*\d+[.)]\s+)"), QRegularExpression::MultilineOption))) {
+        score += 3;
+    }
+    if (normalized.contains(QRegularExpression(QStringLiteral(R"((?:^|\n)\s*[A-Za-z0-9_.-]+\s*:\s+\S+)"), QRegularExpression::MultilineOption))) {
+        score += 2;
+    }
+    if (normalized.contains(QLatin1Char('{')) || normalized.contains(QLatin1Char('=')) || normalized.contains(QStringLiteral("->"))) {
+        score += 1;
+    }
+
+    return score;
+}
 int headingLikeLineCount(const QString &text)
 {
     int count = 0;
@@ -3579,8 +3668,8 @@ QString RagIndexer::formatExactExtractionPrompt(const QStringList &preferredPath
             continue;
         }
 
-       // near-fit path — if file is within 40% of budget, just trim it gracefully
-        if (totalChars <= remainingBudget * 1.40) {
+        // Near-fit path: when the file is reasonably close to the packet budget, emit the whole document trimmed once.
+        if (totalChars <= remainingBudget * 1.75) {
             const QString joined = allChunks.join(QStringLiteral("\n\n"));
             const QString trimmed = balancedTrimForStudy(joined, remainingBudget - 120);
             packet += QStringLiteral("--- FULL_FILE (budget-trimmed) ---\n") + trimmed + QStringLiteral("\n\n");
@@ -3594,7 +3683,7 @@ QString RagIndexer::formatExactExtractionPrompt(const QStringList &preferredPath
 
         QVector<RagHit> focusHits = searchHitsInFiles(actionableQuery,
                                                       QStringList{path},
-                                                      18,
+                                                      24,
                                                       RetrievalIntent::DocumentGeneration);
         QVector<int> focusPositions;
         for (const RagHit &hit : std::as_const(focusHits)) {
@@ -3604,9 +3693,28 @@ QString RagIndexer::formatExactExtractionPrompt(const QStringList &preferredPath
             }
         }
 
-        const int sampleWindowCount = qBound(4,
-                                             qMax(4, qMin(12, effectiveBudget / 2400)),
-                                             12);
+        QVector<QPair<int, int>> actionableCandidates;
+        actionableCandidates.reserve(fileChunks.size());
+        for (int i = 0; i < fileChunks.size(); ++i) {
+            const int actionability = chunkActionabilityScore(allChunks.at(i));
+            if (actionability > 0) {
+                actionableCandidates.push_back(qMakePair(actionability, i));
+            }
+        }
+        std::sort(actionableCandidates.begin(), actionableCandidates.end(), [](const QPair<int, int> &a, const QPair<int, int> &b) {
+            if (a.first != b.first) {
+                return a.first > b.first;
+            }
+            return a.second < b.second;
+        });
+        const int actionableWindowLimit = qBound(4, qMax(6, qMin(14, effectiveBudget / 4200)), 14);
+        for (int i = 0; i < actionableCandidates.size() && i < actionableWindowLimit; ++i) {
+            focusPositions.push_back(actionableCandidates.at(i).second);
+        }
+
+        const int sampleWindowCount = qBound(6,
+                                             qMax(6, qMin(16, effectiveBudget / 2200)),
+                                             16);
         if (!fileChunks.isEmpty()) {
             const int lastPos = fileChunks.size() - 1;
             for (int sampleIndex = 0; sampleIndex < sampleWindowCount; ++sampleIndex) {
@@ -3625,9 +3733,9 @@ QString RagIndexer::formatExactExtractionPrompt(const QStringList &preferredPath
         };
         QVector<ChunkRange> ranges;
         const int focusCount = focusPositions.isEmpty() ? sampleWindowCount : focusPositions.size();
-        const int targetWindowChars = qBound(1400,
-                                             effectiveBudget / qMax(4, qMin(10, focusCount)),
-                                             3200);
+        const int targetWindowChars = qBound(1600,
+                                             effectiveBudget / qMax(5, qMin(14, focusCount)),
+                                             4200);
         for (int focusPos : std::as_const(focusPositions)) {
             if (focusPos < 0 || focusPos >= fileChunks.size()) {
                 continue;
@@ -3701,7 +3809,7 @@ QString RagIndexer::formatExactExtractionPrompt(const QStringList &preferredPath
         }
 
         if (remainingBudget >= 280) {
-            packet += QStringLiteral("\n[Coverage note] Raw chunk windows were emitted in source order and biased toward actionable hits plus evenly spaced spans across the file. If the document is larger than the packet budget, continue in another batch for full coverage.\n");
+            packet += QStringLiteral("\n[Coverage note] Raw chunk windows were emitted in source order and biased toward search hits, intrinsically actionable chunks (commands/YAML/config/warnings/procedures), and evenly spaced spans across the file. If the document is larger than the packet budget, continue in another batch for full coverage.\n");
         }
         packets << packet.trimmed();
     }

@@ -15,6 +15,7 @@
 #include <QTextDocument>
 #include <QTextBrowser>
 #include <QDesktopServices>
+#include <QEvent>
 #include <QDateTime>
 #include <QDragMoveEvent>
 #include <QDialogButtonBox>
@@ -66,31 +67,56 @@
 #include <QPixmap>
 
 namespace {
-QColor transcriptPrefixColor(const QString &role)
+QColor blendColors(const QColor &base, const QColor &accent, qreal accentRatio)
 {
-    const QString lower = role.toLower();
-    if (lower == QStringLiteral("user")) {
-        return QColor(QStringLiteral("#4ea1ff"));
-    }
-    if (lower == QStringLiteral("assistant")) {
-        return QColor(QStringLiteral("#34d399"));
-    }
-    if (lower == QStringLiteral("system")) {
-        return QColor(QStringLiteral("#f59e0b"));
-    }
-    if (lower == QStringLiteral("status")) {
-        return QColor(QStringLiteral("#a78bfa"));
-    }
-    return QColor(QStringLiteral("#d1d5db"));
+    const qreal ratio = qBound<qreal>(0.0, accentRatio, 1.0);
+    const qreal inverse = 1.0 - ratio;
+    return QColor::fromRgbF(base.redF() * inverse + accent.redF() * ratio,
+                            base.greenF() * inverse + accent.greenF() * ratio,
+                            base.blueF() * inverse + accent.blueF() * ratio,
+                            base.alphaF() * inverse + accent.alphaF() * ratio);
 }
 
-QColor transcriptBodyColor(const QString &role)
+QString cssColor(const QColor &color)
+{
+    return QStringLiteral("rgba(%1,%2,%3,%4)")
+            .arg(color.red())
+            .arg(color.green())
+            .arg(color.blue())
+            .arg(QString::number(color.alphaF(), 'f', 3));
+}
+
+QColor transcriptPrefixColor(const QPalette &palette, const QString &role)
 {
     const QString lower = role.toLower();
-    if (lower == QStringLiteral("system")) {
-        return QColor(QStringLiteral("#f8c471"));
+    const QColor highlight = palette.color(QPalette::Highlight);
+    const QColor link = palette.color(QPalette::Link);
+    const QColor text = palette.color(QPalette::Text);
+    const QColor base = palette.color(QPalette::Base);
+
+    if (lower == QStringLiteral("user")) {
+        return link.isValid() ? link : highlight;
     }
-    return QColor(QStringLiteral("#e5e7eb"));
+    if (lower == QStringLiteral("assistant")) {
+        return blendColors(highlight, text, 0.20);
+    }
+    if (lower == QStringLiteral("system")) {
+        return blendColors(text, highlight, 0.42);
+    }
+    if (lower == QStringLiteral("status")) {
+        return blendColors(base, highlight, 0.72);
+    }
+    return blendColors(text, highlight, 0.18);
+}
+
+QColor transcriptBodyColor(const QPalette &palette, const QString &role)
+{
+    const QString lower = role.toLower();
+    const QColor text = palette.color(QPalette::Text);
+    if (lower == QStringLiteral("system")) {
+        return blendColors(text, palette.color(QPalette::Highlight), 0.18);
+    }
+    return text;
 }
 
 QString transcriptPrefix(const QString &role)
@@ -111,43 +137,47 @@ QString transcriptPrefix(const QString &role)
     return QStringLiteral("[") + role + QStringLiteral("] ");
 }
 
-QColor diagnosticCategoryColor(const QString &category)
+QColor diagnosticCategoryColor(const QPalette &palette, const QString &category)
 {
     const QString lower = category.toLower();
+    const QColor highlight = palette.color(QPalette::Highlight);
+    const QColor link = palette.color(QPalette::Link);
+    const QColor text = palette.color(QPalette::Text);
+
     if (lower == QStringLiteral("backend")) {
-        return QColor(QStringLiteral("#60a5fa"));
+        return blendColors(link, highlight, 0.30);
     }
     if (lower == QStringLiteral("search")) {
-        return QColor(QStringLiteral("#22c55e"));
+        return blendColors(highlight, QColor(Qt::green), 0.35);
     }
     if (lower == QStringLiteral("rag")) {
-        return QColor(QStringLiteral("#14b8a6"));
+        return blendColors(highlight, QColor(Qt::cyan), 0.28);
     }
     if (lower == QStringLiteral("memory")) {
-        return QColor(QStringLiteral("#f97316"));
+        return blendColors(highlight, QColor(255, 140, 0), 0.35);
     }
     if (lower == QStringLiteral("planner")) {
-        return QColor(QStringLiteral("#a78bfa"));
+        return blendColors(highlight, QColor(148, 0, 211), 0.28);
     }
     if (lower == QStringLiteral("guardrail")) {
-        return QColor(QStringLiteral("#ef4444"));
+        return blendColors(highlight, QColor(Qt::red), 0.42);
     }
     if (lower == QStringLiteral("ingest")) {
-        return QColor(QStringLiteral("#eab308"));
+        return blendColors(highlight, QColor(Qt::yellow), 0.38);
     }
     if (lower == QStringLiteral("startup")) {
-        return QColor(QStringLiteral("#f472b6"));
+        return blendColors(highlight, QColor(255, 105, 180), 0.28);
     }
     if (lower == QStringLiteral("budget")) {
-        return QColor(QStringLiteral("#38bdf8"));
+        return blendColors(link, QColor(Qt::cyan), 0.18);
     }
     if (lower == QStringLiteral("chat")) {
-        return QColor(QStringLiteral("#c084fc"));
+        return blendColors(text, highlight, 0.35);
     }
     if (lower == QStringLiteral("reasoning")) {
-        return QColor(QStringLiteral("#a855f7"));
+        return blendColors(text, QColor(148, 0, 211), 0.30);
     }
-    return QColor(QStringLiteral("#d1d5db"));
+    return blendColors(text, highlight, 0.18);
 }
 
 constexpr int kKnowledgeNodeTypeRole = Qt::UserRole + 20;
@@ -735,7 +765,7 @@ QString decodeDoubleEscapedHtmlEntities(QString html)
     return html;
 }
 
-QString markdownFragmentToHtml(const QString &markdown)
+QString markdownFragmentToHtml(const QString &markdown, const QPalette &palette)
 {
     const QString trimmed = normalizeRenderableMarkdown(markdown).trimmed();
     if (trimmed.isEmpty()) {
@@ -747,24 +777,41 @@ QString markdownFragmentToHtml(const QString &markdown)
     doc.setMarkdown(escapeHtmlLikeTags(trimmed));
     QString html = decodeDoubleEscapedHtmlEntities(bodyFragmentFromDocument(doc));
 
-    html.replace(QStringLiteral("<pre"), QStringLiteral("<pre style=\"background:#0b1220;color:#e5e7eb;padding:12px;border-radius:10px;border:1px solid #243043;overflow:auto;\""));
-    html.replace(QStringLiteral("<code"), QStringLiteral("<code style=\"background:#111827;color:#f8fafc;padding:2px 5px;border-radius:4px;\""));
-    html.replace(QStringLiteral("<blockquote"), QStringLiteral("<blockquote style=\"border-left:4px solid #475569;margin:10px 0;padding:6px 12px;color:#cbd5e1;background:#0f172a;border-radius:6px;\""));
+    const QColor base = palette.color(QPalette::Base);
+    const QColor textColor = palette.color(QPalette::Text);
+    const QColor border = blendColors(palette.color(QPalette::Mid), textColor, 0.10);
+    const QColor codeBackground = blendColors(base, palette.color(QPalette::Window), 0.35);
+    const QColor inlineCodeBackground = blendColors(base, palette.color(QPalette::Window), 0.20);
+    const QColor blockQuoteBackground = blendColors(base, palette.color(QPalette::Highlight), 0.10);
+    const QColor tableHeaderBackground = blendColors(palette.color(QPalette::Button), palette.color(QPalette::Highlight), 0.12);
+    const QColor linkColor = palette.color(QPalette::Link);
+
+    html.replace(QStringLiteral("<pre"), QStringLiteral("<pre style=\"background:%1;color:%2;padding:12px;border-radius:10px;border:1px solid %3;overflow:auto;\"").arg(cssColor(codeBackground), cssColor(textColor), cssColor(border)));
+    html.replace(QStringLiteral("<code"), QStringLiteral("<code style=\"background:%1;color:%2;padding:2px 5px;border-radius:4px;\"").arg(cssColor(inlineCodeBackground), cssColor(textColor)));
+    html.replace(QStringLiteral("<blockquote"), QStringLiteral("<blockquote style=\"border-left:4px solid %1;margin:10px 0;padding:6px 12px;color:%2;background:%3;border-radius:6px;\"").arg(cssColor(palette.color(QPalette::Highlight)), cssColor(textColor), cssColor(blockQuoteBackground)));
     html.replace(QStringLiteral("<table"), QStringLiteral("<table style=\"border-collapse:collapse;width:100%;margin:10px 0;\""));
-    html.replace(QStringLiteral("<th"), QStringLiteral("<th style=\"border:1px solid #334155;padding:6px 8px;background:#111827;color:#f8fafc;text-align:left;\""));
-    html.replace(QStringLiteral("<td"), QStringLiteral("<td style=\"border:1px solid #334155;padding:6px 8px;color:#e5e7eb;\""));
-    html.replace(QStringLiteral("<a href="), QStringLiteral("<a style=\"color:#93c5fd;\" href="));
+    html.replace(QStringLiteral("<th"), QStringLiteral("<th style=\"border:1px solid %1;padding:6px 8px;background:%2;color:%3;text-align:left;\"").arg(cssColor(border), cssColor(tableHeaderBackground), cssColor(textColor)));
+    html.replace(QStringLiteral("<td"), QStringLiteral("<td style=\"border:1px solid %1;padding:6px 8px;color:%2;\"").arg(cssColor(border), cssColor(textColor)));
+    html.replace(QStringLiteral("<a href="), QStringLiteral("<a style=\"color:%1;\" href=").arg(cssColor(linkColor)));
     return html;
 }
 
 QString messageToRichHtml(const QString &role,
                           const QString &text,
                           QStringList *codeBlocks,
-                          int answerIndex)
+                          int answerIndex,
+                          const QPalette &palette)
 {
     const QString rolePrefix = transcriptPrefix(role).toHtmlEscaped();
-    const QString prefixColor = transcriptPrefixColor(role).name();
-    const QString bodyColor = transcriptBodyColor(role).name();
+    const QColor accent = transcriptPrefixColor(palette, role);
+    const QColor base = palette.color(QPalette::Base);
+    const QColor bodyColor = transcriptBodyColor(palette, role);
+    const QColor border = blendColors(palette.color(QPalette::Mid), accent, 0.25);
+    const QColor cardBackground = blendColors(base, accent, 0.08);
+    const QColor codeActionBackground = blendColors(base, palette.color(QPalette::Button), 0.35);
+    const QColor codeBackground = blendColors(base, palette.color(QPalette::Window), 0.48);
+    const QColor footerBorder = blendColors(border, palette.color(QPalette::WindowText), 0.12);
+    const QColor linkColor = palette.color(QPalette::Link);
     QStringList bodyParts;
 
     const QString normalizedText = normalizeRenderableMarkdown(text);
@@ -785,16 +832,23 @@ QString messageToRichHtml(const QString &role,
             bodyParts << QStringLiteral(
                 "<div style=\"margin:10px 0 14px 0;\">"
                 "<div style=\"display:flex;justify-content:space-between;align-items:center;margin:0 0 6px 0;\">"
-                "<span style=\"font-size:11px;font-weight:700;color:#93c5fd;text-transform:uppercase;letter-spacing:0.08em;\">%1</span>"
-                "<a href=\"copycode:%2\" style=\"font-size:12px;color:#93c5fd;text-decoration:none;background:#0f172a;padding:4px 8px;border-radius:6px;border:1px solid #334155;\">Copy code</a>"
+                "<span style=\"font-size:11px;font-weight:700;color:%1;text-transform:uppercase;letter-spacing:0.08em;\">%2</span>"
+                "<a href=\"copycode:%3\" style=\"font-size:12px;color:%4;text-decoration:none;background:%5;padding:4px 8px;border-radius:6px;border:1px solid %6;\">Copy code</a>"
                 "</div>"
-                "<pre style=\"margin:0;background:#020617;color:#e2e8f0;padding:12px;border-radius:10px;border:1px solid #334155;overflow:auto;white-space:pre;tab-size:4;\"><code>%3</code></pre>"
+                "<pre style=\"margin:0;background:%7;color:%8;padding:12px;border-radius:10px;border:1px solid %9;overflow:auto;white-space:pre;tab-size:4;\"><code>%10</code></pre>"
                 "</div>")
-                .arg(languageBadge)
-                .arg(codeIndex)
-                .arg(code.toHtmlEscaped());
+                .arg(cssColor(accent),
+                     languageBadge,
+                     QString::number(codeIndex),
+                     cssColor(linkColor),
+                     cssColor(codeActionBackground),
+                     cssColor(border),
+                     cssColor(codeBackground),
+                     cssColor(palette.color(QPalette::Text)),
+                     cssColor(border),
+                     code.toHtmlEscaped());
         } else {
-            const QString html = markdownFragmentToHtml(segment.text);
+            const QString html = markdownFragmentToHtml(segment.text, palette);
             if (!html.trimmed().isEmpty()) {
                 bodyParts << html;
             }
@@ -808,19 +862,19 @@ QString messageToRichHtml(const QString &role,
     QString footerHtml;
     if (role.compare(QStringLiteral("assistant"), Qt::CaseInsensitive) == 0 && answerIndex >= 0) {
         footerHtml = QStringLiteral(
-            "<div style=\"margin-top:12px;padding-top:8px;border-top:1px solid #1f2937;text-align:right;\">"
-            "<a href=\"copyanswer:%1\" style=\"font-size:12px;color:#93c5fd;text-decoration:none;\">Copy Answer</a>"
+            "<div style=\"margin-top:12px;padding-top:8px;border-top:1px solid %1;text-align:right;\">"
+            "<a href=\"copyanswer:%2\" style=\"font-size:12px;color:%3;text-decoration:none;\">Copy Answer</a>"
             "</div>")
-            .arg(answerIndex);
+            .arg(cssColor(footerBorder), QString::number(answerIndex), cssColor(linkColor));
     }
 
     return QStringLiteral(
-        "<div style=\"margin:8px 0 14px 0;padding:10px 12px;border-radius:12px;background:#111827;border:1px solid #1f2937;\">"
-        "<div style=\"font-weight:700;color:%1;margin:0 0 8px 0;\">%2</div>"
-        "<div style=\"color:%3;\">%4</div>"
-        "%5"
+        "<div style=\"margin:8px 0 14px 0;padding:10px 12px;border-radius:12px;background:%1;border:1px solid %2;\">"
+        "<div style=\"font-weight:700;color:%3;margin:0 0 8px 0;\">%4</div>"
+        "<div style=\"color:%5;\">%6</div>"
+        "%7"
         "</div>")
-        .arg(prefixColor, rolePrefix, bodyColor, bodyParts.join(QStringLiteral("\n")), footerHtml);
+        .arg(cssColor(cardBackground), cssColor(border), cssColor(accent), rolePrefix, cssColor(bodyColor), bodyParts.join(QStringLiteral("\n")), footerHtml);
 }
 
 QString formatByteCount(qint64 bytes)
@@ -896,7 +950,9 @@ MainWindow::MainWindow(const QString &configPath,
     auto *sessionPane = new QWidget(splitter);
     auto *sessionLayout = new QVBoxLayout(sessionPane);
     auto *sessionTitle = new QLabel(QStringLiteral("Sessions"), sessionPane);
-    sessionTitle->setStyleSheet(QStringLiteral("font-weight: 700;"));
+    QFont sessionTitleFont = sessionTitle->font();
+    sessionTitleFont.setBold(true);
+    sessionTitle->setFont(sessionTitleFont);
     m_conversationsList = new QListWidget(sessionPane);
     m_conversationsList->setSelectionMode(QAbstractItemView::SingleSelection);
     m_newConversationButton = new QPushButton(QStringLiteral("New conversation"), sessionPane);
@@ -911,7 +967,10 @@ MainWindow::MainWindow(const QString &configPath,
 
     auto *titleRow = new QHBoxLayout();
     auto *title = new QLabel(QStringLiteral("aMELia Qt6 v%1 ").arg(QLatin1StringView(AmeliaVersion::kDisplayVersion)), chatPane);
-    title->setStyleSheet(QStringLiteral("font-weight: 700; font-size: 18px;"));
+    QFont titleFont = title->font();
+    titleFont.setBold(true);
+    titleFont.setPointSize(titleFont.pointSize() + 2);
+    title->setFont(titleFont);
     auto *logoLabel = new QLabel(chatPane);
     const QPixmap logoPixmap(QStringLiteral(":/branding/amelia_logo.svg"));
     logoLabel->setPixmap(logoPixmap.scaled(28, 28, Qt::KeepAspectRatio, Qt::SmoothTransformation));
@@ -926,7 +985,7 @@ MainWindow::MainWindow(const QString &configPath,
     m_transcript = transcriptBrowser;
     m_transcript->setReadOnly(true);
     m_transcript->setPlaceholderText(QStringLiteral("Conversation transcript..."));
-    m_transcript->setStyleSheet(QStringLiteral("QTextEdit { background: #0f172a; color: #e5e7eb; }"));
+    m_transcript->setStyleSheet(QString());
     connect(transcriptBrowser, &QTextBrowser::anchorClicked, this, &MainWindow::onTranscriptAnchorClicked);
     if (QScrollBar *transcriptScrollBar = transcriptBrowser->verticalScrollBar()) {
         connect(transcriptScrollBar, &QScrollBar::valueChanged, this, [this, transcriptScrollBar](int value) {
@@ -949,9 +1008,11 @@ MainWindow::MainWindow(const QString &configPath,
     priorityLayout->setSpacing(4);
     auto *priorityHeader = new QHBoxLayout();
     auto *priorityTitle = new QLabel(QStringLiteral("Prioritized KB assets"), priorityPanel);
-    priorityTitle->setStyleSheet(QStringLiteral("font-weight: 700; color: #cbd5e1;"));
+    QFont priorityTitleFont = priorityTitle->font();
+    priorityTitleFont.setBold(true);
+    priorityTitle->setFont(priorityTitleFont);
     m_prioritizedAssetsStatus = new QLabel(QStringLiteral("No prioritized KB assets"), priorityPanel);
-    m_prioritizedAssetsStatus->setStyleSheet(QStringLiteral("color: #94a3b8;"));
+    m_prioritizedAssetsStatus->setStyleSheet(QString());
     priorityHeader->addWidget(priorityTitle);
     priorityHeader->addStretch(1);
     priorityHeader->addWidget(m_prioritizedAssetsStatus);
@@ -1000,7 +1061,9 @@ MainWindow::MainWindow(const QString &configPath,
     m_busyIndicatorLabel = new QLabel(chatPane);
     m_busyIndicatorLabel->setMinimumWidth(220);
     m_busyIndicatorLabel->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
-    m_busyIndicatorLabel->setStyleSheet(QStringLiteral("font-weight: 700; color: palette(highlight);"));
+    QFont busyLabelFont = m_busyIndicatorLabel->font();
+    busyLabelFont.setBold(true);
+    m_busyIndicatorLabel->setFont(busyLabelFont);
     m_busyIndicatorLabel->hide();
     m_busyIndicatorTimer = new QTimer(this);
     m_busyIndicatorTimer->setInterval(100);
@@ -1035,7 +1098,9 @@ MainWindow::MainWindow(const QString &configPath,
     auto *rightPane = new QWidget(splitter);
     auto *rightLayout = new QVBoxLayout(rightPane);
     auto *contextTitle = new QLabel(QStringLiteral("Inspection Panels"), rightPane);
-    contextTitle->setStyleSheet(QStringLiteral("font-weight: 700;"));
+    QFont contextTitleFont = contextTitle->font();
+    contextTitleFont.setBold(true);
+    contextTitle->setFont(contextTitleFont);
 
     auto *tabs = new QTabWidget(rightPane);
 
@@ -1052,16 +1117,16 @@ MainWindow::MainWindow(const QString &configPath,
     diagnosticsToggleRow->addStretch(1);
     m_reasoningTraceInfoLabel = new QLabel(QStringLiteral("Off by default. When enabled, Amelia requests backend thinking streams when available and logs them here, along with any explicit model-authored reasoning notes."), diagnosticsTab);
     m_reasoningTraceInfoLabel->setWordWrap(true);
-    m_reasoningTraceInfoLabel->setStyleSheet(QStringLiteral("color: #94a3b8;"));
+    m_reasoningTraceInfoLabel->setStyleSheet(QString());
     m_verboseDiagnosticsInfoLabel = new QLabel(QStringLiteral("Off by default. When enabled, Amelia shows verbose request/response summaries from Ollama. Essential errors still appear even when this stays off."), diagnosticsTab);
     m_verboseDiagnosticsInfoLabel->setWordWrap(true);
-    m_verboseDiagnosticsInfoLabel->setStyleSheet(QStringLiteral("color: #94a3b8;"));
+    m_verboseDiagnosticsInfoLabel->setStyleSheet(QString());
     diagnosticsHeader->addLayout(diagnosticsToggleRow);
     diagnosticsHeader->addWidget(m_reasoningTraceInfoLabel);
     diagnosticsHeader->addWidget(m_verboseDiagnosticsInfoLabel);
     m_diagnostics = new QTextEdit(diagnosticsTab);
     m_diagnostics->setReadOnly(true);
-    m_diagnostics->setStyleSheet(QStringLiteral("QTextEdit { background: #0b1220; color: #e5e7eb; }"));
+    m_diagnostics->setStyleSheet(QString());
     diagnosticsLayout->addLayout(diagnosticsHeader);
     diagnosticsLayout->addWidget(m_diagnostics, 1);
 
@@ -1168,7 +1233,10 @@ MainWindow::MainWindow(const QString &configPath,
     m_sourceInventoryRefreshLabel = new QLabel(QStringLiteral("Refreshing Knowledge Base..."), kbInventoryOverlay);
     m_sourceInventoryRefreshLabel->setAlignment(Qt::AlignCenter);
     m_sourceInventoryRefreshLabel->setWordWrap(true);
-    m_sourceInventoryRefreshLabel->setStyleSheet(QStringLiteral("font-weight: 700; font-size: 16px;"));
+    QFont refreshLabelFont = m_sourceInventoryRefreshLabel->font();
+    refreshLabelFont.setBold(true);
+    refreshLabelFont.setPointSize(refreshLabelFont.pointSize() + 1);
+    m_sourceInventoryRefreshLabel->setFont(refreshLabelFont);
     kbInventoryOverlayLayout->addWidget(m_sourceInventoryRefreshLabel, 0, Qt::AlignCenter);
     kbInventoryOverlayLayout->addStretch(1);
 
@@ -1416,6 +1484,7 @@ MainWindow::MainWindow(const QString &configPath,
         m_promptLabPreview->setPlainText(buildPromptLabRecipe());
     }
     rebuildPrioritizedKnowledgeAssetsUi();
+    applyPaletteAwareFormatting();
 }
 
 
@@ -1434,8 +1503,71 @@ void MainWindow::closeEvent(QCloseEvent *event)
     QMainWindow::closeEvent(event);
 }
 
+void MainWindow::changeEvent(QEvent *event)
+{
+    QMainWindow::changeEvent(event);
+    if (event == nullptr) {
+        return;
+    }
+
+    if (event->type() == QEvent::PaletteChange
+            || event->type() == QEvent::ApplicationPaletteChange
+            || event->type() == QEvent::StyleChange) {
+        applyPaletteAwareFormatting();
+    }
+}
+
+void MainWindow::applyPaletteAwareFormatting()
+{
+    const QPalette palette = this->palette();
+    const QColor subdued = blendColors(palette.color(QPalette::Text), palette.color(QPalette::PlaceholderText), 0.55);
+    const QColor highlight = palette.color(QPalette::Highlight);
+
+    auto applySubduedLabel = [&](QLabel *label) {
+        if (label == nullptr) {
+            return;
+        }
+        QPalette labelPalette = label->palette();
+        labelPalette.setColor(QPalette::WindowText, subdued);
+        label->setPalette(labelPalette);
+    };
+
+    auto applyHighlightLabel = [&](QLabel *label) {
+        if (label == nullptr) {
+            return;
+        }
+        QPalette labelPalette = label->palette();
+        labelPalette.setColor(QPalette::WindowText, highlight);
+        label->setPalette(labelPalette);
+    };
+
+    applySubduedLabel(m_prioritizedAssetsStatus);
+    applySubduedLabel(m_reasoningTraceInfoLabel);
+    applySubduedLabel(m_verboseDiagnosticsInfoLabel);
+    applyHighlightLabel(m_busyIndicatorLabel);
+
+    if (m_transcript != nullptr && !m_transcriptPlainText.isEmpty()) {
+        rebuildTranscriptFromPlainText(m_transcriptPlainText);
+    }
+    if (m_diagnostics != nullptr && !m_diagnosticsPlainText.isEmpty()) {
+        rebuildDiagnosticsFromPlainText(m_diagnosticsPlainText);
+    }
+    rebuildPrioritizedKnowledgeAssetsUi();
+}
+
 void MainWindow::appendTranscriptEntry(const QString &role, const QString &text)
 {
+    const QStringList lines = text.split(QLatin1Char('\n'), Qt::KeepEmptyParts);
+    if (!lines.isEmpty()) {
+        if (!m_transcriptPlainText.isEmpty()) {
+            m_transcriptPlainText += QLatin1Char('\n');
+        }
+        m_transcriptPlainText += transcriptPrefix(role) + lines.constFirst();
+        for (int i = 1; i < lines.size(); ++i) {
+            m_transcriptPlainText += QLatin1Char('\n') + lines.at(i);
+        }
+    }
+
     insertTranscriptMessage(role, text);
 }
 
@@ -1459,7 +1591,7 @@ void MainWindow::insertTranscriptMessage(const QString &role, const QString &tex
         answerIndex = m_transcriptAssistantAnswers.size();
         m_transcriptAssistantAnswers.push_back(renderText);
     }
-    const QString html = messageToRichHtml(role, renderText, &m_transcriptCodeBlocks, answerIndex);
+    const QString html = messageToRichHtml(role, renderText, &m_transcriptCodeBlocks, answerIndex, m_transcript->palette());
     cursor.insertHtml(html);
     cursor.insertBlock();
     m_transcript->setTextCursor(cursor);
@@ -1467,6 +1599,15 @@ void MainWindow::insertTranscriptMessage(const QString &role, const QString &tex
 }
 
 void MainWindow::appendDiagnosticEntry(const QString &timestamp, const QString &category, const QString &message)
+{
+    if (!m_diagnosticsPlainText.isEmpty()) {
+        m_diagnosticsPlainText += QLatin1Char('\n');
+    }
+    m_diagnosticsPlainText += QStringLiteral("[%1] [%2] %3").arg(timestamp, category, message);
+    insertDiagnosticEntry(timestamp, category, message);
+}
+
+void MainWindow::insertDiagnosticEntry(const QString &timestamp, const QString &category, const QString &message)
 {
     if (m_diagnostics == nullptr) {
         return;
@@ -1478,15 +1619,17 @@ void MainWindow::appendDiagnosticEntry(const QString &timestamp, const QString &
         cursor.insertBlock();
     }
 
+    const QPalette palette = m_diagnostics->palette();
+
     QTextCharFormat timeFormat;
-    timeFormat.setForeground(QColor(QStringLiteral("#94a3b8")));
+    timeFormat.setForeground(blendColors(palette.color(QPalette::Text), palette.color(QPalette::PlaceholderText), 0.55));
 
     QTextCharFormat categoryFormat;
     categoryFormat.setFontWeight(QFont::Bold);
-    categoryFormat.setForeground(diagnosticCategoryColor(category));
+    categoryFormat.setForeground(diagnosticCategoryColor(palette, category));
 
     QTextCharFormat messageFormat;
-    messageFormat.setForeground(QColor(QStringLiteral("#e5e7eb")));
+    messageFormat.setForeground(palette.color(QPalette::Text));
 
     cursor.insertText(QStringLiteral("[") + timestamp + QStringLiteral("] "), timeFormat);
     cursor.insertText(QStringLiteral("[") + category + QStringLiteral("] "), categoryFormat);
@@ -1495,7 +1638,6 @@ void MainWindow::appendDiagnosticEntry(const QString &timestamp, const QString &
     m_diagnostics->setTextCursor(cursor);
     m_diagnostics->ensureCursorVisible();
 }
-
 
 void MainWindow::resetTaskProgressBar()
 {
@@ -1718,12 +1860,14 @@ void MainWindow::appendAssistantChunk(const QString &text)
     QTextCursor cursor = m_transcript->textCursor();
     cursor.movePosition(QTextCursor::End);
 
+    const QPalette palette = m_transcript != nullptr ? m_transcript->palette() : QApplication::palette();
+
     QTextCharFormat prefixFormat;
     prefixFormat.setFontWeight(QFont::Bold);
-    prefixFormat.setForeground(transcriptPrefixColor(QStringLiteral("assistant")));
+    prefixFormat.setForeground(transcriptPrefixColor(palette, QStringLiteral("assistant")));
 
     QTextCharFormat bodyFormat;
-    bodyFormat.setForeground(transcriptBodyColor(QStringLiteral("assistant")));
+    bodyFormat.setForeground(transcriptBodyColor(palette, QStringLiteral("assistant")));
 
     if (!m_streamingAssistant) {
         if (!m_transcript->document()->isEmpty()) {
@@ -1917,6 +2061,7 @@ void MainWindow::setSessionSummary(const QString &text)
 
 void MainWindow::rebuildTranscriptFromPlainText(const QString &text)
 {
+    m_transcriptPlainText = text;
     m_transcript->clear();
     m_transcriptAutoScroll = true;
     m_streamingAssistant = false;
@@ -1950,7 +2095,7 @@ void MainWindow::rebuildTranscriptFromPlainText(const QString &text)
         if (currentRole == QStringLiteral("assistant")) {
             m_lastAssistantMessage = TranscriptFormatter::sanitizeFinalAssistantMarkdown(message);
         }
-        appendTranscriptEntry(currentRole, message);
+        insertTranscriptMessage(currentRole, message);
         currentRole.clear();
         currentLines.clear();
     };
@@ -2168,6 +2313,7 @@ void MainWindow::setBackendSummary(const QString &text)
 
 void MainWindow::rebuildDiagnosticsFromPlainText(const QString &text)
 {
+    m_diagnosticsPlainText = text;
     m_diagnostics->clear();
 
     const QStringList lines = text.split(QLatin1Char('\n'), Qt::SkipEmptyParts);
@@ -2176,9 +2322,9 @@ void MainWindow::rebuildDiagnosticsFromPlainText(const QString &text)
     for (const QString &line : lines) {
         const QRegularExpressionMatch match = regex.match(line);
         if (match.hasMatch()) {
-            appendDiagnosticEntry(match.captured(1), match.captured(2), match.captured(3));
+            insertDiagnosticEntry(match.captured(1), match.captured(2), match.captured(3));
         } else {
-            appendDiagnosticEntry(QStringLiteral("log"), QStringLiteral("misc"), line);
+            insertDiagnosticEntry(QStringLiteral("log"), QStringLiteral("misc"), line);
         }
     }
 }
@@ -2403,7 +2549,7 @@ void MainWindow::setSourceInventory(const QString &text)
                 fileItem->setToolTip(2, detailsText);
 
                 if (hasZeroChunkWarning) {
-                    const QColor warningColor(QStringLiteral("#ef4444"));
+                    const QColor warningColor = blendColors(m_sourceInventoryTree->palette().color(QPalette::Highlight), QColor(Qt::red), 0.40);
                     for (int column = 0; column < 3; ++column) {
                         fileItem->setForeground(column, warningColor);
                     }
@@ -2758,7 +2904,11 @@ void MainWindow::rebuildPrioritizedKnowledgeAssetsUi()
         item->setData(Qt::UserRole, path);
         item->setData(Qt::UserRole + 1, pinned ? QStringLiteral("pin") : QStringLiteral("next"));
         item->setToolTip(path);
-        item->setForeground(QColor(pinned ? QStringLiteral("#f59e0b") : QStringLiteral("#38bdf8")));
+        const QPalette palette = m_prioritizedAssetsList->palette();
+        const QColor baseColor = pinned
+                ? blendColors(palette.color(QPalette::Highlight), QColor(Qt::yellow), 0.35)
+                : (palette.color(QPalette::Link).isValid() ? palette.color(QPalette::Link) : palette.color(QPalette::Highlight));
+        item->setForeground(baseColor);
     };
 
     for (const QString &path : m_pinnedKnowledgeAssets) {

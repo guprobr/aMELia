@@ -26,6 +26,7 @@ class QTimer;
 class QUrl;
 class QWidget;
 class QScrollBar;
+class QEvent;
 
 class MainWindow : public QMainWindow {
     Q_OBJECT
@@ -125,6 +126,7 @@ private slots:
 
 protected:
     void closeEvent(QCloseEvent *event) override;
+    void changeEvent(QEvent *event) override;
 
 private:
     void appendTranscriptEntry(const QString &role, const QString &text);
@@ -156,6 +158,8 @@ private:
     void resetTaskProgressBar();
     void updateKnowledgeBaseControlsEnabled();
     bool saveConfigurationJson(const QString &text, QString *errorMessage = nullptr);
+    void applyPaletteAwareFormatting();
+    void insertDiagnosticEntry(const QString &timestamp, const QString &category, const QString &message);
 
     QTextEdit *m_transcript = nullptr;
     QPlainTextEdit *m_input = nullptr;
@@ -250,5 +254,7 @@ private:
     QStringList m_pinnedKnowledgeAssets;
     QStringList m_transcriptCodeBlocks;
     QStringList m_transcriptAssistantAnswers;
+    QString m_transcriptPlainText;
+    QString m_diagnosticsPlainText;
     QHash<QString, QString> m_knowledgeDisplayNames;
 };

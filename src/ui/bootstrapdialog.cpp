@@ -26,7 +26,10 @@ BootstrapDialog::BootstrapDialog(QWidget *parent)
     m_logoLabel->setAlignment(Qt::AlignCenter);
     m_statusLabel->setAlignment(Qt::AlignCenter);
     m_statusLabel->setText(QStringLiteral("Bootstrapping Amelia..."));
-    m_statusLabel->setStyleSheet(QStringLiteral("font-weight: 700; font-size: 16px;"));
+    QFont statusFont = m_statusLabel->font();
+    statusFont.setBold(true);
+    statusFont.setPointSize(statusFont.pointSize() + 1);
+    m_statusLabel->setFont(statusFont);
 
     m_logView->setReadOnly(true);
     m_logView->setMaximumBlockCount(200);

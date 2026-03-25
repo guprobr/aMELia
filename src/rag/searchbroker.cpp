@@ -7,10 +7,58 @@
 #include <QNetworkRequest>
 #include <QUrl>
 #include <QUrlQuery>
+#include <QRegularExpression>
 
 SearchBroker::SearchBroker(QObject *parent)
     : QObject(parent)
 {
+}
+
+namespace {
+QString cleanupSnippet(QString text)
+{
+    text.replace(QRegularExpression(QStringLiteral(R"(<[^>]+>)")), QStringLiteral(" "));
+    text.replace(QStringLiteral("&nbsp;"), QStringLiteral(" "));
+    text.replace(QStringLiteral("&amp;"), QStringLiteral("&"));
+    text.replace(QStringLiteral("&lt;"), QStringLiteral("<"));
+    text.replace(QStringLiteral("&gt;"), QStringLiteral(">"));
+    text.replace(QStringLiteral("&quot;"), QStringLiteral("\""));
+    text.replace(QStringLiteral("&#39;"), QStringLiteral("'"));
+    text.replace(QRegularExpression(QStringLiteral(R"([\t\r\n]+)")), QStringLiteral(" "));
+    text = text.simplified();
+    return text;
+}
+
+QString snippetFromObject(const QJsonObject &obj)
+{
+    static const QStringList candidateKeys = {
+        QStringLiteral("content"),
+        QStringLiteral("snippet"),
+        QStringLiteral("description"),
+        QStringLiteral("text"),
+        QStringLiteral("summary")
+    };
+
+    for (const QString &key : candidateKeys) {
+        const QString value = cleanupSnippet(obj.value(key).toString());
+        if (!value.isEmpty()) {
+            return value;
+        }
+    }
+
+    const QJsonArray descriptions = obj.value(QStringLiteral("descriptions")).toArray();
+    QStringList parts;
+    for (const QJsonValue &value : descriptions) {
+        const QString cleaned = cleanupSnippet(value.toString());
+        if (!cleaned.isEmpty()) {
+            parts << cleaned;
+        }
+        if (parts.join(QStringLiteral(" ")).size() >= 900) {
+            break;
+        }
+    }
+    return cleanupSnippet(parts.join(QStringLiteral(" ")));
+}
 }
 
 void SearchBroker::setEnabled(bool enabled)
@@ -100,7 +148,7 @@ QVector<SearchHit> SearchBroker::parseResults(const QByteArray &jsonData) const
         const QJsonObject obj = value.toObject();
         const QString title = obj.value(QStringLiteral("title")).toString().trimmed();
         const QString url = obj.value(QStringLiteral("url")).toString().trimmed();
-        const QString content = obj.value(QStringLiteral("content")).toString().trimmed();
+        const QString content = snippetFromObject(obj);
 
         if (title.isEmpty() && content.isEmpty()) {
             continue;
@@ -112,7 +160,7 @@ QVector<SearchHit> SearchBroker::parseResults(const QByteArray &jsonData) const
         SearchHit hit;
         hit.title = title;
         hit.url = url;
-        hit.snippet = content.left(320).trimmed();
+        hit.snippet = content.left(900).trimmed();
         hit.domain = QUrl(url).host();
         hits.push_back(hit);
         if (hits.size() >= m_maxResults) {

@@ -14,6 +14,7 @@
 #include <QIcon>
 #include <QLabel>
 #include <QMenu>
+#include <QPalette>
 #include <QPointer>
 #include <QScreen>
 #include <QSystemTrayIcon>
@@ -25,18 +26,38 @@ namespace {
 QPointer<QSystemTrayIcon> s_sharedTrayIcon;
 int s_trayRefCount = 0;
 
-QString severityAccent(int severity)
+QColor blendColors(const QColor &base, const QColor &accent, qreal accentRatio)
 {
+    const qreal ratio = qBound<qreal>(0.0, accentRatio, 1.0);
+    const qreal inverse = 1.0 - ratio;
+    return QColor::fromRgbF(base.redF() * inverse + accent.redF() * ratio,
+                            base.greenF() * inverse + accent.greenF() * ratio,
+                            base.blueF() * inverse + accent.blueF() * ratio,
+                            base.alphaF() * inverse + accent.alphaF() * ratio);
+}
+
+QString cssColor(const QColor &color)
+{
+    return QStringLiteral("rgba(%1,%2,%3,%4)")
+            .arg(color.red())
+            .arg(color.green())
+            .arg(color.blue())
+            .arg(QString::number(color.alphaF(), 'f', 3));
+}
+
+QColor severityAccent(int severity, const QPalette &palette)
+{
+    const QColor highlight = palette.color(QPalette::Highlight);
     switch (severity) {
     case NotificationCenter::Success:
-        return QStringLiteral("#2ecc71");
+        return blendColors(highlight, QColor(Qt::green), 0.35);
     case NotificationCenter::Warning:
-        return QStringLiteral("#f39c12");
+        return blendColors(highlight, QColor(Qt::yellow), 0.35);
     case NotificationCenter::Error:
-        return QStringLiteral("#e74c3c");
+        return blendColors(highlight, QColor(Qt::red), 0.40);
     case NotificationCenter::Info:
     default:
-        return QStringLiteral("#4da3ff");
+        return palette.color(QPalette::Link).isValid() ? palette.color(QPalette::Link) : highlight;
     }
 }
 
@@ -353,26 +374,32 @@ void NotificationCenter::showInAppToast(const QString &title, const QString &mes
         layout->addWidget(accent);
         layout->addWidget(body);
 
-        toast->setStyleSheet(QStringLiteral(
-            "#ameliaNotificationToast {"
-            " background-color: rgba(18, 20, 26, 236);"
-            " color: #f4f7fb;"
-            " border: 1px solid rgba(255, 255, 255, 32);"
-            " border-radius: 12px;"
-            "}"
-            "#ameliaNotificationToast QLabel#title {"
-            " font-weight: 700;"
-            " font-size: 13px;"
-            " color: #ffffff;"
-            "}"
-            "#ameliaNotificationToast QLabel#message {"
-            " font-size: 12px;"
-            " color: rgba(244, 247, 251, 220);"
-            "}"
-        ));
-
         m_toastWidget = toast;
     }
+
+    const QPalette palette = anchor->palette();
+    const QColor textColor = palette.color(QPalette::Text);
+    const QColor background = blendColors(palette.color(QPalette::Base), palette.color(QPalette::Window), 0.30);
+    const QColor border = blendColors(palette.color(QPalette::Mid), textColor, 0.12);
+    const QColor subtleText = blendColors(textColor, palette.color(QPalette::PlaceholderText), 0.55);
+
+    m_toastWidget->setStyleSheet(QStringLiteral(
+        "#ameliaNotificationToast {"
+        " background-color: %1;"
+        " color: %2;"
+        " border: 1px solid %3;"
+        " border-radius: 12px;"
+        "}"
+        "#ameliaNotificationToast QLabel#title {"
+        " font-weight: 700;"
+        " font-size: 13px;"
+        " color: %2;"
+        "}"
+        "#ameliaNotificationToast QLabel#message {"
+        " font-size: 12px;"
+        " color: %4;"
+        "}"
+    ).arg(cssColor(background), cssColor(textColor), cssColor(border), cssColor(subtleText)));
 
     auto *titleLabel = m_toastWidget->findChild<QLabel *>(QStringLiteral("title"));
     auto *messageLabel = m_toastWidget->findChild<QLabel *>(QStringLiteral("message"));
@@ -384,7 +411,7 @@ void NotificationCenter::showInAppToast(const QString &title, const QString &mes
     titleLabel->setText(title);
     messageLabel->setText(message);
     accent->setStyleSheet(QStringLiteral("background-color: %1; border-top-left-radius: 12px; border-bottom-left-radius: 12px;")
-                              .arg(severityAccent(severity)));
+                              .arg(cssColor(severityAccent(severity, palette))));
 
     const int maxWidth = anchor->isVisible() ? qMax(300, anchor->width() / 3) : 420;
     m_toastWidget->setMaximumWidth(maxWidth);

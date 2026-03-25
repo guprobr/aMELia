@@ -1,10 +1,24 @@
-# aMELia Qt6 v9.19.6
+# aMELia Qt6 v9.19.8
 
 Amelia is a local-first Qt6/C++ coding and cloud assistant that talks to a local Ollama server, stores its state under `~/.amelia_qt6`, indexes a local knowledge base, and can optionally use sanitized external web search through SearXNG.
 
-This build rolls forward the existing bootstrap, indexing, transcript, Prompt Lab, notification, and progress-bar work, and adds a Knowledge Base collection model with preserved folder structure, a tree-view browser, a hard-locked Knowledge Base root and safer workspace-jail boundaries under `~/.amelia_qt6`, stronger transcript code-block handling, first-run service prompts, a full JSON configuration editor, and a context-aware document-study budget policy that now respects Ollama `num_ctx` end-to-end, plus a generic one-shot fallback retry when Ollama reports that the model runner stopped unexpectedly during a large grounded request. Version 9.19.6 keeps the earlier indexing RAM fixes, hard-disables Knowledge Base interaction while a prompt or reindex is in flight, fixes the document-study `num_ctx` reserve bug, keeps numbered procedure leads attached to following command/config lines across semantic block building and PDF page breaks, strengthens section-preview stitching, adds an exact-extraction retrieval mode for exhaustive scraper-style prompts so Amelia can emit ordered raw chunk windows instead of only lossy section summaries, and corrects the malformed C++ regex/string-literal injection bug that broke `ragindexer.cpp` compilation in v9.19.5. aMELia is also allegorically considered a MEL: Model Enhancement Lab.
+This build rolls forward the existing bootstrap, indexing, transcript, Prompt Lab, notification, and progress-bar work, and adds a Knowledge Base collection model with preserved folder structure, a tree-view browser, a hard-locked Knowledge Base root and safer workspace-jail boundaries under `~/.amelia_qt6`, stronger transcript code-block handling, first-run service prompts, a full JSON configuration editor, and a context-aware document-study budget policy that now respects Ollama `num_ctx` end-to-end, plus a generic one-shot fallback retry when Ollama reports that the model runner stopped unexpectedly during a large grounded request. Version 9.19.8 keeps the earlier indexing RAM fixes, hard-disables Knowledge Base interaction while a prompt or reindex is in flight, fixes the document-study `num_ctx` reserve bug, keeps numbered procedure leads attached to following command/config lines across semantic block building and PDF page breaks, strengthens section-preview stitching, adds an exact-extraction retrieval mode for exhaustive scraper-style prompts so Amelia can emit ordered raw chunk windows instead of only lossy section summaries, follows the active Qt/system palette far more closely across widgets, labels, transcript cards, diagnostics, and in-app notifications, broadens snippet extraction for large documents and external search results, fixes the palette-helper compile regression in streamed assistant rendering, and repairs stray literal `\n\n` layout artifacts in final markdown output. aMELia is also allegorically considered a MEL: Model Enhancement Lab.
 
 NOTE: prompt transcripts are first generated in markdown but after it finishes, they should be properly formatted.
+
+## What changed in v9.19.8
+
+- fixes the `mainwindow.cpp` streamed-assistant compile regression by passing the active palette into the new palette-aware transcript color helpers
+- improves final transcript sanitization so stray literal `\n`, `\n\n`, `\t`, and fence-adjacent escaped layout tokens render as real spacing instead of leaking into the visible answer
+- preserves quoted string escapes inside code blocks and inline code while normalizing display-only escaped layout outside those quoted regions
+
+## What changed in v9.19.7
+
+- removes most fixed widget/label colors and reworks the transcript, diagnostics, and toast rendering to derive colors from the active Qt/system palette instead of assuming a dark theme
+- rebuilds transcript and diagnostics rendering on palette/style changes so Amelia follows light/dark or accent changes more naturally while running
+- broadens external search snippet parsing to accept more result fields (`content`, `snippet`, `description`, `text`, `summary`, and `descriptions[]`) and keeps longer sanitized excerpts
+- improves large-document exact extraction by preferring near-fit full-file coverage more often, adding intrinsic actionability scoring for commands/YAML/config/procedure chunks, and widening raw-window sampling across long files
+- improves hit excerpts so matches can show both the first and later matching regions of the same chunk instead of truncating too aggressively around the first hit
 
 ## What changed in v9.19.6
 

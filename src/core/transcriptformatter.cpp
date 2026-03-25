@@ -126,6 +126,95 @@ bool looksCodeLike(const QString &text)
     return signalCount >= 2 || nonAlphaSignals >= 6 || (signalCount >= 1 && indentedLines >= 1);
 }
 
+
+QString decodeVisibleEscapedLayout(const QString &text)
+{
+    QString out;
+    out.reserve(text.size());
+
+    bool inFence = false;
+    bool inInlineCode = false;
+    bool inSingleQuote = false;
+    bool inDoubleQuote = false;
+    bool escapingInsideQuote = false;
+
+    for (int i = 0; i < text.size(); ++i) {
+        if (!inInlineCode && i + 2 < text.size() && text.mid(i, 3) == QStringLiteral("```")) {
+            out += QStringLiteral("```");
+            i += 2;
+            inFence = !inFence;
+            inSingleQuote = false;
+            inDoubleQuote = false;
+            escapingInsideQuote = false;
+            continue;
+        }
+
+        const QChar ch = text.at(i);
+
+        if (!inFence && ch == QLatin1Char('`')) {
+            inInlineCode = !inInlineCode;
+            out += ch;
+            continue;
+        }
+
+        if (inInlineCode) {
+            out += ch;
+            continue;
+        }
+
+        if ((inSingleQuote || inDoubleQuote) && escapingInsideQuote) {
+            out += ch;
+            escapingInsideQuote = false;
+            continue;
+        }
+
+        if ((inSingleQuote || inDoubleQuote) && ch == QLatin1Char('\\')) {
+            out += ch;
+            escapingInsideQuote = true;
+            continue;
+        }
+
+        if (!inSingleQuote && !inDoubleQuote && ch == QLatin1Char('\\') && i + 1 < text.size()) {
+            const QChar next = text.at(i + 1);
+            if (next == QLatin1Char('n')) {
+                out += QLatin1Char('\n');
+                ++i;
+                continue;
+            }
+            if (next == QLatin1Char('r')) {
+                ++i;
+                continue;
+            }
+            if (next == QLatin1Char('t')) {
+                out += QLatin1Char('\t');
+                ++i;
+                continue;
+            }
+            if (next == QLatin1Char('"') || next == QLatin1Char('\'')) {
+                out += ch;
+                out += next;
+                ++i;
+                continue;
+            }
+        }
+
+        if (!inDoubleQuote && ch == QLatin1Char('\'')) {
+            inSingleQuote = !inSingleQuote;
+            out += ch;
+            continue;
+        }
+        if (!inSingleQuote && ch == QLatin1Char('"')) {
+            inDoubleQuote = !inDoubleQuote;
+            out += ch;
+            continue;
+        }
+
+        out += ch;
+    }
+
+    return out;
+}
+
 QString decodeEscapedLayoutOutsideQuotes(const QString &text)
 {
     QString out;
@@ -666,6 +755,7 @@ QString sanitizeRenderableMarkdown(const QString &text)
     cleaned.replace(QLatin1Char('\r'), QLatin1Char('\n'));
     cleaned.remove(QChar::Null);
 
+    cleaned = decodeVisibleEscapedLayout(cleaned);
     cleaned = rewriteEscapedCodeLines(cleaned);
     cleaned = rewriteUnsafeMarkdownTables(cleaned);
     cleaned = normalizeInlineSingleLineFences(cleaned);
