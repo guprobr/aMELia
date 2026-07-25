@@ -111,12 +111,14 @@ private:
     int m_inactivityTimeoutMs = 300000;
     int m_totalTimeoutMs = 0;
     int m_numCtx = 32768;
+    int m_numThread = 0;
     int m_topK = 50;
     double m_temperature = 0.15;
     double m_topP = 0.95;
     double m_repeatPenalty = 1.12;
     double m_presencePenalty = 0.0;
     double m_frequencyPenalty = 0.0;
+    QString m_keepAlive = QStringLiteral("10m");
     StreamPhase m_streamPhase = StreamPhase::Idle;
     qint64 m_totalBytesReceived = 0;
     qint64 m_reasoningCharsObserved = 0;

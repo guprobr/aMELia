@@ -49,6 +49,12 @@ struct AppConfig {
     int ollamaEmbeddingTimeoutMs = 120000;
     int ollamaEmbeddingBatchSize = 4;
 
+    // Forces num_gpu=0 on every embedding request, bypassing GPU inference
+    // for the embedding model only (chat generation is unaffected). Useful
+    // when a GPU backend (e.g. an early/beta Vulkan or SYCL build) crashes on
+    // the embedding model's architecture while working fine for chat models.
+    bool ollamaEmbeddingForceCpu = false;
+
     bool preferOutlinePlanning = true;
     bool requireGroundingForProjectQuestions = true;
 
@@ -77,6 +83,16 @@ struct AppConfig {
     int desktopNotificationTimeoutMs = 2500;
     int ollamaNumCtx = 32768;
     int ollamaTopK = 40;
+
+    // 0 lets Ollama auto-detect the thread count. On hybrid P/E-core CPUs the
+    // auto-detected value is not always the fastest choice; expose it so it
+    // can be tuned per machine.
+    int ollamaNumThread = 0;
+
+    // Ollama's own server-side default keep_alive is 5m. Sending a longer
+    // value here keeps a model resident between prompts so repeated turns
+    // don't repay the full weight-load cost from disk each time.
+    QString ollamaKeepAlive = QStringLiteral("10m");
 
     // Low temperature keeps factual answers deterministic.
     double ollamaTemperature = 0.05;

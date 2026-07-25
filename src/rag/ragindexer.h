@@ -38,7 +38,7 @@ public:
     void setDocsRoot(const QString &rootPath);
     void setCachePath(const QString &cachePath);
     void setSemanticEnabled(bool enabled);
-    void configureEmbeddingBackend(const QString &baseUrl, const QString &model, int timeoutMs, int batchSize);
+    void configureEmbeddingBackend(const QString &baseUrl, const QString &model, int timeoutMs, int batchSize, bool forceCpu = false);
     void setDiagnosticCallback(const std::function<void(const QString &, const QString &)> &callback);
     void requestCancel();
 

@@ -23,7 +23,8 @@ public:
     void configureOllama(const QString &baseUrl,
                          const QString &model,
                          int timeoutMs = 120000,
-                         int batchSize = 12);
+                         int batchSize = 12,
+                         bool forceCpu = false);
     void setDiagnosticCallback(const std::function<void(const QString &, const QString &)> &callback);
 
     QString backendName() const;
@@ -53,6 +54,7 @@ private:
     QString m_embeddingModel;
     int m_timeoutMs = 120000;
     int m_batchSize = 12;
+    bool m_forceCpu = false;
     mutable bool m_lastRequestUsedNeural = false;
     mutable int m_consecutiveNeuralFailures = 0;
     mutable qint64 m_disableNeuralUntilMs = 0;

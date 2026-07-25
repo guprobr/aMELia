@@ -152,6 +152,10 @@ private:
     void restartActiveGenerationAfterRunnerFailure();
     QString normalizeReasoningTraceForLoopDetection(const QString &text) const;
     QString buildReasoningLoopEvidence() const;
+    void resetAnswerLoopGuard();
+    void checkVisibleAnswerForRepetitionLoop(const QString &deltaText);
+    void handleVisibleAnswerRepetitionLoop();
+    QString normalizeAnswerLineForLoopDetection(const QString &text) const;
     bool shouldRetryAfterRunnerFailure(const QString &message) const;
     QString trimLocalContextForRunnerFallback(const QString &text, int maxChars) const;
     int effectiveRequestNumCtx() const;
@@ -244,4 +248,17 @@ private:
     bool m_reasoningFallbackRetryAttempted = false;
     bool m_runnerFailureRetryAttempted = false;
     int m_activeRequestNumCtxOverride = 0;
+
+    // Guards against the model getting stuck in a degenerate repetition loop
+    // (e.g. a markdown table repeating the same row dozens of times) inside
+    // the *visible* answer stream. This is distinct from the reasoning-only
+    // loop guard above, which only watches hidden <think> tokens before any
+    // visible output has started.
+    QString m_streamedAnswerSoFar;
+    QString m_answerLineBuffer;
+    QString m_lastAnswerLineNormalized;
+    int m_answerLineRepeatStreak = 0;
+    QHash<QString, int> m_answerLineFrequency;
+    QStringList m_recentAnswerLinesNormalized;
+    bool m_answerLoopGuardTriggered = false;
 };

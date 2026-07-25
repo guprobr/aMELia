@@ -39,6 +39,7 @@ R"JSON({
   "ollamaEmbeddingModel": "embeddinggemma:latest",
   "ollamaEmbeddingTimeoutMs": 120000,
   "ollamaEmbeddingBatchSize": 4,
+  "ollamaEmbeddingForceCpu": false,
   "enableDesktopNotifications": true,
   "notifyOnTaskStart": true,
   "notifyOnTaskSuccess": true,
@@ -60,6 +61,8 @@ R"JSON({
   "ollamaTotalTimeoutMs": 0,
   "maxDiagnosticLines": 400,
   "ollamaNumCtx": 32768,
+  "ollamaNumThread": 0,
+  "ollamaKeepAlive": "10m",
   "ollamaTemperature": 0.05,
   "ollamaTopP": 0.90,
   "ollamaTopK": 40,
@@ -213,6 +216,7 @@ void applyEnvOverrides(AppConfig &config)
     applyIntEnvOverride("AMELIA_EXTERNAL_SEARCH_TIMEOUT_MS", config.externalSearchTimeoutMs, 2000);
     applyIntEnvOverride("AMELIA_OLLAMA_EMBEDDING_TIMEOUT_MS", config.ollamaEmbeddingTimeoutMs, 3000);
     applyIntEnvOverride("AMELIA_OLLAMA_EMBEDDING_BATCH_SIZE", config.ollamaEmbeddingBatchSize, 1);
+    applyBoolEnvOverride("AMELIA_OLLAMA_EMBEDDING_FORCE_CPU", config.ollamaEmbeddingForceCpu);
     applyIntEnvOverride("AMELIA_OLLAMA_PROBE_TIMEOUT_MS", config.ollamaProbeTimeoutMs, 2000);
     applyIntEnvOverride("AMELIA_OLLAMA_RESPONSE_HEADERS_TIMEOUT_MS", config.ollamaResponseHeadersTimeoutMs, 5000);
     applyIntEnvOverride("AMELIA_OLLAMA_FIRST_TOKEN_TIMEOUT_MS", config.ollamaFirstTokenTimeoutMs, 5000);
@@ -220,6 +224,8 @@ void applyEnvOverrides(AppConfig &config)
     applyIntEnvOverride("AMELIA_OLLAMA_TOTAL_TIMEOUT_MS", config.ollamaTotalTimeoutMs, 5000, true);
     applyIntEnvOverride("AMELIA_DESKTOP_NOTIFICATION_TIMEOUT_MS", config.desktopNotificationTimeoutMs, 1000);
     applyIntEnvOverride("AMELIA_OLLAMA_NUM_CTX", config.ollamaNumCtx, 1024);
+    applyIntEnvOverride("AMELIA_OLLAMA_NUM_THREAD", config.ollamaNumThread, 0, true);
+    applyStringEnvOverride("AMELIA_OLLAMA_KEEP_ALIVE", config.ollamaKeepAlive);
     applyIntEnvOverride("AMELIA_OLLAMA_TOP_K", config.ollamaTopK, 1);
     applyDoubleEnvOverride("AMELIA_OLLAMA_TEMPERATURE", config.ollamaTemperature, 0.0);
     applyDoubleEnvOverride("AMELIA_OLLAMA_TOP_P", config.ollamaTopP, 0.0);
@@ -331,7 +337,10 @@ AppConfig AppConfigLoader::load(const QString &path, QString *errorMessage)
 
     config.maxDiagnosticLines = obj.value(QStringLiteral("maxDiagnosticLines")).toInt(config.maxDiagnosticLines);
     config.ollamaEmbeddingBatchSize = qMax(1, obj.value(QStringLiteral("ollamaEmbeddingBatchSize")).toInt(config.ollamaEmbeddingBatchSize));
+    config.ollamaEmbeddingForceCpu = obj.value(QStringLiteral("ollamaEmbeddingForceCpu")).toBool(config.ollamaEmbeddingForceCpu);
     config.ollamaNumCtx = qMax(1024, obj.value(QStringLiteral("ollamaNumCtx")).toInt(config.ollamaNumCtx));
+    config.ollamaNumThread = qMax(0, obj.value(QStringLiteral("ollamaNumThread")).toInt(config.ollamaNumThread));
+    config.ollamaKeepAlive = obj.value(QStringLiteral("ollamaKeepAlive")).toString(config.ollamaKeepAlive).trimmed();
     config.ollamaTopK = qMax(1, obj.value(QStringLiteral("ollamaTopK")).toInt(config.ollamaTopK));
     config.ollamaTemperature = readDoubleValue(obj, QStringLiteral("ollamaTemperature"), config.ollamaTemperature, 0.0);
     config.ollamaTopP = readDoubleValue(obj, QStringLiteral("ollamaTopP"), config.ollamaTopP, 0.0);

@@ -340,16 +340,16 @@ int safeRetrievedContextTokenBudget(int numCtx, bool documentStudy, OllamaRuntim
         const int historyReserve = qBound(600, safeNumCtx / 24, 1200);
         const int available = qMax(2200, safeNumCtx - answerReserve - scaffoldingReserve - historyReserve);
 
-        double contextRatio = 0.40;
+        double contextRatio = 0.50;
         if (runtimeProfile == OllamaRuntimeProfile::CpuConservative) {
-            contextRatio = 0.34;
+            contextRatio = 0.43;
         } else if (runtimeProfile == OllamaRuntimeProfile::GpuBalanced) {
-            contextRatio = 0.50;
+            contextRatio = 0.62;
         }
 
         return qBound(2200,
                       qRound(static_cast<double>(available) * contextRatio),
-                      qMax(2200, safeNumCtx / 2));
+                      qMax(2200, safeNumCtx * 2 / 3));
     }
 
     const int answerReserve = qBound(1024, safeNumCtx / 10, 2048);
@@ -411,9 +411,9 @@ DocumentStudyRuntimeTuning tuneDocumentStudyRuntime(const DocumentSelectionStats
     const int coverageBase = prioritized ? 10 : 8;
     const int coverageFromScale = coverageBase + qRound(scale * 6.0);
 
-    const int dynamicPacketBudget = qBound(16000,
-                                           22000 + qRound(scale * 18000.0) + (prioritized ? 2000 : 0),
-                                           52000);
+    const int dynamicPacketBudget = qBound(20000,
+                                           28000 + qRound(scale * 24000.0) + (prioritized ? 3000 : 0),
+                                           72000);
     tuning.maxCharsPerFile = qMin(dynamicPacketBudget,
                               qMin(availablePerFileBudget,
                                    tuning.localContextBudget));
@@ -644,11 +644,13 @@ ChatController::ChatController(const AppConfig &config, QObject *parent)
     m_embeddingClient->configureOllama(m_config.ollamaBaseUrl,
                                        m_config.ollamaEmbeddingModel,
                                        m_config.ollamaEmbeddingTimeoutMs,
-                                       m_config.ollamaEmbeddingBatchSize);
+                                       m_config.ollamaEmbeddingBatchSize,
+                                       m_config.ollamaEmbeddingForceCpu);
     m_rag->configureEmbeddingBackend(m_config.ollamaBaseUrl,
                                      m_config.ollamaEmbeddingModel,
                                      m_config.ollamaEmbeddingTimeoutMs,
-                                     m_config.ollamaEmbeddingBatchSize);
+                                     m_config.ollamaEmbeddingBatchSize,
+                                     m_config.ollamaEmbeddingForceCpu);
     m_rag->setDiagnosticCallback([this](const QString &category, const QString &message) {
         QMetaObject::invokeMethod(this, [this, category, message]() {
             addDiagnostic(category, message);
@@ -1095,6 +1097,7 @@ void ChatController::sendUserPrompt(const QString &prompt, bool allowExternalSea
 
     m_busy = true;
     m_streamChunkCount = 0;
+    resetAnswerLoopGuard();
     m_requestStartedMs = nowMs();
     m_forceDisableReasoningForActiveRequest = false;
     m_reasoningFallbackRetryAttempted = false;
@@ -1900,7 +1903,12 @@ void ChatController::onModelDelta(const QString &text)
         }
     }
     ++m_streamChunkCount;
+    m_streamedAnswerSoFar += text;
     emit assistantStreamChunk(text);
+
+    if (!m_answerLoopGuardTriggered) {
+        checkVisibleAnswerForRepetitionLoop(text);
+    }
 }
 
 void ChatController::onModelReasoningTrace(const QString &text)
@@ -2117,13 +2125,35 @@ void ChatController::startGeneration(const QString &prompt,
     m_llmClient->setReasoningTraceEnabled(requestReasoningTrace);
     m_llmClient->setForceThinkOff(heavyDocumentStudyRequest);
 
+    // For heavy document-study requests, shrink num_ctx to the smallest power-of-two
+    // that fits the actual prompt plus a 3000-token answer reserve. This prevents
+    // Ollama from allocating a massive KV cache (e.g. 32K) when the prompt is only
+    // ~8-10K tokens, which can OOM low-VRAM remote backends.
+    int effectiveNumCtx = requestNumCtx;
+    if (heavyDocumentStudyRequest) {
+        const int estimatedPromptTokens = qMax(1024, totalChars / 4);
+        const int answerTokenReserve = 3000;
+        const int neededTokens = estimatedPromptTokens + answerTokenReserve;
+        // Round up to next power of two, clamped to [8192, requestNumCtx]
+        int candidate = 8192;
+        while (candidate < neededTokens && candidate < requestNumCtx) {
+            candidate *= 2;
+        }
+        effectiveNumCtx = qBound(8192, candidate, requestNumCtx);
+        if (effectiveNumCtx < requestNumCtx) {
+            addDiagnostic(QStringLiteral("backend"),
+                          QStringLiteral("Reduced num_ctx %1→%2 for heavy document-study request (prompt≈%3 tokens + %4 answer reserve).")
+                          .arg(requestNumCtx).arg(effectiveNumCtx).arg(estimatedPromptTokens).arg(answerTokenReserve));
+        }
+    }
+
     AppConfig requestConfig = m_config;
-    requestConfig.ollamaNumCtx = requestNumCtx;
+    requestConfig.ollamaNumCtx = effectiveNumCtx;
     m_llmClient->setGenerationConfig(requestConfig);
 
     addDiagnostic(QStringLiteral("backend"), QStringLiteral("Sending chat request to Ollama (%1 message(s), num_ctx=%2, temperature=%3, top_p=%4, top_k=%5, think=%6)")
                   .arg(messages.size())
-                  .arg(requestNumCtx)
+                  .arg(effectiveNumCtx)
                   .arg(m_config.ollamaTemperature, 0, 'f', 2)
                   .arg(m_config.ollamaTopP, 0, 'f', 2)
                   .arg(m_config.ollamaTopK)
@@ -2144,6 +2174,132 @@ void ChatController::resetReasoningLoopGuard()
     m_lastReasoningTraceNormalized.clear();
     m_recentReasoningTraceNormalized.clear();
     m_reasoningTraceFrequency.clear();
+}
+
+void ChatController::resetAnswerLoopGuard()
+{
+    m_streamedAnswerSoFar.clear();
+    m_answerLineBuffer.clear();
+    m_lastAnswerLineNormalized.clear();
+    m_answerLineRepeatStreak = 0;
+    m_answerLineFrequency.clear();
+    m_recentAnswerLinesNormalized.clear();
+    m_answerLoopGuardTriggered = false;
+}
+
+QString ChatController::normalizeAnswerLineForLoopDetection(const QString &text) const
+{
+    QString normalized = text.toLower();
+    normalized.replace(QRegularExpression(QStringLiteral(R"([^a-z0-9]+)")), QStringLiteral(" "));
+    normalized = normalized.simplified();
+    if (normalized.size() > 160) {
+        normalized.truncate(160);
+    }
+    return normalized;
+}
+
+// Watches the *visible* answer stream (as opposed to maybeRecoverFromReasoningOnlyLoop,
+// which only watches hidden <think> tokens before any visible output starts) for a
+// degenerate repetition loop -- e.g. a local model getting stuck regenerating the same
+// markdown table row dozens of times. Ollama's num_predict is left uncapped by design
+// (so normal long answers aren't truncated), so nothing else stops a stuck model short
+// of the context window filling up; this guard cuts it off as soon as the pattern is
+// unambiguous instead of letting it burn through the rest of the context.
+void ChatController::checkVisibleAnswerForRepetitionLoop(const QString &deltaText)
+{
+    constexpr int kRepeatStreakThreshold = 5;
+    constexpr int kMinNormalizedLineChars = 6;
+
+    m_answerLineBuffer += deltaText;
+    QStringList completedLines = m_answerLineBuffer.split(QLatin1Char('\n'));
+    m_answerLineBuffer = completedLines.isEmpty() ? QString() : completedLines.takeLast();
+
+    for (const QString &rawLine : std::as_const(completedLines)) {
+        const QString trimmed = rawLine.trimmed();
+        if (trimmed.isEmpty()) {
+            continue;
+        }
+        const QString normalized = normalizeAnswerLineForLoopDetection(trimmed);
+        if (normalized.size() < kMinNormalizedLineChars) {
+            // Too short/generic (e.g. a lone "| --- | --- |" table rule) to be a
+            // reliable loop signal on its own.
+            continue;
+        }
+
+        if (normalized == m_lastAnswerLineNormalized) {
+            ++m_answerLineRepeatStreak;
+        } else {
+            m_answerLineRepeatStreak = 1;
+            m_lastAnswerLineNormalized = normalized;
+        }
+
+        m_answerLineFrequency[normalized] = m_answerLineFrequency.value(normalized) + 1;
+        m_recentAnswerLinesNormalized.push_back(normalized);
+        while (m_recentAnswerLinesNormalized.size() > 12) {
+            m_recentAnswerLinesNormalized.removeFirst();
+        }
+
+        if (m_answerLineRepeatStreak >= kRepeatStreakThreshold) {
+            m_answerLoopGuardTriggered = true;
+            QTimer::singleShot(0, this, [this]() {
+                handleVisibleAnswerRepetitionLoop();
+            });
+            return;
+        }
+    }
+}
+
+void ChatController::handleVisibleAnswerRepetitionLoop()
+{
+    if (!m_busy) {
+        return;
+    }
+
+    addDiagnostic(QStringLiteral("chat"),
+                  QStringLiteral("Detected a repetition loop in the visible answer (line repeated %1x in a row: \"%2\"). Stopping generation early.")
+                      .arg(m_answerLineRepeatStreak)
+                      .arg(m_lastAnswerLineNormalized.left(96)));
+    emit statusChanged(QStringLiteral("Detected a repetition loop in the response. Stopping early..."));
+
+    m_llmClient->stop();
+
+    // Trim the trailing run of repeated lines down to a single instance so the
+    // transcript shows the pattern once instead of dozens of duplicate rows.
+    QStringList lines = m_streamedAnswerSoFar.split(QLatin1Char('\n'));
+    int trimmedCount = 0;
+    while (lines.size() > 1) {
+        const QString normalized = normalizeAnswerLineForLoopDetection(lines.constLast().trimmed());
+        if (normalized.isEmpty() || normalized != m_lastAnswerLineNormalized) {
+            break;
+        }
+        lines.removeLast();
+        ++trimmedCount;
+    }
+    const QString truncated = lines.join(QLatin1Char('\n'));
+
+    const QString cleaned = TranscriptFormatter::sanitizeFinalAssistantMarkdown(truncated).trimmed()
+            + QStringLiteral("\n\n*(Amelia stopped this answer early after detecting %1 repeated lines in a row — a sign the local model got stuck in a loop. Try rephrasing the question, narrowing it to a smaller part of the topic, or asking again.)*")
+                  .arg(trimmedCount + 1);
+
+    m_history.push_back({QStringLiteral("assistant"), cleaned});
+    persistMessage(QStringLiteral("assistant"), cleaned);
+    updateCurrentSummary();
+
+    m_busy = false;
+    emit busyChanged(false);
+    emit assistantCompleted(cleaned);
+    refreshConversationList();
+    refreshSummaryPanel();
+    emit statusChanged(QStringLiteral("Ready."));
+    addDiagnostic(QStringLiteral("backend"),
+                  QStringLiteral("Generation stopped early due to a detected repetition loop after %1 ms with %2 streamed chunk(s) and %3 chars")
+                      .arg(nowMs() - m_requestStartedMs)
+                      .arg(m_streamChunkCount)
+                      .arg(cleaned.size()));
+    restoreDefaultGenerationConfig();
+    m_llmClient->setReasoningTraceEnabled(m_reasoningTraceEnabled);
+    notifyTaskSucceeded(QStringLiteral("Prompt complete (truncated)"),
+                        QStringLiteral("Amelia stopped the answer early after detecting a repetition loop."));
 }
 
 QString ChatController::normalizeReasoningTraceForLoopDetection(const QString &text) const
@@ -2336,6 +2492,7 @@ void ChatController::restartActiveGenerationAfterRunnerFailure()
     m_forceDisableReasoningForActiveRequest = true;
     resetReasoningLoopGuard();
     m_streamChunkCount = 0;
+    resetAnswerLoopGuard();
     m_requestStartedMs = nowMs();
 
     const int retryNumCtx = computeRunnerFallbackNumCtx(m_config.ollamaNumCtx);
@@ -2376,6 +2533,7 @@ void ChatController::restartActiveGenerationWithoutReasoning()
     m_forceDisableReasoningForActiveRequest = true;
     resetReasoningLoopGuard();
     m_streamChunkCount = 0;
+    resetAnswerLoopGuard();
     m_requestStartedMs = nowMs();
     m_llmClient->stop();
 

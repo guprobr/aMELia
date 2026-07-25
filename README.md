@@ -1,10 +1,38 @@
-# aMELia Qt6 v9.19.8
+# aMELia Qt6 v9.19.9
 
 Amelia is a local-first Qt6/C++ coding and cloud assistant that talks to a local Ollama server, stores its state under `~/.amelia_qt6`, indexes a local knowledge base, and can optionally use sanitized external web search through SearXNG.
 
 This build rolls forward the existing bootstrap, indexing, transcript, Prompt Lab, notification, and progress-bar work, and adds a Knowledge Base collection model with preserved folder structure, a tree-view browser, a hard-locked Knowledge Base root and safer workspace-jail boundaries under `~/.amelia_qt6`, stronger transcript code-block handling, first-run service prompts, a full JSON configuration editor, and a context-aware document-study budget policy that now respects Ollama `num_ctx` end-to-end, plus a generic one-shot fallback retry when Ollama reports that the model runner stopped unexpectedly during a large grounded request. Version 9.19.8 keeps the earlier indexing RAM fixes, hard-disables Knowledge Base interaction while a prompt or reindex is in flight, fixes the document-study `num_ctx` reserve bug, keeps numbered procedure leads attached to following command/config lines across semantic block building and PDF page breaks, strengthens section-preview stitching, adds an exact-extraction retrieval mode for exhaustive scraper-style prompts so Amelia can emit ordered raw chunk windows instead of only lossy section summaries, follows the active Qt/system palette far more closely across widgets, labels, transcript cards, diagnostics, and in-app notifications, broadens snippet extraction for large documents and external search results, fixes the palette-helper compile regression in streamed assistant rendering, and repairs stray literal `\n\n` layout artifacts in final markdown output. aMELia is also allegorically considered a MEL: Model Enhancement Lab.
 
 NOTE: prompt transcripts are first generated in markdown but after it finishes, they should be properly formatted.
+
+## What changed in v9.19.9
+
+- adds an OCR fallback for PDF ingestion: any page that `pdftotext` returns as near-blank (fewer than 6 words) is now re-rendered at 300dpi via `pdftoppm` and run through `tesseract`, and the OCR'd text is spliced back into the page in place of the near-blank original if it recovered more words. This targets scanned handbook pages, photographed diagrams, and CLI screenshots embedded as images, which previously indexed as silently empty gaps
+- OCR is per-page and gated on word count, so born-digital pages (the common case) never pay the OCR cost — only pages that actually look image-only get rendered and OCR'd
+- OCR results are cached per page number within a single extraction pass, so the `-layout` and `-raw` extraction attempts for the same file never re-OCR the same page twice
+- entirely optional at runtime: if `tesseract` or `pdftoppm` aren't on `PATH`, Amelia detects that once and skips OCR silently, falling back to the pre-existing pdftotext-only behavior
+- sources whose PDF extractor used OCR are now tagged in the Knowledge Base inventory as `pdf:pdftotext-layout-paged+ocr(Np)` (or `-raw-paged+ocr(Np)`), so you can see which files benefited
+- requires the new `tesseract-ocr` apt package (see the updated package list below); `pdftoppm` ships with the `poppler-utils` package Amelia already depends on
+
+- replaces the regex/line-shape heuristics that decided chunk boundaries (`isProceduralLeadLine`, `isStructuredCodeLikeLine`, etc.) with an embedding-similarity-driven merge: atomic blocks are now folded into a chunk as long as they stay semantically on-topic, and a boundary is only cut once the running chunk has reached a reasonable size *and* the next block's embedding has drifted away (cosine similarity) from the chunk built so far
+- this directly targets the recurring "gap" failure mode in technical handbooks, where a numbered procedure step, its command block, and its output got separated because a char-count threshold happened to fall between them even though they were clearly one unit — chunk boundaries now follow meaning instead of guessing from line patterns
+- works with or without a configured neural embedding backend: it reuses the same `EmbeddingClient::embedTexts()` path already used for retrieval, which transparently falls back to the existing local hash-based embedding when no Ollama embedding model is configured, so even lexical-only setups get real similarity-driven boundaries instead of pure char-count splitting
+- chunk embeddings are now derived as the sum of their member blocks' embeddings (computed once, during the boundary decision) instead of being re-embedded a second time from the final joined chunk text, which avoids doubling embedding calls and avoids a second silent truncation of long chunks by the embedding input cap
+- bumps the on-disk chunking-strategy cache stamp so existing Knowledge Base collections automatically rebuild their chunks on the next reindex
+
+- adds a repetition-loop guard for the *visible* assistant answer stream: if the same normalized line repeats 5 times in a row (e.g. a local model getting stuck regenerating an identical markdown table row), Amelia now stops generation early, trims the repeated tail down to a single instance, and appends a short note explaining the answer was cut short. This is separate from — and did not previously exist alongside — the older loop guard, which only ever watched the hidden pre-answer `<think>` stream and explicitly stood down the moment real output began
+- the stop is deferred with `QTimer::singleShot(0, ...)` so it never races with the network reply's own callback stack, the same safe pattern the existing runner-failure retry already used
+
+- adds `ollamaNumThread` (default `0` = auto) to override Ollama's CPU thread count per request, for hybrid P/E-core CPUs where auto-detection isn't optimal
+- adds `ollamaKeepAlive` (default `"10m"`, up from Ollama's stock `5m`) sent on every chat request so a model stays resident between prompts instead of reloading from disk after a short idle gap
+- adds `ollamaEmbeddingForceCpu` (default `false`), which adds `num_gpu: 0` to embedding requests only — lets you keep GPU acceleration for chat generation while working around embedding-model crashes on early/beta GPU backends (e.g. an IPEX-LLM SYCL backend segfaulting specifically on `embeddinggemma`) without disabling neural embeddings altogether
+
+- every button across the main window, Prompt Lab, Knowledge Base, and Memory tabs now has a semantically matched emoji prefix (🗑️ delete/remove, 📌 pin, 🔄 reindex, 🧠 reasoning trace, 🧹 clear, ✨ compose, etc.), including the two dynamic ON/OFF diagnostic toggle buttons
+
+### Reindex note
+
+- reindex your Knowledge Base once after upgrading to v9.19.9 to rebuild chunks with the new boundary logic; the cache-version bump means this happens automatically the next time indexing runs
 
 ## What changed in v9.19.8
 
@@ -56,6 +84,7 @@ sudo apt install -y \
   qt6-svg-dev \
   qt6-imageformats-plugins \
   poppler-utils \
+  tesseract-ocr \
   curl \
   git
 ```
@@ -65,7 +94,8 @@ Why these matter:
 - `qt6-base-dev` -> Qt Core / Widgets / Network / Concurrent / tray integration
 - `qt6-tools-dev` and `qt6-tools-dev-tools` -> standard Qt6 dev tooling on Ubuntu
 - `qt6-svg-dev` / `qt6-imageformats-plugins` -> SVG logo rendering and runtime image support
-- `poppler-utils` -> provides `pdftotext`, which Amelia uses to ingest PDFs
+- `poppler-utils` -> provides `pdftotext` and `pdftoppm`, which Amelia uses to ingest PDFs and to rasterize individual pages for OCR
+- `tesseract-ocr` -> OCR engine Amelia falls back to for scanned pages / screenshots inside a PDF that have no embedded text layer (optional at runtime: if it isn't installed, Amelia just skips OCR and behaves as before)
 - `curl` -> convenient for testing Ollama and SearXNG endpoints
 
 ## Build

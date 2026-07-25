@@ -70,6 +70,9 @@ void OllamaClient::generate(const QString &baseUrl,
     QJsonObject payload;
     payload.insert(QStringLiteral("model"), model);
     payload.insert(QStringLiteral("stream"), true);
+    if (!m_keepAlive.trimmed().isEmpty()) {
+        payload.insert(QStringLiteral("keep_alive"), m_keepAlive.trimmed());
+    }
 
     QJsonArray jsonMessages;
     for (const LlmChatMessage &message : messages) {
@@ -83,6 +86,9 @@ void OllamaClient::generate(const QString &baseUrl,
     QJsonObject options;
     if (m_numCtx > 0) {
         options.insert(QStringLiteral("num_ctx"), m_numCtx);
+    }
+    if (m_numThread > 0) {
+        options.insert(QStringLiteral("num_thread"), m_numThread);
     }
     options.insert(QStringLiteral("temperature"), m_temperature);
     options.insert(QStringLiteral("top_p"), m_topP);
@@ -298,6 +304,8 @@ void OllamaClient::setTotalTimeoutMs(int timeoutMs)
 void OllamaClient::setGenerationConfig(const AppConfig &config)
 {
     m_numCtx = qMax(1024, config.ollamaNumCtx);
+    m_numThread = qMax(0, config.ollamaNumThread);
+    m_keepAlive = config.ollamaKeepAlive;
     m_topK = qMax(1, config.ollamaTopK);
     m_temperature = qMax(0.0, config.ollamaTemperature);
     m_topP = qMax(0.0, config.ollamaTopP);

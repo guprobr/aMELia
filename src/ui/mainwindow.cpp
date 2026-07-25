@@ -955,8 +955,8 @@ MainWindow::MainWindow(const QString &configPath,
     sessionTitle->setFont(sessionTitleFont);
     m_conversationsList = new QListWidget(sessionPane);
     m_conversationsList->setSelectionMode(QAbstractItemView::SingleSelection);
-    m_newConversationButton = new QPushButton(QStringLiteral("New conversation"), sessionPane);
-    m_deleteConversationButton = new QPushButton(QStringLiteral("Delete selected"), sessionPane);
+    m_newConversationButton = new QPushButton(QStringLiteral("🆕 New conversation"), sessionPane);
+    m_deleteConversationButton = new QPushButton(QStringLiteral("🗑️ Delete selected"), sessionPane);
     sessionLayout->addWidget(sessionTitle);
     sessionLayout->addWidget(m_conversationsList, 1);
     sessionLayout->addWidget(m_newConversationButton);
@@ -1021,8 +1021,8 @@ MainWindow::MainWindow(const QString &configPath,
     m_prioritizedAssetsList->setMaximumHeight(100);
     m_prioritizedAssetsList->setToolTip(QStringLiteral("Assets selected from the Knowledge Base and prioritized for retrieval."));
     auto *priorityButtons = new QHBoxLayout();
-    m_removePrioritizedAssetButton = new QPushButton(QStringLiteral("Remove selected"), priorityPanel);
-    m_clearPrioritizedAssetsButton = new QPushButton(QStringLiteral("Clear priorities"), priorityPanel);
+    m_removePrioritizedAssetButton = new QPushButton(QStringLiteral("🗑️ Remove selected"), priorityPanel);
+    m_clearPrioritizedAssetsButton = new QPushButton(QStringLiteral("🧹 Clear priorities"), priorityPanel);
     priorityButtons->addWidget(m_removePrioritizedAssetButton);
     priorityButtons->addWidget(m_clearPrioritizedAssetsButton);
     priorityButtons->addStretch(1);
@@ -1046,17 +1046,17 @@ MainWindow::MainWindow(const QString &configPath,
     toolbarLayout->addWidget(m_modelCombo);
 
     auto *controlsLayout = new QHBoxLayout();
-    m_sendButton = new QPushButton(QStringLiteral("Send"), chatPane);
-    m_stopButton = new QPushButton(QStringLiteral("Stop"), chatPane);
-    m_reindexButton = new QPushButton(QStringLiteral("Reindex docs"), chatPane);
-    m_cancelIndexingButton = new QPushButton(QStringLiteral("Cancel index"), chatPane);
+    m_sendButton = new QPushButton(QStringLiteral("📨 Send"), chatPane);
+    m_stopButton = new QPushButton(QStringLiteral("🛑 Stop"), chatPane);
+    m_reindexButton = new QPushButton(QStringLiteral("🔄 Reindex docs"), chatPane);
+    m_cancelIndexingButton = new QPushButton(QStringLiteral("✖️ Cancel index"), chatPane);
     m_testBackendButton = nullptr;
-    m_refreshModelsButton = new QPushButton(QStringLiteral("List models"), chatPane);
-    m_rememberButton = new QPushButton(QStringLiteral("Manual Memory"), chatPane);
-    m_copyLastAnswerButton = new QPushButton(QStringLiteral("Copy answer"), chatPane);
+    m_refreshModelsButton = new QPushButton(QStringLiteral("🗂️ List models"), chatPane);
+    m_rememberButton = new QPushButton(QStringLiteral("📝 Manual Memory"), chatPane);
+    m_copyLastAnswerButton = new QPushButton(QStringLiteral("📋 Copy answer"), chatPane);
     m_copyCodeBlocksButton = nullptr;
-    m_importFilesButton = new QPushButton(QStringLiteral("Import files"), chatPane);
-    m_importFolderButton = new QPushButton(QStringLiteral("Import folder"), chatPane);
+    m_importFilesButton = new QPushButton(QStringLiteral("📄 Import files"), chatPane);
+    m_importFolderButton = new QPushButton(QStringLiteral("📂 Import folder"), chatPane);
     m_statusLabel = new QLabel(QStringLiteral("Ready."), chatPane);
     m_busyIndicatorLabel = new QLabel(chatPane);
     m_busyIndicatorLabel->setMinimumWidth(220);
@@ -1108,9 +1108,9 @@ MainWindow::MainWindow(const QString &configPath,
     auto *diagnosticsLayout = new QVBoxLayout(diagnosticsTab);
     auto *diagnosticsHeader = new QVBoxLayout();
     auto *diagnosticsToggleRow = new QHBoxLayout();
-    m_reasoningTraceToggleButton = new QPushButton(QStringLiteral("Capture reasoning trace: OFF"), diagnosticsTab);
+    m_reasoningTraceToggleButton = new QPushButton(QStringLiteral("🧠 Capture reasoning trace: OFF"), diagnosticsTab);
     m_reasoningTraceToggleButton->setCheckable(true);
-    m_verboseDiagnosticsToggleButton = new QPushButton(QStringLiteral("Verbose diagnostics: OFF"), diagnosticsTab);
+    m_verboseDiagnosticsToggleButton = new QPushButton(QStringLiteral("🔍 Verbose diagnostics: OFF"), diagnosticsTab);
     m_verboseDiagnosticsToggleButton->setCheckable(true);
     diagnosticsToggleRow->addWidget(m_reasoningTraceToggleButton, 0);
     diagnosticsToggleRow->addWidget(m_verboseDiagnosticsToggleButton, 0);
@@ -1150,8 +1150,8 @@ MainWindow::MainWindow(const QString &configPath,
 
     m_promptLabAssets = new QLineEdit(promptLabTab);
     m_promptLabAssets->setPlaceholderText(QStringLiteral("/path/a; /path/b; ~/notes.txt"));
-    m_promptLabBrowseFilesButton = new QPushButton(QStringLiteral("Browse files"), promptLabTab);
-    m_promptLabBrowseFolderButton = new QPushButton(QStringLiteral("Browse folder"), promptLabTab);
+    m_promptLabBrowseFilesButton = new QPushButton(QStringLiteral("📄 Browse files"), promptLabTab);
+    m_promptLabBrowseFolderButton = new QPushButton(QStringLiteral("📂 Browse folder"), promptLabTab);
     auto *localAssetsRow = new QWidget(promptLabTab);
     auto *localAssetsLayout = new QHBoxLayout(localAssetsRow);
     localAssetsLayout->setContentsMargins(0, 0, 0, 0);
@@ -1172,10 +1172,10 @@ MainWindow::MainWindow(const QString &configPath,
     m_promptLabNotes->setMaximumHeight(140);
 
     auto *promptLabButtons = new QHBoxLayout();
-    m_promptLabGenerateButton = new QPushButton(QStringLiteral("Compose recipe"), promptLabTab);
-    m_promptLabUseButton = new QPushButton(QStringLiteral("Use in input"), promptLabTab);
-    m_promptLabCopyRecipeButton = new QPushButton(QStringLiteral("Copy recipe"), promptLabTab);
-    m_promptLabImportButton = new QPushButton(QStringLiteral("Import local assets"), promptLabTab);
+    m_promptLabGenerateButton = new QPushButton(QStringLiteral("✨ Compose recipe"), promptLabTab);
+    m_promptLabUseButton = new QPushButton(QStringLiteral("➡️ Use in input"), promptLabTab);
+    m_promptLabCopyRecipeButton = new QPushButton(QStringLiteral("📋 Copy recipe"), promptLabTab);
+    m_promptLabImportButton = new QPushButton(QStringLiteral("📥 Import local assets"), promptLabTab);
     promptLabButtons->addWidget(m_promptLabGenerateButton);
     promptLabButtons->addWidget(m_promptLabUseButton);
     promptLabButtons->addWidget(m_promptLabCopyRecipeButton);
@@ -1248,11 +1248,11 @@ MainWindow::MainWindow(const QString &configPath,
     m_sourceInventoryStack->setCurrentIndex(0);
 
     auto *kbButtons = new QHBoxLayout();
-    m_prioritizeSelectedAssetButton = new QPushButton(QStringLiteral("Use once"), kbTab);
-    m_pinSelectedAssetButton = new QPushButton(QStringLiteral("Pin"), kbTab);
-    m_renameKnowledgeLabelButton = new QPushButton(QStringLiteral("Rename label"), kbTab);
-    m_removeSelectedAssetButton = new QPushButton(QStringLiteral("Remove selected"), kbTab);
-    m_clearKnowledgeBaseButton = new QPushButton(QStringLiteral("Clear KB"), kbTab);
+    m_prioritizeSelectedAssetButton = new QPushButton(QStringLiteral("☝️ Use once"), kbTab);
+    m_pinSelectedAssetButton = new QPushButton(QStringLiteral("📌 Pin"), kbTab);
+    m_renameKnowledgeLabelButton = new QPushButton(QStringLiteral("✏️ Rename label"), kbTab);
+    m_removeSelectedAssetButton = new QPushButton(QStringLiteral("🗑️ Remove selected"), kbTab);
+    m_clearKnowledgeBaseButton = new QPushButton(QStringLiteral("🧹 Clear KB"), kbTab);
     kbButtons->addWidget(m_prioritizeSelectedAssetButton);
     kbButtons->addWidget(m_pinSelectedAssetButton);
     kbButtons->addWidget(m_renameKnowledgeLabelButton);
@@ -1306,7 +1306,7 @@ MainWindow::MainWindow(const QString &configPath,
     m_memoryDetails->setReadOnly(true);
     m_memoryDetails->setPlaceholderText(QStringLiteral("Select a memory to inspect its full details and description."));
     m_memoryDetails->setMaximumHeight(180);
-    m_deleteMemoryButton = new QPushButton(QStringLiteral("Delete selected"), memoryTab);
+    m_deleteMemoryButton = new QPushButton(QStringLiteral("🗑️ Delete selected"), memoryTab);
     m_deleteMemoryButton->setEnabled(false);
 
     auto *memoryButtons = new QHBoxLayout();
@@ -3343,8 +3343,8 @@ void MainWindow::onReasoningTraceToggleToggled(bool checked)
 {
     if (m_reasoningTraceToggleButton != nullptr) {
         m_reasoningTraceToggleButton->setText(checked
-                                              ? QStringLiteral("Capture reasoning trace: ON")
-                                              : QStringLiteral("Capture reasoning trace: OFF"));
+                                              ? QStringLiteral("🧠 Capture reasoning trace: ON")
+                                              : QStringLiteral("🧠 Capture reasoning trace: OFF"));
     }
 
     if (m_reasoningTraceInfoLabel != nullptr) {
@@ -3360,8 +3360,8 @@ void MainWindow::onVerboseDiagnosticsToggleToggled(bool checked)
 {
     if (m_verboseDiagnosticsToggleButton != nullptr) {
         m_verboseDiagnosticsToggleButton->setText(checked
-                                                  ? QStringLiteral("Verbose diagnostics: ON")
-                                                  : QStringLiteral("Verbose diagnostics: OFF"));
+                                                  ? QStringLiteral("🔍 Verbose diagnostics: ON")
+                                                  : QStringLiteral("🔍 Verbose diagnostics: OFF"));
     }
 
     if (m_verboseDiagnosticsInfoLabel != nullptr) {
@@ -3879,9 +3879,9 @@ void MainWindow::onOpenConfigurationDialog()
     editor->setPlainText(initialText.trimmed().isEmpty() ? m_defaultConfigJson : initialText);
 
     auto *buttons = new QHBoxLayout();
-    auto *revertButton = new QPushButton(QStringLiteral("Revert to Defaults"), &dialog);
-    auto *cancelButton = new QPushButton(QStringLiteral("Cancel"), &dialog);
-    auto *saveButton = new QPushButton(QStringLiteral("Save and Close"), &dialog);
+    auto *revertButton = new QPushButton(QStringLiteral("↩️ Revert to Defaults"), &dialog);
+    auto *cancelButton = new QPushButton(QStringLiteral("✖️ Cancel"), &dialog);
+    auto *saveButton = new QPushButton(QStringLiteral("💾 Save and Close"), &dialog);
     buttons->addWidget(revertButton);
     buttons->addStretch(1);
     buttons->addWidget(cancelButton);

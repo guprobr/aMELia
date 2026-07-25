@@ -19,6 +19,8 @@
 #include <QRegularExpression>
 #include <QSaveFile>
 #include <QSet>
+#include <QStandardPaths>
+#include <QTemporaryDir>
 #include <utility>
 
 namespace {
@@ -106,7 +108,7 @@ DocumentStudyPacketProfile buildDocumentStudyPacketProfile(int textChars,
     DocumentStudyPacketProfile profile;
     profile.effectiveOutlineLineLimit = qBound(120,
                                                requestedOutlineLineLimit + qRound(scale * 80.0),
-                                               280);
+                                               360);
 
     const int requestedBudget = qMax(12000, requestedMaxCharsPerFile);
     profile.effectiveMaxCharsPerFile = requestedBudget;
@@ -114,7 +116,7 @@ DocumentStudyPacketProfile buildDocumentStudyPacketProfile(int textChars,
     if (!mediumDocument) {
         profile.previewBudget = qMin(9000, qMax(2200, profile.effectiveMaxCharsPerFile / 5));
     } else if (!hugeDocument) {
-        profile.previewBudget = qMin(4800, qMax(1200, profile.effectiveMaxCharsPerFile / 11));
+        profile.previewBudget = qMin(6000, qMax(2000, profile.effectiveMaxCharsPerFile / 9));
     } else if (!massiveDocument) {
         profile.previewBudget = qMin(1600, qMax(0, profile.effectiveMaxCharsPerFile / 36));
     } else {
@@ -122,23 +124,24 @@ DocumentStudyPacketProfile buildDocumentStudyPacketProfile(int textChars,
     }
 
     profile.coverageBudget = qMax(2800, profile.effectiveMaxCharsPerFile - profile.previewBudget - 900);
-    profile.minSectionChars = !mediumDocument ? 800 : (largeDocument ? (massiveDocument ? 260 : (hugeDocument ? 340 : 520)) : 700);
-    profile.maxSectionCharsCap = !mediumDocument ? 4000 : (largeDocument ? (massiveDocument ? 900 : (hugeDocument ? 1300 : 2200)) : 3200);
-    profile.anchorCap = qBound(48, 56 + qRound(scale * 40.0), 96);
+    profile.minSectionChars = !mediumDocument ? 800 : (largeDocument ? (massiveDocument ? 220 : (hugeDocument ? 280 : 300)) : 700);
+    profile.maxSectionCharsCap = !mediumDocument ? 4000 : (largeDocument ? (massiveDocument ? 900 : (hugeDocument ? 1500 : 3000)) : 3200);
+    profile.anchorCap = qBound(72, 80 + qRound(scale * 56.0), 160);
     if (largeDocument) {
-        profile.anchorCap = qMax(profile.anchorCap, 72);
+        profile.anchorCap = qMax(profile.anchorCap, 96);
     }
     if (hugeDocument) {
-        profile.anchorCap = qMax(profile.anchorCap, 84);
+        profile.anchorCap = qMax(profile.anchorCap, 128);
     }
     if (massiveDocument) {
-        profile.anchorCap = 96;
+        profile.anchorCap = 160;
     }
 
     profile.includeFullDocumentPreview = !largeDocument;
-    profile.fullDocumentInlineThreshold = qMin(profile.effectiveMaxCharsPerFile, 48000);
+    profile.fullDocumentInlineThreshold = qMin(profile.effectiveMaxCharsPerFile, 56000);
+    const int previewFraction = largeDocument ? 5 : 3;
     profile.previewBudget = qMin(profile.effectiveMaxCharsPerFile,
-                                 qMax(profile.previewBudget, profile.effectiveMaxCharsPerFile / 3));
+                                 qMax(profile.previewBudget, profile.effectiveMaxCharsPerFile / previewFraction));
     return profile;
 }
 
@@ -722,32 +725,66 @@ QVector<QString> buildSemanticBlocks(const QString &text, const std::atomic_bool
     return blocks;
 }
 
-int totalBlockChars(const QStringList &blocks)
+struct SemanticChunk {
+    QString text;
+    // Sum (not average/unit-normalized) of the embeddings of every atomic block
+    // folded into this chunk. EmbeddingClient::cosineSimilarity normalizes both
+    // operands internally, so a raw sum is directionally equivalent to the mean
+    // and — importantly — composes correctly when two chunks are later merged
+    // (sum(A) + sum(B) == sum(A union B)).
+    QVector<float> embedding;
+};
+
+QVector<float> centroidEmbeddingForIndexes(const QVector<int> &indexes, const QVector<QVector<float>> &blockEmbeddings)
+{
+    QVector<float> centroid;
+    for (int index : indexes) {
+        if (index < 0 || index >= blockEmbeddings.size()) {
+            continue;
+        }
+        const QVector<float> &embedding = blockEmbeddings.at(index);
+        if (embedding.isEmpty()) {
+            continue;
+        }
+        if (centroid.isEmpty()) {
+            centroid = QVector<float>(embedding.size(), 0.0f);
+        }
+        for (int i = 0; i < centroid.size() && i < embedding.size(); ++i) {
+            centroid[i] += embedding.at(i);
+        }
+    }
+    return centroid;
+}
+
+int charsForIndexes(const QVector<QString> &blocks, const QVector<int> &indexes)
 {
     int total = 0;
-    for (const QString &block : blocks) {
-        total += block.size();
+    for (int index : indexes) {
+        total += blocks.at(index).size();
     }
-    if (blocks.size() > 1) {
-        total += (blocks.size() - 1) * 2;
+    if (indexes.size() > 1) {
+        total += (indexes.size() - 1) * 2;
     }
     return total;
 }
 
-QStringList overlapTailBlocks(const QStringList &blocks, int overlapChars, const std::atomic_bool *cancelRequested = nullptr)
+QVector<int> overlapTailIndexes(const QVector<QString> &blocks,
+                                const QVector<int> &indexes,
+                                int overlapChars,
+                                const std::atomic_bool *cancelRequested = nullptr)
 {
-    QStringList carry;
+    QVector<int> carry;
     int carryChars = 0;
-    for (int i = blocks.size() - 1; i >= 0; --i) {
+    for (int i = indexes.size() - 1; i >= 0; --i) {
         if (isCancelRequested(cancelRequested)) {
             return {};
         }
-        const QString &block = blocks.at(i);
-        const int blockChars = block.size() + (carry.isEmpty() ? 0 : 2);
+        const int index = indexes.at(i);
+        const int blockChars = blocks.at(index).size() + (carry.isEmpty() ? 0 : 2);
         if (!carry.isEmpty() && carryChars + blockChars > overlapChars * 2) {
             break;
         }
-        carry.prepend(block);
+        carry.prepend(index);
         carryChars += blockChars;
         if (carryChars >= overlapChars) {
             break;
@@ -756,77 +793,132 @@ QStringList overlapTailBlocks(const QStringList &blocks, int overlapChars, const
     return carry;
 }
 
-QVector<QString> buildChunksFromBlocks(const QVector<QString> &blocks,
-                                      const ChunkingProfile &profile,
-                                      const std::atomic_bool *cancelRequested = nullptr)
+// Walks the atomic blocks in document order and only cuts a chunk boundary where
+// the block actually being appended is semantically dissimilar (embedding cosine
+// similarity) from the chunk built up so far — instead of purely on character
+// counts, which is what used to force apart a procedural lead and the
+// command/output block that belongs to it whenever the running text happened to
+// cross a char threshold at the wrong moment. Character budgets remain as a
+// safety valve (profile.targetChunkChars / hardChunkChars) so a long run of
+// on-topic content still gets split into retrievable pieces. blockEmbeddings may
+// come from the neural backend or the local hash fallback (EmbeddingClient
+// degrades automatically); either way this is a real similarity signal rather
+// than a regex guess about how a line looks.
+QVector<SemanticChunk> buildSemanticChunksFromBlocks(const QVector<QString> &blocks,
+                                                     const QVector<QVector<float>> &blockEmbeddings,
+                                                     const ChunkingProfile &profile,
+                                                     const std::atomic_bool *cancelRequested = nullptr)
 {
-    QVector<QString> chunks;
+    QVector<SemanticChunk> chunks;
     if (blocks.isEmpty()) {
         return chunks;
     }
 
-    QStringList currentBlocks;
+    constexpr float kBreakpointSimilarity = 0.28f;
+    const bool haveEmbeddings = blockEmbeddings.size() == blocks.size();
+
+    QVector<int> currentIndexes;
     int currentChars = 0;
 
     auto flushChunk = [&]() {
-        if (currentBlocks.isEmpty()) {
+        if (currentIndexes.isEmpty()) {
             return;
         }
-        const QString chunk = normalizeBlockText(currentBlocks.join(QStringLiteral("\n\n")));
-        if (!chunk.isEmpty()) {
-            chunks.push_back(chunk);
+        QStringList parts;
+        parts.reserve(currentIndexes.size());
+        for (int index : currentIndexes) {
+            parts << blocks.at(index);
+        }
+        const QString text = normalizeBlockText(parts.join(QStringLiteral("\n\n")));
+        if (!text.isEmpty()) {
+            SemanticChunk chunk;
+            chunk.text = text;
+            if (haveEmbeddings) {
+                chunk.embedding = centroidEmbeddingForIndexes(currentIndexes, blockEmbeddings);
+            }
+            chunks.push_back(std::move(chunk));
         }
     };
 
-    for (const QString &block : blocks) {
+    for (int index = 0; index < blocks.size(); ++index) {
         if (isCancelRequested(cancelRequested)) {
             return {};
         }
+        const QString &block = blocks.at(index);
         if (block.trimmed().isEmpty()) {
             continue;
         }
 
-        const int separatorChars = currentBlocks.isEmpty() ? 0 : 2;
-        const int projected = currentChars + separatorChars + block.size();
-        const bool shouldSplit = !currentBlocks.isEmpty()
-                && projected > profile.targetChunkChars
-                && currentChars >= profile.minimumChunkChars;
-        const bool mustSplit = !currentBlocks.isEmpty() && projected > profile.hardChunkChars;
-        if (shouldSplit || mustSplit) {
-            const QStringList carry = overlapTailBlocks(currentBlocks, profile.overlapChars, cancelRequested);
-            flushChunk();
-            currentBlocks = carry;
-            currentChars = totalBlockChars(currentBlocks);
+        if (!currentIndexes.isEmpty()) {
+            const int projected = currentChars + 2 + block.size();
+            const bool overHard = projected > profile.hardChunkChars;
+
+            bool shouldSplit = false;
+            if (!overHard && currentChars >= profile.minimumChunkChars) {
+                if (haveEmbeddings) {
+                    // Only consider a similarity-driven cut once the chunk has
+                    // already reached a reasonable size; below that, always merge.
+                    if (currentChars >= profile.targetChunkChars) {
+                        const QVector<float> &nextEmbedding = blockEmbeddings.at(index);
+                        if (!nextEmbedding.isEmpty()) {
+                            const QVector<float> centroid = centroidEmbeddingForIndexes(currentIndexes, blockEmbeddings);
+                            if (!centroid.isEmpty()) {
+                                const float similarity = EmbeddingClient::cosineSimilarity(centroid, nextEmbedding);
+                                shouldSplit = similarity < kBreakpointSimilarity;
+                            }
+                        }
+                    }
+                } else {
+                    // No embedding signal at all (semantic disabled): fall back to
+                    // the previous purely char-budget-driven boundary.
+                    shouldSplit = projected > profile.targetChunkChars;
+                }
+            }
+
+            const bool mustSplit = overHard || shouldSplit;
+            if (mustSplit) {
+                const QVector<int> carry = overlapTailIndexes(blocks, currentIndexes, profile.overlapChars, cancelRequested);
+                flushChunk();
+                currentIndexes = carry;
+                currentChars = charsForIndexes(blocks, currentIndexes);
+            }
         }
 
-        if (block.size() > profile.hardChunkChars && currentBlocks.isEmpty()) {
+        if (block.size() > profile.hardChunkChars && currentIndexes.isEmpty()) {
             const QStringList slices = splitOversizedBlock(block, profile.targetChunkChars, cancelRequested);
-            for (int sliceIndex = 0; sliceIndex < slices.size(); ++sliceIndex) {
-                const QString &slice = slices.at(sliceIndex);
+            for (const QString &slice : slices) {
                 if (slice.trimmed().isEmpty()) {
                     continue;
                 }
-                currentBlocks << slice;
-                currentChars = totalBlockChars(currentBlocks);
-                const bool lastSlice = sliceIndex == slices.size() - 1;
-                if (!lastSlice) {
-                    flushChunk();
-                    currentBlocks = overlapTailBlocks(currentBlocks, profile.overlapChars, cancelRequested);
-                    currentChars = totalBlockChars(currentBlocks);
+                SemanticChunk chunk;
+                chunk.text = slice;
+                if (haveEmbeddings && !blockEmbeddings.at(index).isEmpty()) {
+                    chunk.embedding = blockEmbeddings.at(index);
                 }
+                chunks.push_back(std::move(chunk));
             }
             continue;
         }
 
-        currentBlocks << block;
-        currentChars = totalBlockChars(currentBlocks);
+        currentIndexes << index;
+        currentChars = charsForIndexes(blocks, currentIndexes);
     }
 
     flushChunk();
 
-    if (chunks.size() >= 2 && chunks.constLast().size() < profile.minimumChunkChars / 2) {
-        const QString merged = normalizeBlockText(chunks.at(chunks.size() - 2) + QStringLiteral("\n\n") + chunks.constLast());
-        chunks[chunks.size() - 2] = merged;
+    if (chunks.size() >= 2 && chunks.constLast().text.size() < profile.minimumChunkChars / 2) {
+        SemanticChunk &previous = chunks[chunks.size() - 2];
+        const SemanticChunk last = chunks.constLast();
+        previous.text = normalizeBlockText(previous.text + QStringLiteral("\n\n") + last.text);
+        if (!last.embedding.isEmpty()) {
+            if (previous.embedding.isEmpty()) {
+                previous.embedding = last.embedding;
+            } else {
+                for (int i = 0; i < previous.embedding.size() && i < last.embedding.size(); ++i) {
+                    previous.embedding[i] += last.embedding.at(i);
+                }
+            }
+        }
         chunks.removeLast();
     }
 
@@ -876,6 +968,143 @@ bool isCancelRequested(const std::atomic_bool *cancelRequested)
     return cancelRequested != nullptr && cancelRequested->load(std::memory_order_relaxed);
 }
 
+bool ocrToolsAvailable()
+{
+    static const bool available = !QStandardPaths::findExecutable(QStringLiteral("tesseract")).isEmpty()
+            && !QStandardPaths::findExecutable(QStringLiteral("pdftoppm")).isEmpty();
+    return available;
+}
+
+// Renders a single PDF page to a grayscale PNG (via pdftoppm) and runs
+// tesseract on it. Used only for pages that pdftotext returns near-empty for
+// (i.e. likely a scanned image or a screenshot with no embedded text layer),
+// so the common case of born-digital PDFs never pays this cost.
+QString ocrPageText(const QString &pdfPath, int pageNumber, std::atomic_bool *cancelRequested)
+{
+    QTemporaryDir tempDir;
+    if (!tempDir.isValid()) {
+        return QString();
+    }
+    const QString imagePrefix = tempDir.filePath(QStringLiteral("ocr-page"));
+    const QString imagePath = imagePrefix + QStringLiteral(".png");
+
+    auto runProcess = [&](const QString &program, const QStringList &arguments) -> bool {
+        QProcess process;
+        process.start(program, arguments);
+        if (!process.waitForStarted(1500)) {
+            return false;
+        }
+        while (!process.waitForFinished(150)) {
+            if (isCancelRequested(cancelRequested)) {
+                process.kill();
+                process.waitForFinished(1000);
+                return false;
+            }
+        }
+        if (isCancelRequested(cancelRequested)) {
+            process.kill();
+            process.waitForFinished(1000);
+            return false;
+        }
+        return process.exitStatus() == QProcess::NormalExit && process.exitCode() == 0;
+    };
+
+    const bool rendered = runProcess(QStringLiteral("pdftoppm"),
+                                     {QStringLiteral("-f"), QString::number(pageNumber),
+                                      QStringLiteral("-l"), QString::number(pageNumber),
+                                      QStringLiteral("-r"), QStringLiteral("300"),
+                                      QStringLiteral("-gray"),
+                                      QStringLiteral("-singlefile"),
+                                      QStringLiteral("-png"),
+                                      pdfPath,
+                                      imagePrefix});
+    if (!rendered || !QFile::exists(imagePath)) {
+        return QString();
+    }
+
+    QProcess ocrProcess;
+    ocrProcess.start(QStringLiteral("tesseract"),
+                     {imagePath, QStringLiteral("stdout"),
+                      QStringLiteral("-l"), QStringLiteral("eng"),
+                      QStringLiteral("--psm"), QStringLiteral("3")});
+    if (!ocrProcess.waitForStarted(1500)) {
+        return QString();
+    }
+    while (!ocrProcess.waitForFinished(150)) {
+        if (isCancelRequested(cancelRequested)) {
+            ocrProcess.kill();
+            ocrProcess.waitForFinished(1000);
+            return QString();
+        }
+    }
+    if (ocrProcess.exitStatus() != QProcess::NormalExit || ocrProcess.exitCode() != 0) {
+        return QString();
+    }
+    return QString::fromUtf8(ocrProcess.readAllStandardOutput());
+}
+
+// Splits pdftotext's raw (pre-cleanup) output on form-feed page breaks and
+// re-OCRs any page whose extracted word count is suspiciously low — the
+// signature of a scanned page, a photographed diagram, or a CLI screenshot
+// with no embedded text layer, all of which pdftotext silently returns as
+// blank or near-blank. ocrCache is keyed by 1-based PDF page number and
+// shared across the -layout and -raw extraction attempts for the same file
+// so a given page is only ever rendered/OCR'd once.
+QString ocrAugmentLowContentPages(const QString &pdfPath,
+                                  const QString &rawExtractedText,
+                                  std::atomic_bool *cancelRequested,
+                                  QHash<int, QString> *ocrCache,
+                                  int *pagesOcrApplied)
+{
+    if (!ocrToolsAvailable()) {
+        return rawExtractedText;
+    }
+
+    constexpr int kOcrCandidateWordThreshold = 6;
+    constexpr int kMaxPagesToOcrPerFile = 150;
+
+    const QStringList rawPages = rawExtractedText.split(QChar('\f'), Qt::KeepEmptyParts);
+    if (rawPages.isEmpty()) {
+        return rawExtractedText;
+    }
+
+    QStringList result = rawPages;
+    int applied = 0;
+    for (int i = 0; i < rawPages.size(); ++i) {
+        if (isCancelRequested(cancelRequested) || applied >= kMaxPagesToOcrPerFile) {
+            break;
+        }
+        const QString &pageText = rawPages.at(i);
+        const int wordCount = countWordsInText(pageText);
+        if (wordCount >= kOcrCandidateWordThreshold) {
+            continue;
+        }
+
+        const int pageNumber = i + 1;
+        QString ocrText;
+        const auto cachedIt = ocrCache->constFind(pageNumber);
+        if (cachedIt != ocrCache->cend()) {
+            ocrText = cachedIt.value();
+        } else {
+            ocrText = ocrPageText(pdfPath, pageNumber, cancelRequested).trimmed();
+            ocrCache->insert(pageNumber, ocrText);
+        }
+        if (ocrText.isEmpty() || countWordsInText(ocrText) <= wordCount) {
+            continue;
+        }
+        result[i] = ocrText;
+        ++applied;
+    }
+
+    if (pagesOcrApplied != nullptr) {
+        *pagesOcrApplied += applied;
+    }
+    if (applied == 0) {
+        return rawExtractedText;
+    }
+    return result.join(QChar('\f'));
+}
+
 bool readTextFile(const QString &path, QString *text, QString *extractor, std::atomic_bool *cancelRequested)
 {
     QFileInfo info(path);
@@ -908,23 +1137,35 @@ bool readTextFile(const QString &path, QString *text, QString *extractor, std::a
             return true;
         };
 
+        QHash<int, QString> ocrCache;
+        int layoutOcrPagesApplied = 0;
+        int rawOcrPagesApplied = 0;
+
         QString extractedText;
         bool extracted = runPdfToText({QStringLiteral("-enc"), QStringLiteral("UTF-8"), QStringLiteral("-layout"), path, QStringLiteral("-")},
                                       &extractedText);
         QString extractorName = QStringLiteral("pdf:pdftotext-layout-paged");
         if (extracted) {
+            extractedText = ocrAugmentLowContentPages(path, extractedText, cancelRequested, &ocrCache, &layoutOcrPagesApplied);
+
             const QString normalized = cleanedPdfText(extractedText, cancelRequested);
             const int wordCount = countWordsInText(normalized);
+            int ocrPagesApplied = layoutOcrPagesApplied;
             if (wordCount < 80) {
                 QString fallbackText;
                 if (runPdfToText({QStringLiteral("-enc"), QStringLiteral("UTF-8"), QStringLiteral("-raw"), path, QStringLiteral("-")},
                                  &fallbackText)) {
+                    fallbackText = ocrAugmentLowContentPages(path, fallbackText, cancelRequested, &ocrCache, &rawOcrPagesApplied);
                     const QString fallbackNormalized = cleanedPdfText(fallbackText, cancelRequested);
                     if (countWordsInText(fallbackNormalized) > wordCount) {
                         extractedText = fallbackText;
                         extractorName = QStringLiteral("pdf:pdftotext-raw-paged");
+                        ocrPagesApplied = rawOcrPagesApplied;
                     }
                 }
+            }
+            if (ocrPagesApplied > 0) {
+                extractorName += QStringLiteral("+ocr(%1p)").arg(ocrPagesApplied);
             }
             if (text != nullptr) {
                 *text = cleanedPdfText(extractedText, cancelRequested);
@@ -1942,9 +2183,9 @@ void RagIndexer::setSemanticEnabled(bool enabled)
     m_semanticEnabled = enabled;
 }
 
-void RagIndexer::configureEmbeddingBackend(const QString &baseUrl, const QString &model, int timeoutMs, int batchSize)
+void RagIndexer::configureEmbeddingBackend(const QString &baseUrl, const QString &model, int timeoutMs, int batchSize, bool forceCpu)
 {
-    m_embeddingClient.configureOllama(baseUrl, model, timeoutMs, batchSize);
+    m_embeddingClient.configureOllama(baseUrl, model, timeoutMs, batchSize, forceCpu);
 }
 
 void RagIndexer::setDiagnosticCallback(const std::function<void(const QString &, const QString &)> &callback)
@@ -2010,7 +2251,7 @@ bool RagIndexer::sourceMatchesFile(const SourceInfo &source, const QFileInfo &in
 
 QString RagIndexer::chunkingStrategyName()
 {
-    return QStringLiteral("semantic-blocks-v5-speed-cache");
+    return QStringLiteral("semantic-embedding-chunks-v6");
 }
 
 int RagIndexer::reindex(const std::function<void(int, int, const QString &)> &progressCallback)
@@ -2404,8 +2645,41 @@ int RagIndexer::reindex(const std::function<void(int, int, const QString &)> &pr
                                                                  blocks.size());
             source.chunkingProfile = profile.label;
 
-            const QVector<QString> chunkTexts = buildChunksFromBlocks(blocks, profile, &m_cancelRequested);
-            candidateChunkCount = chunkTexts.size();
+            QVector<QVector<float>> blockEmbeddings;
+            if (m_semanticEnabled && !blocks.isEmpty()) {
+                QStringList blockTexts;
+                blockTexts.reserve(blocks.size());
+                for (const QString &block : blocks) {
+                    blockTexts.push_back(block);
+                }
+                if (progressCallback) {
+                    progressCallback(0, blockTexts.size(),
+                                     QStringLiteral("Mapping structure %1 / %2: %3 — 0/%4 blocks")
+                                         .arg(i + 1)
+                                         .arg(totalFiles)
+                                         .arg(info.fileName())
+                                         .arg(blockTexts.size()));
+                }
+                blockEmbeddings = m_embeddingClient.embedTexts(blockTexts,
+                                                               [progressCallback, i, totalFiles, info](int completed, int total) {
+                                                                   if (progressCallback) {
+                                                                       progressCallback(completed, total,
+                                                                                        QStringLiteral("Mapping structure %1 / %2: %3 — %4/%5 blocks")
+                                                                                            .arg(i + 1)
+                                                                                            .arg(totalFiles)
+                                                                                            .arg(info.fileName())
+                                                                                            .arg(completed)
+                                                                                            .arg(total));
+                                                                   }
+                                                               },
+                                                               &m_cancelRequested);
+                if (m_cancelRequested.load(std::memory_order_relaxed)) {
+                    return cancelWithPartialCommit(QStringLiteral("Indexing canceled. Partial cache saved; the in-flight file was discarded."));
+                }
+            }
+
+            const QVector<SemanticChunk> semanticChunks = buildSemanticChunksFromBlocks(blocks, blockEmbeddings, profile, &m_cancelRequested);
+            candidateChunkCount = semanticChunks.size();
             if (m_cancelRequested.load(std::memory_order_relaxed)) {
                 return cancelWithPartialCommit(QStringLiteral("Indexing canceled. Partial cache saved; the in-flight file was discarded."));
             }
@@ -2417,18 +2691,18 @@ int RagIndexer::reindex(const std::function<void(int, int, const QString &)> &pr
             };
 
             QVector<PendingChunk> pendingChunks;
-            pendingChunks.reserve(chunkTexts.size());
+            pendingChunks.reserve(semanticChunks.size());
             QStringList embeddingsInput;
             QVector<int> embeddingIndexes;
             QSet<QString> seenChunkFingerprints;
-            embeddingsInput.reserve(chunkTexts.size());
-            embeddingIndexes.reserve(chunkTexts.size());
+            embeddingsInput.reserve(semanticChunks.size());
+            embeddingIndexes.reserve(semanticChunks.size());
 
-            for (const QString &chunkText : chunkTexts) {
+            for (const SemanticChunk &semanticChunk : semanticChunks) {
                 if (m_cancelRequested.load(std::memory_order_relaxed)) {
                     return cancelWithPartialCommit(QStringLiteral("Indexing canceled. Partial cache saved; the in-flight file was discarded."));
                 }
-                const QString normalizedChunk = chunkText.trimmed();
+                const QString normalizedChunk = semanticChunk.text.trimmed();
                 if (!shouldKeepChunkText(normalizedChunk)) {
                     ++filteredChunkCount;
                     continue;
@@ -2448,6 +2722,8 @@ int RagIndexer::reindex(const std::function<void(int, int, const QString &)> &pr
                     if (cachedEmbeddingIt != workingEmbeddingsByFingerprint.cend()) {
                         pendingChunk.embedding = cachedEmbeddingIt.value();
                         ++reusedChunkEmbeddingsForFile;
+                    } else if (!semanticChunk.embedding.isEmpty()) {
+                        pendingChunk.embedding = semanticChunk.embedding;
                     }
                 }
 
@@ -2964,7 +3240,7 @@ QVector<RagHit> RagIndexer::searchHitsInFiles(const QString &query,
 
     QVector<RagHit> hits;
     QHash<QString, int> fileCounts;
-    int maxPerFile = (intent == RetrievalIntent::DocumentGeneration || intent == RetrievalIntent::Architecture) ? 6 : 3;
+    int maxPerFile = (intent == RetrievalIntent::DocumentGeneration || intent == RetrievalIntent::Architecture) ? 10 : 6;
     if (!pathFilter.isEmpty()) {
         maxPerFile = qMax(maxPerFile, limit);
     }

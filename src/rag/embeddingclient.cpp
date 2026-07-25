@@ -392,12 +392,14 @@ EmbeddingClient::EmbeddingClient()
 void EmbeddingClient::configureOllama(const QString &baseUrl,
                                       const QString &model,
                                       int timeoutMs,
-                                      int batchSize)
+                                      int batchSize,
+                                      bool forceCpu)
 {
     m_ollamaBaseUrl = normalizedBaseUrl(baseUrl);
     m_embeddingModel = model.trimmed();
     m_timeoutMs = qMax(3000, timeoutMs);
     m_batchSize = qMax(1, batchSize);
+    m_forceCpu = forceCpu;
     m_lastRequestUsedNeural = false;
     m_consecutiveNeuralFailures = 0;
     m_disableNeuralUntilMs = 0;
@@ -594,6 +596,11 @@ EmbeddingClient::NeuralAttemptResult EmbeddingClient::tryOllamaEmbeddingsViaEndp
         payload.insert(QStringLiteral("model"), m_embeddingModel);
         payload.insert(QStringLiteral("input"), inputArray.size() == 1 ? inputArray.at(0) : QJsonValue(inputArray));
         payload.insert(QStringLiteral("truncate"), true);
+        if (m_forceCpu) {
+            QJsonObject options;
+            options.insert(QStringLiteral("num_gpu"), 0);
+            payload.insert(QStringLiteral("options"), options);
+        }
 
         const QByteArray raw = executeRequest(payload);
         if (raw.isEmpty() && !result.errorMessage.isEmpty()) {
@@ -615,6 +622,11 @@ EmbeddingClient::NeuralAttemptResult EmbeddingClient::tryOllamaEmbeddingsViaEndp
             QJsonObject payload;
             payload.insert(QStringLiteral("model"), m_embeddingModel);
             payload.insert(QStringLiteral("prompt"), text);
+            if (m_forceCpu) {
+                QJsonObject options;
+                options.insert(QStringLiteral("num_gpu"), 0);
+                payload.insert(QStringLiteral("options"), options);
+            }
 
             const QByteArray raw = executeRequest(payload);
             if (raw.isEmpty() && !result.errorMessage.isEmpty()) {
