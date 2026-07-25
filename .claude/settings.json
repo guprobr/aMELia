@@ -9,7 +9,18 @@
       "Bash(python3 /tmp/claude-1000/-home-guzpido-amelia-qt6/4f2787a7-0ef1-4c3f-89fa-61269f0886fe/scratchpad/gen_sounds.py)",
       "Bash(ffprobe -hide_banner /home/guzpido/amelia_qt6/assets/sounds/answer_start.wav)",
       "Bash(ffprobe -hide_banner /home/guzpido/amelia_qt6/assets/sounds/answer_complete.wav)",
-      "Bash(file assets/sounds/*.wav)"
+      "Bash(file assets/sounds/*.wav)",
+      "Bash(xxd assets/sounds/answer_start.wav)",
+      "Bash(xxd assets/sounds/answer_complete.wav)",
+      "Bash(ffprobe -hide_banner assets/sounds/answer_start.wav)",
+      "Bash(pkg-config --modversion Qt6Multimedia)",
+      "Bash(find / -iname \"libffmpegmediaplugin*\" -o -iname \"libgstreamermediaplugin*\" -o -iname \"libqtmultimedia_pulseaudio*\")",
+      "Bash(QT_QPA_PLATFORM=offscreen ./soundtest /home/guzpido/amelia_qt6/assets/sounds/answer_start.wav)",
+      "Bash(QT_QPA_PLATFORM=offscreen timeout 5 ./amelia_qt6)",
+      "Bash(echo \"exit:$?\")",
+      "Read(//tmp/**)",
+      "Read(//home/guzpido/.cache/guprobr/amelia_qt6/**)",
+      "Bash(grep -i \"notificationsound\\\\|decoding\\\\|QSoundEffect\" /tmp/amelia_run.log)"
     ],
     "additionalDirectories": [
       "/tmp/claude-1000/-home-guzpido-amelia-qt6/836508ba-0a69-49ea-aea9-ae48409d4f02/scratchpad",

@@ -3,6 +3,8 @@
 #include "core/appconfig.h"
 
 #include <QObject>
+#include <QString>
+#include <QUrl>
 
 class QSoundEffect;
 
@@ -25,6 +27,8 @@ public slots:
     void playAnswerCompleted();
 
 private:
+    static QUrl extractSoundToDisk(const QString &qrcPath, const QString &fileName);
+
     QSoundEffect *m_answerStartEffect = nullptr;
     QSoundEffect *m_answerCompleteEffect = nullptr;
     bool m_enabled = true;

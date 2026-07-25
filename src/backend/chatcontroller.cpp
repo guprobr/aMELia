@@ -1138,7 +1138,19 @@ void ChatController::sendUserPrompt(const QString &prompt, bool allowExternalSea
         const QVector<MemoryRecord> relevantMemories = m_memoryManager->findRelevantForPrompt(trimmed, config.maxRelevantMemories);
         result.memoryContext = m_memoryManager->formatForPrompt(relevantMemories);
 
-        if (config.preferOutlinePlanning) {
+        // Document-study requests ("teach me this PDF", "cover the whole TOC", ...) get their
+        // own TOC-aware retrieval path below (DOCUMENT_OUTLINE_MAP / SECTION_COVERAGE_PACKET)
+        // with a budget sized to the actual document. The outline planner instead hands out a
+        // generic templated skeleton (Purpose/Prerequisites/Execution/...) meant for prompts
+        // asking Amelia to *author* a new MOP/runbook/guide, and forces every request it
+        // touches into a hard 4800-char "outline-only first pass" — appropriate for that
+        // authoring case, but a severe (and misleading) truncation for a request that already
+        // wants full document coverage. Keyword-only classification also means Prompt Lab's own
+        // preset chrome text (e.g. "Preset: Runbook / docs") can trip the planner even when the
+        // user's actual goal is a comprehensive read-through, so document-study intent takes
+        // priority whenever both look present.
+        const bool looksLikeDocumentStudy = looksLikeDocumentStudyPrompt(trimmed);
+        if (config.preferOutlinePlanning && !looksLikeDocumentStudy) {
             result.outlinePlan = m_outlinePlanner->planForPrompt(trimmed);
         }
         result.outlineOnlyFirstPass = result.outlinePlan.enabled && isStructuredDocumentRequest(trimmed);
@@ -1200,7 +1212,6 @@ void ChatController::sendUserPrompt(const QString &prompt, bool allowExternalSea
         } else {
             RetrievalIntent intent = RetrievalIntent::General;
             const bool exactExtractionRequest = looksLikeExactExtractionPrompt(trimmed);
-            const bool looksLikeDocumentStudy = looksLikeDocumentStudyPrompt(trimmed);
             if (trimmed.contains(QStringLiteral("error"), Qt::CaseInsensitive)
                     || trimmed.contains(QStringLiteral("failed"), Qt::CaseInsensitive)
                     || trimmed.contains(QStringLiteral("alarm"), Qt::CaseInsensitive)) {

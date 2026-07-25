@@ -1,10 +1,16 @@
-# aMELia Qt6 v10.0.0
+# aMELia Qt6 v10.0.1
 
 Amelia is a local-first Qt6/C++ coding and cloud assistant that talks to a local Ollama server, stores its state under `~/.amelia_qt6`, indexes a local knowledge base, and can optionally use sanitized external web search through SearXNG.
 
-Version 10.0.0 removes Amelia's last external-binary dependencies and fixes the cross-platform build: PDF ingestion and OCR now run fully in-process against linked libraries instead of shelling out to `pdftotext`/`pdftoppm`/`tesseract`, and the CMake build no longer hard-requires Linux-only components (QtDBus, pkg-config) to configure. Version 9.19.9 rolled forward the existing bootstrap, indexing, transcript, Prompt Lab, notification, and progress-bar work, and adds a Knowledge Base collection model with preserved folder structure, a tree-view browser, a hard-locked Knowledge Base root and safer workspace-jail boundaries under `~/.amelia_qt6`, stronger transcript code-block handling, first-run service prompts, a full JSON configuration editor, and a context-aware document-study budget policy that now respects Ollama `num_ctx` end-to-end, plus a generic one-shot fallback retry when Ollama reports that the model runner stopped unexpectedly during a large grounded request. Version 9.19.8 keeps the earlier indexing RAM fixes, hard-disables Knowledge Base interaction while a prompt or reindex is in flight, fixes the document-study `num_ctx` reserve bug, keeps numbered procedure leads attached to following command/config lines across semantic block building and PDF page breaks, strengthens section-preview stitching, adds an exact-extraction retrieval mode for exhaustive scraper-style prompts so Amelia can emit ordered raw chunk windows instead of only lossy section summaries, follows the active Qt/system palette far more closely across widgets, labels, transcript cards, diagnostics, and in-app notifications, broadens snippet extraction for large documents and external search results, fixes the palette-helper compile regression in streamed assistant rendering, and repairs stray literal `\n\n` layout artifacts in final markdown output. aMELia is also allegorically considered a MEL: Model Enhancement Lab.
+Version 10.0.1 adds native `.docx` ingestion, cross-platform answer-start/answer-finished notification chimes, and fixes a document-study regression where the outline planner's generic templated skeleton (and its hard 4800-char context cap) could hijack "teach me this document" requests instead of the TOC-aware document-study path. Version 10.0.0 removes Amelia's last external-binary dependencies and fixes the cross-platform build: PDF ingestion and OCR now run fully in-process against linked libraries instead of shelling out to `pdftotext`/`pdftoppm`/`tesseract`, and the CMake build no longer hard-requires Linux-only components (QtDBus, pkg-config) to configure. Version 9.19.9 rolled forward the existing bootstrap, indexing, transcript, Prompt Lab, notification, and progress-bar work, and adds a Knowledge Base collection model with preserved folder structure, a tree-view browser, a hard-locked Knowledge Base root and safer workspace-jail boundaries under `~/.amelia_qt6`, stronger transcript code-block handling, first-run service prompts, a full JSON configuration editor, and a context-aware document-study budget policy that now respects Ollama `num_ctx` end-to-end, plus a generic one-shot fallback retry when Ollama reports that the model runner stopped unexpectedly during a large grounded request. Version 9.19.8 keeps the earlier indexing RAM fixes, hard-disables Knowledge Base interaction while a prompt or reindex is in flight, fixes the document-study `num_ctx` reserve bug, keeps numbered procedure leads attached to following command/config lines across semantic block building and PDF page breaks, strengthens section-preview stitching, adds an exact-extraction retrieval mode for exhaustive scraper-style prompts so Amelia can emit ordered raw chunk windows instead of only lossy section summaries, follows the active Qt/system palette far more closely across widgets, labels, transcript cards, diagnostics, and in-app notifications, broadens snippet extraction for large documents and external search results, fixes the palette-helper compile regression in streamed assistant rendering, and repairs stray literal `\n\n` layout artifacts in final markdown output. aMELia is also allegorically considered a MEL: Model Enhancement Lab.
 
 NOTE: prompt transcripts are first generated in markdown but after it finishes, they should be properly formatted.
+
+## What changed in v10.0.1
+
+- **native `.docx` ingestion**: Word documents are now indexed in-process, the same way PDFs are — `libzip` unpacks the `.docx` archive and Qt's own `QXmlStreamReader` parses `word/document.xml` directly. No LibreOffice/pandoc/antiword subprocess. Legacy binary `.doc` is not supported. Sources are tagged `docx:xml-native` in the Knowledge Base inventory; a failed extraction is tagged `docx:load-failed`. Requires `libzip-dev` to build (see the updated package list below)
+- **answer notification chimes**: Amelia now plays a short sound when the assistant's visible answer starts streaming, and another when it finishes, via Qt Multimedia (`QSoundEffect`) so it behaves the same on Linux, Windows, and macOS. Controlled by the `enableNotificationSounds` config key (or `AMELIA_ENABLE_NOTIFICATION_SOUNDS` env override), on by default. Bundled chimes are extracted from Qt resources to a real file on disk before playback, working around a Qt Multimedia FFmpeg-backend limitation where `QSoundEffect` can't decode sources referenced by a `qrc:` URL
+- **document-study outline-planner fix**: prompts that look like a "teach me this document" / full-TOC-coverage request now skip the outline planner's generic MOP/runbook/guide template entirely, so they always get the TOC-aware `DOCUMENT_OUTLINE_MAP`/`SECTION_COVERAGE_PACKET` retrieval path with its adaptive, document-size-aware context budget instead of being misclassified into a fixed 4800-char "outline-only first pass" (which could trigger just from boilerplate text like a Prompt Lab preset name containing the word "runbook")
 
 ## What changed in v10.0.0
 
@@ -101,6 +107,7 @@ sudo apt install -y \
   qt6-multimedia-dev \
   libtesseract-dev \
   libleptonica-dev \
+  libzip-dev \
   tesseract-ocr-eng \
   curl \
   git
@@ -114,6 +121,7 @@ Why these matter:
 - `qt6-pdf-dev` -> `QPdfDocument`/`QPdfSelection`, which Amelia links directly to extract PDF text and rasterize pages for OCR (no `pdftotext`/`pdftoppm` subprocess anymore)
 - `qt6-multimedia-dev` -> `QSoundEffect`, used to play the bundled answer-started/answer-completed notification chimes
 - `libtesseract-dev` / `libleptonica-dev` -> libtesseract's C++ API, which Amelia links directly for in-process OCR (no `tesseract` CLI subprocess anymore)
+- `libzip-dev` -> reads `.docx` files (a zip archive of WordprocessingML XML parts) directly in-process; paired with Qt's own `QXmlStreamReader` to parse `word/document.xml`, so no LibreOffice/pandoc/antiword subprocess is needed
 - `tesseract-ocr-eng` -> the English `eng.traineddata` language data libtesseract loads at runtime; without it OCR silently stays disabled
 - `curl` -> convenient for testing Ollama and SearXNG endpoints
 
@@ -350,6 +358,10 @@ If not:
 sudo apt install tesseract-ocr-eng
 ```
 
+### .docx files do not index
+
+DOCX text extraction is also built into the binary (`libzip` + `QXmlStreamReader` over the `word/document.xml` part), no external tool required. If a `.docx` fails to extract, check the Knowledge Base inventory for its `docx:load-failed` tag — this means the file is corrupt, password-protected, or not actually a valid Word document (`.doc`, the legacy binary format, is not supported).
+
 ### New defaults did not take effect
 
 Your existing user config is overriding the source defaults. Edit:
@@ -421,6 +433,7 @@ Main things to check:
 
 ## Recent UI additions
 
+- Amelia now indexes Microsoft Word **`.docx`** files natively — `libzip` unpacks the archive and `QXmlStreamReader` parses `word/document.xml` directly in-process, no LibreOffice/pandoc/antiword subprocess. Legacy binary `.doc` is not supported. Extracted sources are tagged `docx:xml-native` in the Knowledge Base inventory; a failed extraction shows as `docx:load-failed`.
 - Amelia now plays a short notification chime when the assistant's visible answer starts streaming, and another when it finishes, via Qt Multimedia (`QSoundEffect`) so it works the same way on Linux, Windows, and macOS. Controlled by the `enableNotificationSounds` config key (or the `AMELIA_ENABLE_NOTIFICATION_SOUNDS` env override), defaulting to on.
 - The **Memory** tab now shows persisted entries in a structured table and supports **Delete selected** for one-at-a-time cleanup.
 - Knowledge Base tab supports live filename/path filtering for indexed assets.

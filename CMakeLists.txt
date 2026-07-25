@@ -25,7 +25,7 @@ if(AMELIA_HAS_DBUS)
 endif()
 find_package(Qt6 REQUIRED COMPONENTS ${AMELIA_QT_COMPONENTS})
 
-# Tesseract/Leptonica: pkg-config is the standard discovery path on
+# Tesseract/Leptonica/libzip: pkg-config is the standard discovery path on
 # Linux/macOS (and also works under a pkgconf-enabled toolchain such as
 # vcpkg or MSYS2 on Windows); fall back to each library's own CMake config
 # package when pkg-config itself isn't available.
@@ -33,6 +33,7 @@ find_package(PkgConfig)
 if(PkgConfig_FOUND)
     pkg_check_modules(Tesseract IMPORTED_TARGET tesseract)
     pkg_check_modules(Leptonica IMPORTED_TARGET lept)
+    pkg_check_modules(LibZip IMPORTED_TARGET libzip)
 endif()
 
 if(TARGET PkgConfig::Tesseract)
@@ -47,6 +48,16 @@ if(TARGET PkgConfig::Leptonica)
 else()
     find_package(Leptonica CONFIG REQUIRED)
     set(AMELIA_LEPTONICA_TARGET leptonica)
+endif()
+
+# libzip unpacks .docx files (themselves a zip archive of WordprocessingML
+# XML parts) in-process, the same way Qt6::Pdf/Tesseract avoid shelling out
+# to external tools for PDF/OCR.
+if(TARGET PkgConfig::LibZip)
+    set(AMELIA_LIBZIP_TARGET PkgConfig::LibZip)
+else()
+    find_package(libzip CONFIG REQUIRED)
+    set(AMELIA_LIBZIP_TARGET libzip::zip)
 endif()
 
 qt_standard_project_setup()
@@ -109,6 +120,7 @@ target_link_libraries(amelia_qt6
         Qt6::Multimedia
         ${AMELIA_TESSERACT_TARGET}
         ${AMELIA_LEPTONICA_TARGET}
+        ${AMELIA_LIBZIP_TARGET}
 )
 
 if(AMELIA_HAS_DBUS)

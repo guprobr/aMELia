@@ -3,7 +3,7 @@
     <file>amelia_logo.svg</file>
   </qresource>
   <qresource prefix="/sounds">
-    <file>sounds/answer_start.wav</file>
-    <file>sounds/answer_complete.wav</file>
+    <file alias="answer_start.wav">sounds/answer_start.wav</file>
+    <file alias="answer_complete.wav">sounds/answer_complete.wav</file>
   </qresource>
 </RCC>
