@@ -21,6 +21,11 @@ public:
     QString formatForUiJson(const QVector<MemoryRecord> &memories) const;
 
     bool saveExplicitNote(const QString &text, QString *savedDescription = nullptr, QString *errorMessage = nullptr) const;
+    bool updateMemoryById(const QString &memoryId,
+                          const QString &newValue,
+                          bool pinned,
+                          QString *savedDescription = nullptr,
+                          QString *errorMessage = nullptr) const;
     bool deleteMemoryById(const QString &memoryId, QString *deletedDescription = nullptr, QString *errorMessage = nullptr) const;
     bool clearAll(QString *errorMessage = nullptr) const;
     QVector<MemoryRecord> extractAutoMemories(const QString &userText) const;

@@ -299,6 +299,68 @@ bool MemoryManager::saveExplicitNote(const QString &text, QString *savedDescript
     return true;
 }
 
+bool MemoryManager::updateMemoryById(const QString &memoryId,
+                                     const QString &newValue,
+                                     bool pinned,
+                                     QString *savedDescription,
+                                     QString *errorMessage) const
+{
+    if (m_storage == nullptr) {
+        if (errorMessage != nullptr) {
+            *errorMessage = QStringLiteral("Memory storage is not configured.");
+        }
+        return false;
+    }
+
+    const QString trimmedId = memoryId.trimmed();
+    if (trimmedId.isEmpty()) {
+        if (errorMessage != nullptr) {
+            *errorMessage = QStringLiteral("Memory id is empty.");
+        }
+        return false;
+    }
+
+    const QString trimmedValue = newValue.trimmed();
+    if (trimmedValue.isEmpty()) {
+        if (errorMessage != nullptr) {
+            *errorMessage = QStringLiteral("Cannot save an empty memory.");
+        }
+        return false;
+    }
+
+    const QVector<MemoryRecord> memories = m_storage->loadMemories(nullptr);
+    MemoryRecord existing;
+    bool found = false;
+    for (const MemoryRecord &memory : memories) {
+        if (memory.id.trimmed() == trimmedId) {
+            existing = memory;
+            found = true;
+            break;
+        }
+    }
+
+    if (!found) {
+        if (errorMessage != nullptr) {
+            *errorMessage = QStringLiteral("Memory not found.");
+        }
+        return false;
+    }
+
+    // Preserve id/key/category/createdAt so this replaces the existing record in place
+    // (StorageManager::saveMemory upserts by id) rather than creating a duplicate.
+    existing.value = compact(trimmedValue, 500);
+    existing.pinned = pinned;
+
+    if (!m_storage->saveMemory(existing, errorMessage)) {
+        return false;
+    }
+
+    if (savedDescription != nullptr) {
+        *savedDescription = QStringLiteral("Updated memory: %1").arg(compact(existing.value, 120));
+    }
+    return true;
+}
+
 bool MemoryManager::deleteMemoryById(const QString &memoryId, QString *deletedDescription, QString *errorMessage) const
 {
     if (m_storage == nullptr) {

@@ -43,6 +43,12 @@ public:
     // empty at the start of the next generate() call.
     QString lastDoneReason() const { return m_lastDoneReason; }
 
+    // Ollama's prompt-eval stats for the most recently finished response (0 if the
+    // stream never reported them). Used to build a rolling tokens/sec estimate for
+    // the "waiting for first token" phase of the *next* request.
+    int lastPromptEvalCount() const { return m_lastPromptEvalCount; }
+    qint64 lastPromptEvalDurationNs() const { return m_lastPromptEvalDurationNs; }
+
 signals:
     void backendProbeFinished(bool ok, const QString &message);
     void modelsListed(const QStringList &models, const QString &message);
@@ -133,6 +139,8 @@ private:
     QString m_requestedThinkMode;
     QString m_streamLogicalError;
     QString m_lastDoneReason;
+    int m_lastPromptEvalCount = 0;
+    qint64 m_lastPromptEvalDurationNs = 0;
     QTimer m_phaseTimer;
     QTimer m_totalTimer;
 };

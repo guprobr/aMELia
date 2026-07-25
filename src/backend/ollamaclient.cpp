@@ -515,6 +515,8 @@ void OllamaClient::resetState()
     m_requestedThinkMode.clear();
     m_streamLogicalError.clear();
     m_lastDoneReason.clear();
+    m_lastPromptEvalCount = 0;
+    m_lastPromptEvalDurationNs = 0;
     m_streamPhase = StreamPhase::Idle;
 }
 
@@ -548,6 +550,16 @@ void OllamaClient::parseBufferedLines(bool flushRemainder)
         const QString doneReason = obj.value(QStringLiteral("done_reason")).toString().trimmed();
         if (!doneReason.isEmpty()) {
             m_lastDoneReason = doneReason;
+        }
+
+        // Only present on the final "done" line. Used to build a rolling estimate of
+        // this backend's prompt-eval throughput, so the UI can show a countdown instead
+        // of a bare spinner while the *next* request is waiting for its first token.
+        if (obj.contains(QStringLiteral("prompt_eval_count"))) {
+            m_lastPromptEvalCount = obj.value(QStringLiteral("prompt_eval_count")).toInt();
+        }
+        if (obj.contains(QStringLiteral("prompt_eval_duration"))) {
+            m_lastPromptEvalDurationNs = static_cast<qint64>(obj.value(QStringLiteral("prompt_eval_duration")).toDouble());
         }
 
         QString delta = obj.value(QStringLiteral("response")).toString();

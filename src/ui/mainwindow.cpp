@@ -1306,10 +1306,13 @@ MainWindow::MainWindow(const QString &configPath,
     m_memoryDetails->setReadOnly(true);
     m_memoryDetails->setPlaceholderText(QStringLiteral("Select a memory to inspect its full details and description."));
     m_memoryDetails->setMaximumHeight(180);
+    m_editMemoryButton = new QPushButton(QStringLiteral("✏️ Edit selected"), memoryTab);
+    m_editMemoryButton->setEnabled(false);
     m_deleteMemoryButton = new QPushButton(QStringLiteral("🗑️ Delete selected"), memoryTab);
     m_deleteMemoryButton->setEnabled(false);
 
     auto *memoryButtons = new QHBoxLayout();
+    memoryButtons->addWidget(m_editMemoryButton);
     memoryButtons->addWidget(m_deleteMemoryButton);
     memoryButtons->addStretch(1);
 
@@ -1384,6 +1387,7 @@ MainWindow::MainWindow(const QString &configPath,
     setWidgetTip(m_reindexButton, QStringLiteral("Refresh the indexed Knowledge Base and rebuild changed assets."));
     setWidgetTip(m_refreshModelsButton, QStringLiteral("Query Ollama and refresh the available local model list."));
     setWidgetTip(m_rememberButton, QStringLiteral("Save the current input as a manual memory for future grounded prompts."));
+    setWidgetTip(m_editMemoryButton, QStringLiteral("Edit the text and pinned status of the selected persisted memory entry."));
     setWidgetTip(m_deleteMemoryButton, QStringLiteral("Delete the selected persisted memory entry."));
     setWidgetTip(m_copyLastAnswerButton, QStringLiteral("Copy the most recent full assistant answer to the clipboard."));
     setWidgetTip(m_importFilesButton, QStringLiteral("Import one or more files into the local Knowledge Base."));
@@ -1444,6 +1448,7 @@ MainWindow::MainWindow(const QString &configPath,
     connect(m_newConversationButton, &QPushButton::clicked, this, &MainWindow::newConversationRequested);
     connect(m_deleteConversationButton, &QPushButton::clicked, this, &MainWindow::onDeleteConversationClicked);
     connect(m_rememberButton, &QPushButton::clicked, this, &MainWindow::onRememberClicked);
+    connect(m_editMemoryButton, &QPushButton::clicked, this, &MainWindow::onEditSelectedMemoryClicked);
     connect(m_deleteMemoryButton, &QPushButton::clicked, this, &MainWindow::onDeleteSelectedMemoryClicked);
     connect(m_importFilesButton, &QPushButton::clicked, this, &MainWindow::onImportFilesClicked);
     connect(m_importFolderButton, &QPushButton::clicked, this, &MainWindow::onImportFolderClicked);
@@ -1453,6 +1458,9 @@ MainWindow::MainWindow(const QString &configPath,
         const bool hasSelection = m_memoriesView != nullptr && !m_memoriesView->selectedItems().isEmpty();
         if (m_deleteMemoryButton != nullptr) {
             m_deleteMemoryButton->setEnabled(hasSelection);
+        }
+        if (m_editMemoryButton != nullptr) {
+            m_editMemoryButton->setEnabled(hasSelection);
         }
         updateSelectedMemoryDetails();
     });
@@ -1729,6 +1737,7 @@ void MainWindow::beginResponseProgress(const QString &label)
     m_responseProgressValue = 5;
     m_streamReceivedChars = 0;
     m_streamEstimatedChars = 1400;
+    stopPromptEvalCountdown();
 
     m_taskProgressBar->setVisible(true);
     m_taskProgressBar->setRange(0, 100);
@@ -1775,6 +1784,7 @@ void MainWindow::updateResponseStreamingProgress(const QString &chunk)
     if (!m_responseFirstTokenReceived) {
         m_responseFirstTokenReceived = true;
         m_responseProgressValue = qMax(m_responseProgressValue, 65);
+        stopPromptEvalCountdown();
     }
 
     m_streamReceivedChars += chunk.size();
@@ -1812,6 +1822,7 @@ void MainWindow::finishResponseProgress(const QString &label)
     m_responseProgressValue = 0;
     m_streamReceivedChars = 0;
     m_streamEstimatedChars = 1400;
+    stopPromptEvalCountdown();
 
     QTimer::singleShot(1400, this, [this]() {
         if (!m_responseProgressActive && !m_indexingActive) {
@@ -1836,12 +1847,70 @@ void MainWindow::cancelResponseProgress(const QString &label)
     m_responseProgressValue = 0;
     m_streamReceivedChars = 0;
     m_streamEstimatedChars = 1400;
+    stopPromptEvalCountdown();
 
     QTimer::singleShot(1600, this, [this]() {
         if (!m_responseProgressActive && !m_indexingActive) {
             resetTaskProgressBar();
         }
     });
+}
+
+// Records the estimated wait (from ChatController's rolling prompt-eval throughput
+// average) and starts the clock; the progress bar itself only switches to the
+// countdown display once the "Awaiting first local tokens" status arrives (see
+// setStatusText), so this can arrive slightly before that without visual effect.
+void MainWindow::setPromptEvalEta(int estimatedMs)
+{
+    m_promptEvalEtaMs = estimatedMs > 0 ? estimatedMs : 0;
+    m_promptEvalElapsedTimer.start();
+}
+
+void MainWindow::startPromptEvalCountdown()
+{
+    if (m_taskProgressBar == nullptr || !m_responseProgressActive || m_indexingActive) {
+        return;
+    }
+
+    if (m_promptEvalCountdownTimer == nullptr) {
+        m_promptEvalCountdownTimer = new QTimer(this);
+        m_promptEvalCountdownTimer->setInterval(200);
+        connect(m_promptEvalCountdownTimer, &QTimer::timeout, this, &MainWindow::tickPromptEvalCountdown);
+    }
+
+    m_taskProgressBar->setVisible(true);
+    m_taskProgressBar->setRange(0, 100);
+    tickPromptEvalCountdown();
+    m_promptEvalCountdownTimer->start();
+}
+
+void MainWindow::tickPromptEvalCountdown()
+{
+    if (m_taskProgressBar == nullptr || !m_responseProgressActive || m_promptEvalEtaMs <= 0) {
+        stopPromptEvalCountdown();
+        return;
+    }
+
+    const qint64 elapsedMs = m_promptEvalElapsedTimer.isValid() ? m_promptEvalElapsedTimer.elapsed() : m_promptEvalEtaMs;
+    const double ratio = qBound(0.0, static_cast<double>(elapsedMs) / static_cast<double>(m_promptEvalEtaMs), 1.0);
+    const int value = 60 + static_cast<int>(ratio * 4.0);
+    m_responseProgressValue = qMax(m_responseProgressValue, value);
+    m_taskProgressBar->setValue(m_responseProgressValue);
+
+    if (elapsedMs < m_promptEvalEtaMs) {
+        const int remainingSec = static_cast<int>((m_promptEvalEtaMs - elapsedMs + 999) / 1000);
+        m_taskProgressBar->setFormat(QStringLiteral("Waiting for first token... ~%1s").arg(remainingSec));
+    } else {
+        m_taskProgressBar->setFormat(QStringLiteral("Waiting for first token... (taking longer than expected)"));
+    }
+}
+
+void MainWindow::stopPromptEvalCountdown()
+{
+    if (m_promptEvalCountdownTimer != nullptr) {
+        m_promptEvalCountdownTimer->stop();
+    }
+    m_promptEvalEtaMs = 0;
 }
 
 void MainWindow::appendUserMessage(const QString &text)
@@ -2005,6 +2074,9 @@ void MainWindow::setMemoriesView(const QString &text)
     m_memoriesView->resizeColumnToContents(3);
     if (m_deleteMemoryButton != nullptr) {
         m_deleteMemoryButton->setEnabled(false);
+    }
+    if (m_editMemoryButton != nullptr) {
+        m_editMemoryButton->setEnabled(false);
     }
     updateSelectedMemoryDetails();
 }
@@ -2172,7 +2244,11 @@ void MainWindow::setStatusText(const QString &text)
     } else if (text.startsWith(QStringLiteral("Sending request to local model"), Qt::CaseInsensitive)) {
         setResponseProgressStage(60, QStringLiteral("Sending request to local model..."));
     } else if (text.startsWith(QStringLiteral("Awaiting first local tokens"), Qt::CaseInsensitive)) {
-        setResponseProgressBusy(QStringLiteral("Waiting for first token..."));
+        if (m_promptEvalEtaMs > 0) {
+            startPromptEvalCountdown();
+        } else {
+            setResponseProgressBusy(QStringLiteral("Waiting for first token..."));
+        }
     } else if (text.startsWith(QStringLiteral("Streaming response locally"), Qt::CaseInsensitive)) {
         setResponseProgressStage(65, QStringLiteral("Generating answer..."));
     } else if (text == QStringLiteral("Stopped.")) {
@@ -3506,6 +3582,65 @@ void MainWindow::onDeleteSelectedMemoryClicked()
     }
 
     emit deleteMemoryRequested(memoryId);
+}
+
+void MainWindow::onEditSelectedMemoryClicked()
+{
+    if (m_memoriesView == nullptr) {
+        return;
+    }
+
+    const QList<QTreeWidgetItem *> selectedItems = m_memoriesView->selectedItems();
+    if (selectedItems.isEmpty()) {
+        return;
+    }
+
+    QTreeWidgetItem *item = selectedItems.constFirst();
+    if (item == nullptr) {
+        return;
+    }
+
+    const QString memoryId = item->data(0, Qt::UserRole).toString().trimmed();
+    if (memoryId.isEmpty()) {
+        return;
+    }
+
+    const QString currentValue = item->text(2);
+    const bool currentPinned = item->data(0, Qt::UserRole + 4).toBool();
+
+    QDialog dialog(this);
+    dialog.setWindowTitle(QStringLiteral("Edit memory"));
+    dialog.resize(520, 320);
+
+    auto *layout = new QVBoxLayout(&dialog);
+    auto *label = new QLabel(QStringLiteral("Memory text:"), &dialog);
+    layout->addWidget(label);
+
+    auto *textEdit = new QPlainTextEdit(&dialog);
+    textEdit->setPlainText(currentValue);
+    layout->addWidget(textEdit, 1);
+
+    auto *pinnedCheck = new QCheckBox(QStringLiteral("Pinned (always eligible, boosted in retrieval)"), &dialog);
+    pinnedCheck->setChecked(currentPinned);
+    layout->addWidget(pinnedCheck);
+
+    auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
+    connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+    connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    layout->addWidget(buttons);
+
+    textEdit->setFocus();
+    if (dialog.exec() != QDialog::Accepted) {
+        return;
+    }
+
+    const QString newValue = textEdit->toPlainText().trimmed();
+    if (newValue.isEmpty()) {
+        QMessageBox::warning(this, QStringLiteral("Edit memory"), QStringLiteral("Memory text cannot be empty."));
+        return;
+    }
+
+    emit editMemoryRequested(memoryId, newValue, pinnedCheck->isChecked());
 }
 
 void MainWindow::onImportFilesClicked()

@@ -38,6 +38,7 @@ public:
     void newConversation();
     void loadConversationById(const QString &conversationId);
     void rememberNote(const QString &text);
+    void updateMemoryById(const QString &memoryId, const QString &newValue, bool pinned);
     void deleteMemoryById(const QString &memoryId);
     void clearMemories();
     void setBackendModel(const QString &model);
@@ -82,6 +83,10 @@ signals:
     void backendModelsReady(const QStringList &models, const QString &currentModel);
     void desktopNotificationRequested(const QString &title, const QString &message, int severity);
     void startupFinished();
+    // Estimated wait (ms) before the next request's first token, based on a rolling
+    // average of this backend's prompt-eval throughput. Not emitted until at least one
+    // prior request has reported prompt_eval stats.
+    void promptEvalEtaEstimated(int estimatedMs);
 
 private slots:
     void onSearchStarted(const QString &query, const QString &requestUrl);
@@ -111,6 +116,8 @@ private:
                          const QString &memoryContext);
     void startContinuationGeneration();
     void finalizeAssistantAnswer(const QString &rawText);
+    void recordPromptEvalSample();
+    void emitPromptEvalEtaEstimate(const QVector<LlmChatMessage> &messages);
 
     // contextIsWeak: true when best RAG rerank score < ragConfidenceThreshold.
     // When true, a CONTEXT_QUALITY_WARNING is injected into the developer block.
@@ -260,6 +267,12 @@ private:
     // between them, so it doubles as the running "whole answer" text.
     int m_continuationRoundCount = 0;
     int m_activeGenerationNumCtx = 0;
+
+    // Rolling (EMA) estimate of this backend's prompt-eval throughput in tokens/sec,
+    // built from Ollama's own prompt_eval_count/prompt_eval_duration on each finished
+    // response. 0 until the first sample arrives, at which point promptEvalEtaEstimated()
+    // starts firing before each request.
+    double m_promptEvalTokensPerSecEma = 0.0;
 
     // Guards against the model getting stuck in a degenerate repetition loop
     // (e.g. a markdown table repeating the same row dozens of times) inside

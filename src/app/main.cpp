@@ -224,6 +224,8 @@ int main(int argc, char *argv[])
                          controller, &ChatController::setPrioritizedKnowledgeAssets);
         QObject::connect(window, &MainWindow::rememberRequested,
                          controller, &ChatController::rememberNote);
+        QObject::connect(window, &MainWindow::editMemoryRequested,
+                         controller, &ChatController::updateMemoryById);
         QObject::connect(window, &MainWindow::deleteMemoryRequested,
                          controller, &ChatController::deleteMemoryById);
         QObject::connect(window, &MainWindow::backendModelSelected,
@@ -279,6 +281,8 @@ int main(int argc, char *argv[])
                          window, &MainWindow::setIndexingProgress);
         QObject::connect(controller, &ChatController::statusChanged,
                          window, &MainWindow::setStatusText);
+        QObject::connect(controller, &ChatController::promptEvalEtaEstimated,
+                         window, &MainWindow::setPromptEvalEta);
         QObject::connect(controller, &ChatController::backendSummaryReady,
                          window, &MainWindow::setBackendSummary);
         QObject::connect(controller, &ChatController::diagnosticsReady,

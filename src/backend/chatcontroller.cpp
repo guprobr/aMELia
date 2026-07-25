@@ -1569,6 +1569,23 @@ void ChatController::rememberNote(const QString &text)
     notifyTaskSucceeded(QStringLiteral("Memory saved"), savedDescription);
 }
 
+void ChatController::updateMemoryById(const QString &memoryId, const QString &newValue, bool pinned)
+{
+    QString savedDescription;
+    QString error;
+    if (!m_memoryManager->updateMemoryById(memoryId, newValue, pinned, &savedDescription, &error)) {
+        const QString message = error.isEmpty() ? QStringLiteral("Failed to update memory.") : error;
+        emit systemNotice(message);
+        notifyTaskFailed(QStringLiteral("Memory update failed"), message);
+        return;
+    }
+
+    emit systemNotice(savedDescription);
+    addDiagnostic(QStringLiteral("memory"), savedDescription);
+    refreshMemoryPanel();
+    notifyTaskSucceeded(QStringLiteral("Memory updated"), savedDescription);
+}
+
 void ChatController::deleteMemoryById(const QString &memoryId)
 {
     QString deletedDescription;
@@ -1961,6 +1978,8 @@ void ChatController::onModelFinished(const QString &fullText)
 {
     constexpr int kMaxContinuationRounds = 6;
 
+    recordPromptEvalSample();
+
     const QString doneReason = m_llmClient->lastDoneReason();
     const bool truncatedByLength = doneReason.compare(QStringLiteral("length"), Qt::CaseInsensitive) == 0;
     const bool canContinue = truncatedByLength
@@ -2017,6 +2036,51 @@ void ChatController::finalizeAssistantAnswer(const QString &rawText)
     m_llmClient->setReasoningTraceEnabled(m_reasoningTraceEnabled);
     notifyTaskSucceeded(QStringLiteral("Prompt complete"), QStringLiteral("Amelia finished generating the answer."));
     m_continuationRoundCount = 0;
+}
+
+// Updates the rolling prompt-eval throughput estimate from whatever the backend just
+// reported. Ollama only includes prompt_eval_count/prompt_eval_duration on the final
+// line of a response, so this is a no-op (leaves the prior estimate untouched) for any
+// response that didn't report them.
+void ChatController::recordPromptEvalSample()
+{
+    const int evalCount = m_llmClient->lastPromptEvalCount();
+    const qint64 evalDurationNs = m_llmClient->lastPromptEvalDurationNs();
+    if (evalCount <= 0 || evalDurationNs <= 0) {
+        return;
+    }
+
+    const double tokensPerSec = static_cast<double>(evalCount) / (static_cast<double>(evalDurationNs) / 1e9);
+    if (!std::isfinite(tokensPerSec) || tokensPerSec <= 0.0) {
+        return;
+    }
+
+    constexpr double kEmaWeight = 0.3;
+    m_promptEvalTokensPerSecEma = m_promptEvalTokensPerSecEma > 0.0
+            ? (kEmaWeight * tokensPerSec + (1.0 - kEmaWeight) * m_promptEvalTokensPerSecEma)
+            : tokensPerSec;
+}
+
+// Estimates how long the *next* request will spend evaluating its prompt before the
+// first token arrives, using the rolling throughput estimate above, and lets the UI
+// show a countdown instead of a bare "waiting" spinner. Emits nothing until at least
+// one prior response has reported real prompt_eval stats.
+void ChatController::emitPromptEvalEtaEstimate(const QVector<LlmChatMessage> &messages)
+{
+    if (m_promptEvalTokensPerSecEma <= 0.0) {
+        return;
+    }
+
+    int totalChars = 0;
+    for (const LlmChatMessage &message : messages) {
+        totalChars += message.content.size();
+    }
+
+    const double estimatedTokens = static_cast<double>(totalChars) / kPromptBudgetCharsPerToken;
+    const double estimatedSeconds = estimatedTokens / m_promptEvalTokensPerSecEma;
+    constexpr int kMaxEstimateMs = 120000;
+    const int estimatedMs = qBound(0, static_cast<int>(estimatedSeconds * 1000.0), kMaxEstimateMs);
+    emit promptEvalEtaEstimated(estimatedMs);
 }
 
 void ChatController::onModelError(const QString &message)
@@ -2222,6 +2286,7 @@ void ChatController::startGeneration(const QString &prompt,
     if (!requestReasoningTrace && m_config.ollamaModel.toLower().contains(QStringLiteral("gpt-oss"))) {
         addDiagnostic(QStringLiteral("backend"), QStringLiteral("GPT-OSS may still produce a server-side thinking stream even with Amelia trace capture off. Amelia now hides that trace locally and still uses it to detect pre-answer loops."));
     }
+    emitPromptEvalEtaEstimate(messages);
     emit statusChanged(QStringLiteral("Sending request to local model..."));
     m_llmClient->generate(m_config.ollamaBaseUrl, m_config.ollamaModel, messages);
 }
@@ -2274,6 +2339,7 @@ void ChatController::startContinuationGeneration()
                       .arg(m_continuationRoundCount)
                       .arg(requestNumCtx)
                       .arg(tail.size()));
+    emitPromptEvalEtaEstimate(messages);
     m_llmClient->generate(m_config.ollamaBaseUrl, m_config.ollamaModel, messages);
 }
 

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <QElapsedTimer>
 #include <QHash>
 #include <QJsonObject>
 #include <QMainWindow>
@@ -50,6 +51,7 @@ public:
                              const QStringList &titles,
                              const QString &currentId);
     void setStatusText(const QString &text);
+    void setPromptEvalEta(int estimatedMs);
     void setBusy(bool busy);
     void setIndexingActive(bool active);
     void setIndexingProgress(int value, int maximum, const QString &label);
@@ -69,6 +71,7 @@ signals:
     void newConversationRequested();
     void conversationSelected(const QString &conversationId);
     void rememberRequested(const QString &text);
+    void editMemoryRequested(const QString &memoryId, const QString &newValue, bool pinned);
     void deleteMemoryRequested(const QString &memoryId);
     void backendModelSelected(const QString &model);
     void importPathsRequested(const QStringList &paths, const QString &label);
@@ -99,6 +102,7 @@ private slots:
     void showAboutQtDialog();
     void onClearMemoriesTriggered();
     void onDeleteSelectedMemoryClicked();
+    void onEditSelectedMemoryClicked();
     void onPromptLabGenerateClicked();
     void onPromptLabUseClicked();
     void onPromptLabImportAssetsClicked();
@@ -156,6 +160,9 @@ private:
     void finishResponseProgress(const QString &label = QString());
     void cancelResponseProgress(const QString &label = QString());
     void resetTaskProgressBar();
+    void startPromptEvalCountdown();
+    void tickPromptEvalCountdown();
+    void stopPromptEvalCountdown();
     void updateKnowledgeBaseControlsEnabled();
     bool saveConfigurationJson(const QString &text, QString *errorMessage = nullptr);
     void applyPaletteAwareFormatting();
@@ -201,6 +208,7 @@ private:
     QPushButton *m_newConversationButton = nullptr;
     QPushButton *m_rememberButton = nullptr;
     QPushButton *m_deleteMemoryButton = nullptr;
+    QPushButton *m_editMemoryButton = nullptr;
     QPushButton *m_importFilesButton = nullptr;
     QPushButton *m_importFolderButton = nullptr;
     QPushButton *m_promptLabGenerateButton = nullptr;
@@ -236,6 +244,9 @@ private:
     int m_responseProgressValue = 0;
     int m_streamReceivedChars = 0;
     int m_streamEstimatedChars = 1400;
+    QTimer *m_promptEvalCountdownTimer = nullptr;
+    qint64 m_promptEvalEtaMs = 0;
+    QElapsedTimer m_promptEvalElapsedTimer;
     bool m_indexingActive = false;
     bool m_closePendingAfterIndexCancel = false;
     bool m_knowledgeInventoryRefreshVisible = false;
