@@ -3807,7 +3807,27 @@ void MainWindow::showAboutAmelia()
 {
     QMessageBox::about(this,
                        QStringLiteral("About Amelia"),
-                       QStringLiteral("<b>aMELia Qt6 v%1</b><br><br>A local offline coding tool and assistant built with C++ and Qt6, allegorically considered a <b>MEL</b>: <b>Model Enhancement Lab</b>.<br><br>This build includes copy-friendly colored transcript/diagnostic views, fenced-code formatting, last-answer/code copy helpers, local Ollama inference, persistent knowledge, a first-run connectivity setup, a full JSON configuration editor, richer Prompt Lab KB-aware asset helpers, prompt budgeting, outline-first document generation, asynchronous PDF indexing, and operational diagnostics.")
+                       QStringLiteral(
+                           "<b>aMELia Qt6 v%1</b><br><br>"
+                           "A local offline coding tool and assistant built with C++ and Qt6, "
+                           "allegorically considered a <b>MEL</b>: <b>Model Enhancement Lab</b>."
+                           "<ul>"
+                           "<li>Local-first: talks only to your own Ollama server, no cloud dependency</li>"
+                           "<li>Native in-process PDF extraction + OCR (Qt6::Pdf + libtesseract) and DOCX "
+                           "ingestion (libzip + QXmlStreamReader) — no external subprocesses</li>"
+                           "<li>Hybrid lexical + semantic RAG retrieval with reranking over a persistent "
+                           "local Knowledge Base</li>"
+                           "<li>TOC-aware document-study mode (outline map + section coverage packets) "
+                           "plus an exact-extraction mode for scraper-style prompts</li>"
+                           "<li>Outline planner for structured document generation (MOPs, runbooks, guides)</li>"
+                           "<li>Grounding guardrails that refuse to answer without retrieved context, plus "
+                           "a repetition-loop guard on the visible answer stream</li>"
+                           "<li>Auto-continues past Ollama's context-window limit instead of hard-truncating "
+                           "long answers</li>"
+                           "<li>Adaptive prompt/context budgeting tuned to num_ctx and CPU/GPU runtime profile</li>"
+                           "<li>Persistent memory, session summaries, and versioned Knowledge Base collections</li>"
+                           "<li>Optional sanitized external web search via SearXNG</li>"
+                           "</ul>")
                            .arg(QLatin1StringView(AmeliaVersion::kDisplayVersion)));
 }
 
