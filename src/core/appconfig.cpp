@@ -61,7 +61,7 @@ R"JSON({
   "ollamaInactivityTimeoutMs": 300000,
   "ollamaTotalTimeoutMs": 0,
   "maxDiagnosticLines": 400,
-  "ollamaNumCtx": 16384,
+  "ollamaNumCtx": 32768,
   "ollamaNumThread": 0,
   "ollamaKeepAlive": "10m",
   "ollamaTemperature": 0.05,

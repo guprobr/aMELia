@@ -109,6 +109,8 @@ private:
                          const QString &localContext,
                          const QString &externalContext,
                          const QString &memoryContext);
+    void startContinuationGeneration();
+    void finalizeAssistantAnswer(const QString &rawText);
 
     // contextIsWeak: true when best RAG rerank score < ragConfidenceThreshold.
     // When true, a CONTEXT_QUALITY_WARNING is injected into the developer block.
@@ -249,6 +251,15 @@ private:
     bool m_reasoningFallbackRetryAttempted = false;
     bool m_runnerFailureRetryAttempted = false;
     int m_activeRequestNumCtxOverride = 0;
+
+    // Auto-continue: when Ollama stops a response with done_reason=="length" (num_ctx
+    // filled up mid-answer, not a natural stop), Amelia automatically issues a follow-up
+    // request asking the model to continue exactly where it left off, up to a safety cap,
+    // instead of surfacing a hard-truncated answer. m_streamedAnswerSoFar (below) already
+    // accumulates the visible text across all continuation rounds since it isn't reset
+    // between them, so it doubles as the running "whole answer" text.
+    int m_continuationRoundCount = 0;
+    int m_activeGenerationNumCtx = 0;
 
     // Guards against the model getting stuck in a degenerate repetition loop
     // (e.g. a markdown table repeating the same row dozens of times) inside

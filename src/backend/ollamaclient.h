@@ -35,6 +35,14 @@ public:
 
     void stop() override;
 
+    // Ollama's done_reason for the most recently finished response: "stop" for a
+    // natural completion (matched a stop sequence / model-chosen end of turn), or
+    // "length" when generation was cut off because num_ctx ran out (num_predict is
+    // deliberately left uncapped, so "length" always means the context window filled
+    // up). Valid to read once responseFinished()/responseError() has fired; reset to
+    // empty at the start of the next generate() call.
+    QString lastDoneReason() const { return m_lastDoneReason; }
+
 signals:
     void backendProbeFinished(bool ok, const QString &message);
     void modelsListed(const QStringList &models, const QString &message);

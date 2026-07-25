@@ -1098,11 +1098,13 @@ void ChatController::sendUserPrompt(const QString &prompt, bool allowExternalSea
     m_busy = true;
     m_streamChunkCount = 0;
     resetAnswerLoopGuard();
+    m_continuationRoundCount = 0;
     m_requestStartedMs = nowMs();
     m_forceDisableReasoningForActiveRequest = false;
     m_reasoningFallbackRetryAttempted = false;
     m_runnerFailureRetryAttempted = false;
     m_activeRequestNumCtxOverride = 0;
+    m_continuationRoundCount = 0;
     resetReasoningLoopGuard();
     emit busyChanged(true);
     emit statusChanged(QStringLiteral("Analyzing knowledge base and preparing grounded context..."));
@@ -1900,7 +1902,11 @@ void ChatController::onModelStarted()
     if (m_reasoningTraceEnabled && !m_forceDisableReasoningForActiveRequest) {
         addDiagnostic(QStringLiteral("reasoning"), QStringLiteral("Waiting for Ollama thinking tokens or explicit reasoning trace notes..."));
     }
-    notifyTaskStarted(QStringLiteral("Generation running"), QStringLiteral("The local model accepted the request and is preparing the response."));
+    // Suppress the "Generation running" toast for auto-continue rounds so hitting the
+    // context limit on a long answer doesn't spam a notification per round.
+    if (m_continuationRoundCount == 0) {
+        notifyTaskStarted(QStringLiteral("Generation running"), QStringLiteral("The local model accepted the request and is preparing the response."));
+    }
 }
 
 void ChatController::onModelDelta(const QString &text)
@@ -1953,7 +1959,45 @@ void ChatController::onModelReasoningTrace(const QString &text)
 
 void ChatController::onModelFinished(const QString &fullText)
 {
-    const QString cleaned = TranscriptFormatter::sanitizeFinalAssistantMarkdown(fullText).trimmed();
+    constexpr int kMaxContinuationRounds = 6;
+
+    const QString doneReason = m_llmClient->lastDoneReason();
+    const bool truncatedByLength = doneReason.compare(QStringLiteral("length"), Qt::CaseInsensitive) == 0;
+    const bool canContinue = truncatedByLength
+            && !fullText.trimmed().isEmpty()
+            && m_continuationRoundCount < kMaxContinuationRounds;
+
+    if (canContinue) {
+        ++m_continuationRoundCount;
+        addDiagnostic(QStringLiteral("backend"),
+                      QStringLiteral("Answer hit the context limit (done_reason=length) after %1 total chars; auto-continuing (round %2/%3).")
+                          .arg(m_streamedAnswerSoFar.size())
+                          .arg(m_continuationRoundCount)
+                          .arg(kMaxContinuationRounds));
+        emit statusChanged(QStringLiteral("Answer reached the context limit; continuing automatically (round %1/%2)...")
+                           .arg(m_continuationRoundCount)
+                           .arg(kMaxContinuationRounds));
+        QTimer::singleShot(0, this, [this]() {
+            startContinuationGeneration();
+        });
+        return;
+    }
+
+    if (truncatedByLength) {
+        addDiagnostic(QStringLiteral("backend"),
+                      QStringLiteral("Answer still hit the context limit after %1 auto-continue round(s); stopping to avoid a runaway loop.")
+                          .arg(m_continuationRoundCount));
+    }
+
+    // m_streamedAnswerSoFar accumulates the visible answer across every auto-continue
+    // round (it's only cleared at the start of a brand-new prompt or a full restart),
+    // so it — not the last round's fullText alone — is the authoritative complete answer.
+    finalizeAssistantAnswer(m_streamedAnswerSoFar.isEmpty() ? fullText : m_streamedAnswerSoFar);
+}
+
+void ChatController::finalizeAssistantAnswer(const QString &rawText)
+{
+    const QString cleaned = TranscriptFormatter::sanitizeFinalAssistantMarkdown(rawText).trimmed();
     m_history.push_back({QStringLiteral("assistant"), cleaned});
     persistMessage(QStringLiteral("assistant"), cleaned);
     updateCurrentSummary();
@@ -1972,6 +2016,7 @@ void ChatController::onModelFinished(const QString &fullText)
     restoreDefaultGenerationConfig();
     m_llmClient->setReasoningTraceEnabled(m_reasoningTraceEnabled);
     notifyTaskSucceeded(QStringLiteral("Prompt complete"), QStringLiteral("Amelia finished generating the answer."));
+    m_continuationRoundCount = 0;
 }
 
 void ChatController::onModelError(const QString &message)
@@ -2079,7 +2124,10 @@ void ChatController::startGeneration(const QString &prompt,
         const QString refusal = buildGroundingRefusal(prompt);
         addDiagnostic(QStringLiteral("guardrail"), QStringLiteral("Refused ungrounded answer for project-scoped prompt (no context)"));
         notifyTaskFailed(QStringLiteral("Grounding required"), QStringLiteral("The request could not be answered because no grounded context was retrieved."));
-        onModelFinished(refusal);
+        // This is a canned refusal, not a real generation round — go straight to
+        // finalizeAssistantAnswer() so it can't be misread as a continuation candidate
+        // off a stale done_reason left over from an earlier, unrelated request.
+        finalizeAssistantAnswer(refusal);
         return;
     }
 
@@ -2162,6 +2210,7 @@ void ChatController::startGeneration(const QString &prompt,
     AppConfig requestConfig = m_config;
     requestConfig.ollamaNumCtx = effectiveNumCtx;
     m_llmClient->setGenerationConfig(requestConfig);
+    m_activeGenerationNumCtx = effectiveNumCtx;
 
     addDiagnostic(QStringLiteral("backend"), QStringLiteral("Sending chat request to Ollama (%1 message(s), num_ctx=%2, temperature=%3, top_p=%4, top_k=%5, think=%6)")
                   .arg(messages.size())
@@ -2177,6 +2226,56 @@ void ChatController::startGeneration(const QString &prompt,
     m_llmClient->generate(m_config.ollamaBaseUrl, m_config.ollamaModel, messages);
 }
 
+// Re-sends the same grounding context as the original request (so the continuation
+// stays just as grounded as the rest of the answer), with the tail of what's already
+// been written appended as an assistant turn and an explicit instruction to continue
+// from there. Reasoning is forced off for continuation rounds: round 1 already
+// resolved any thinking the model needed to do, and skipping it keeps each round's
+// context budget focused on prose instead of re-thinking from scratch.
+void ChatController::startContinuationGeneration()
+{
+    if (!m_busy) {
+        return;
+    }
+
+    QVector<LlmChatMessage> messages = buildPromptMessages(m_activePrompt,
+                                                            m_activeLocalContext,
+                                                            m_activeExternalContext,
+                                                            m_activeMemoryContext,
+                                                            m_currentSummary,
+                                                            false);
+
+    constexpr int kContinuationTailChars = 3000;
+    const QString tail = m_streamedAnswerSoFar.right(kContinuationTailChars);
+    messages.push_back({QStringLiteral("assistant"), tail});
+    messages.push_back({
+        QStringLiteral("user"),
+        QStringLiteral(
+            "Your previous answer was cut off because it ran out of space, not because it "
+            "was finished. Continue writing EXACTLY where you left off.\n"
+            "- Do not repeat anything you already wrote, including the text shown above.\n"
+            "- Do not add a preamble, acknowledgement, or phrases like 'continuing from where "
+            "I left off'.\n"
+            "- Do not restart headers or sections you already completed.\n"
+            "- If the text above ends mid-sentence or mid-list-item, complete it naturally "
+            "before moving on.\n"
+            "- End with <END> once the full answer is actually complete.")
+    });
+
+    const int requestNumCtx = m_activeGenerationNumCtx > 0 ? m_activeGenerationNumCtx : effectiveRequestNumCtx();
+    AppConfig requestConfig = m_config;
+    requestConfig.ollamaNumCtx = requestNumCtx;
+    m_llmClient->setGenerationConfig(requestConfig);
+    m_llmClient->setReasoningTraceEnabled(false);
+    m_llmClient->setForceThinkOff(true);
+
+    addDiagnostic(QStringLiteral("backend"),
+                  QStringLiteral("Sending continuation request to Ollama (round %1, num_ctx=%2, %3 char tail carried forward)")
+                      .arg(m_continuationRoundCount)
+                      .arg(requestNumCtx)
+                      .arg(tail.size()));
+    m_llmClient->generate(m_config.ollamaBaseUrl, m_config.ollamaModel, messages);
+}
 
 void ChatController::resetReasoningLoopGuard()
 {
@@ -2312,6 +2411,7 @@ void ChatController::handleVisibleAnswerRepetitionLoop()
     m_llmClient->setReasoningTraceEnabled(m_reasoningTraceEnabled);
     notifyTaskSucceeded(QStringLiteral("Prompt complete (truncated)"),
                         QStringLiteral("Amelia stopped the answer early after detecting a repetition loop."));
+    m_continuationRoundCount = 0;
 }
 
 QString ChatController::normalizeReasoningTraceForLoopDetection(const QString &text) const
@@ -2505,6 +2605,7 @@ void ChatController::restartActiveGenerationAfterRunnerFailure()
     resetReasoningLoopGuard();
     m_streamChunkCount = 0;
     resetAnswerLoopGuard();
+    m_continuationRoundCount = 0;
     m_requestStartedMs = nowMs();
 
     const int retryNumCtx = computeRunnerFallbackNumCtx(m_config.ollamaNumCtx);
@@ -2546,6 +2647,7 @@ void ChatController::restartActiveGenerationWithoutReasoning()
     resetReasoningLoopGuard();
     m_streamChunkCount = 0;
     resetAnswerLoopGuard();
+    m_continuationRoundCount = 0;
     m_requestStartedMs = nowMs();
     m_llmClient->stop();
 
