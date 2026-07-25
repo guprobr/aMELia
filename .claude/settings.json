@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(xargs cat)",
+      "Bash(cmake .. -DCMAKE_BUILD_TYPE=Debug)",
+      "Bash(QT_QPA_PLATFORM=offscreen ./pdftest)",
+      "Bash(rm -f /tmp/claude-1000/-home-guzpido-amelia-qt6/836508ba-0a69-49ea-aea9-ae48409d4f02/scratchpad/*.pdf /tmp/claude-1000/-home-guzpido-amelia-qt6/836508ba-0a69-49ea-aea9-ae48409d4f02/scratchpad/*.png /tmp/claude-1000/-home-guzpido-amelia-qt6/836508ba-0a69-49ea-aea9-ae48409d4f02/scratchpad/pdftest /tmp/claude-1000/-home-guzpido-amelia-qt6/836508ba-0a69-49ea-aea9-ae48409d4f02/scratchpad/pdftest2)"
+    ],
+    "additionalDirectories": [
+      "/tmp/claude-1000/-home-guzpido-amelia-qt6/836508ba-0a69-49ea-aea9-ae48409d4f02/scratchpad"
+    ]
+  }
+}

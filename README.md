@@ -1,19 +1,33 @@
-# aMELia Qt6 v9.19.9
+# aMELia Qt6 v10.0.0
 
 Amelia is a local-first Qt6/C++ coding and cloud assistant that talks to a local Ollama server, stores its state under `~/.amelia_qt6`, indexes a local knowledge base, and can optionally use sanitized external web search through SearXNG.
 
-This build rolls forward the existing bootstrap, indexing, transcript, Prompt Lab, notification, and progress-bar work, and adds a Knowledge Base collection model with preserved folder structure, a tree-view browser, a hard-locked Knowledge Base root and safer workspace-jail boundaries under `~/.amelia_qt6`, stronger transcript code-block handling, first-run service prompts, a full JSON configuration editor, and a context-aware document-study budget policy that now respects Ollama `num_ctx` end-to-end, plus a generic one-shot fallback retry when Ollama reports that the model runner stopped unexpectedly during a large grounded request. Version 9.19.8 keeps the earlier indexing RAM fixes, hard-disables Knowledge Base interaction while a prompt or reindex is in flight, fixes the document-study `num_ctx` reserve bug, keeps numbered procedure leads attached to following command/config lines across semantic block building and PDF page breaks, strengthens section-preview stitching, adds an exact-extraction retrieval mode for exhaustive scraper-style prompts so Amelia can emit ordered raw chunk windows instead of only lossy section summaries, follows the active Qt/system palette far more closely across widgets, labels, transcript cards, diagnostics, and in-app notifications, broadens snippet extraction for large documents and external search results, fixes the palette-helper compile regression in streamed assistant rendering, and repairs stray literal `\n\n` layout artifacts in final markdown output. aMELia is also allegorically considered a MEL: Model Enhancement Lab.
+Version 10.0.0 removes Amelia's last external-binary dependencies and fixes the cross-platform build: PDF ingestion and OCR now run fully in-process against linked libraries instead of shelling out to `pdftotext`/`pdftoppm`/`tesseract`, and the CMake build no longer hard-requires Linux-only components (QtDBus, pkg-config) to configure. Version 9.19.9 rolled forward the existing bootstrap, indexing, transcript, Prompt Lab, notification, and progress-bar work, and adds a Knowledge Base collection model with preserved folder structure, a tree-view browser, a hard-locked Knowledge Base root and safer workspace-jail boundaries under `~/.amelia_qt6`, stronger transcript code-block handling, first-run service prompts, a full JSON configuration editor, and a context-aware document-study budget policy that now respects Ollama `num_ctx` end-to-end, plus a generic one-shot fallback retry when Ollama reports that the model runner stopped unexpectedly during a large grounded request. Version 9.19.8 keeps the earlier indexing RAM fixes, hard-disables Knowledge Base interaction while a prompt or reindex is in flight, fixes the document-study `num_ctx` reserve bug, keeps numbered procedure leads attached to following command/config lines across semantic block building and PDF page breaks, strengthens section-preview stitching, adds an exact-extraction retrieval mode for exhaustive scraper-style prompts so Amelia can emit ordered raw chunk windows instead of only lossy section summaries, follows the active Qt/system palette far more closely across widgets, labels, transcript cards, diagnostics, and in-app notifications, broadens snippet extraction for large documents and external search results, fixes the palette-helper compile regression in streamed assistant rendering, and repairs stray literal `\n\n` layout artifacts in final markdown output. aMELia is also allegorically considered a MEL: Model Enhancement Lab.
 
 NOTE: prompt transcripts are first generated in markdown but after it finishes, they should be properly formatted.
 
+## What changed in v10.0.0
+
+- **native PDF/OCR pipeline**: replaced the `pdftotext`/`pdftoppm`/`tesseract` `QProcess` subprocesses with `Qt6::Pdf` (`QPdfDocument`/`QPdfSelection`) for text extraction and page rasterization, and libtesseract's C++ API (`TessBaseAPI`) for OCR, linked directly into the binary. No more external CLI tools, no `QProcess`, no OCR temp files on disk
+- fixed a rendering bug found while verifying the migration: `QPdfDocument::render()` returns a transparent-background image (alpha 0, RGB 0,0,0), so converting it straight to grayscale for OCR produced an all-black image and Tesseract would have silently returned empty text on every scanned page. Pages are now composited onto opaque white before grayscale conversion
+- each worker thread keeps one lazily-initialized `TessBaseAPI` instance (language data loaded once, not once per page), with Tesseract's internal layout/diacritic diagnostics redirected away from stderr instead of spamming the console on every OCR'd page
+- sources whose PDF extractor used OCR are now tagged in the Knowledge Base inventory as `pdf:qtpdf-paged+ocr(Np)`; a plain load failure is tagged `pdf:load-failed`
+- requires `qt6-pdf-dev`, `libtesseract-dev`, `libleptonica-dev` to build and the `tesseract-ocr-eng` language-data package at runtime (see the updated package list below); `poppler-utils` and `tesseract-ocr` (the CLI tools) are no longer required at all
+- **cross-platform build fixes**: `Qt6::DBus` (used only for freedesktop desktop-notification integration, which already had a `QSystemTrayIcon` fallback) is no longer a hard-required component — it's only requested and linked on Linux/BSD, where mainstream Windows/macOS Qt distributions don't ship it anyway. Tesseract/Leptonica discovery now falls back from pkg-config to each library's own CMake `CONFIG` package (e.g. vcpkg) when pkg-config isn't available. The `.desktop` launcher and hicolor icon `install()` rules, which are freedesktop/XDG-only concepts, are now gated to Unix-only installs
+
+### Reindex note
+
+- PDF sources need a manual Knowledge Base reindex to pick up the new extractor: the cache-staleness check only compares file mtime/size, not extractor logic, so unchanged PDFs on disk keep serving their old `pdftotext`-era cached chunks until you trigger a reindex yourself
+
 ## What changed in v9.19.9
 
-- adds an OCR fallback for PDF ingestion: any page that `pdftotext` returns as near-blank (fewer than 6 words) is now re-rendered at 300dpi via `pdftoppm` and run through `tesseract`, and the OCR'd text is spliced back into the page in place of the near-blank original if it recovered more words. This targets scanned handbook pages, photographed diagrams, and CLI screenshots embedded as images, which previously indexed as silently empty gaps
+- PDF ingestion and OCR are now fully native: Amelia no longer shells out to `pdftotext`, `pdftoppm`, or the `tesseract` CLI. It links `Qt6::Pdf` (`QPdfDocument`/`QPdfSelection`) directly for text extraction and page rasterization, and libtesseract's C++ API directly for OCR — no external binaries, no `QProcess`, no temp files on disk for OCR pages
+- any page whose extracted text comes back near-blank (fewer than 6 words) is re-rendered in-process at 300dpi as a grayscale `QImage` and fed straight into a `TessBaseAPI` instance; the OCR'd text is spliced back into the page in place of the near-blank original if it recovered more words. This targets scanned handbook pages, photographed diagrams, and CLI screenshots embedded as images, which previously indexed as silently empty gaps
 - OCR is per-page and gated on word count, so born-digital pages (the common case) never pay the OCR cost — only pages that actually look image-only get rendered and OCR'd
-- OCR results are cached per page number within a single extraction pass, so the `-layout` and `-raw` extraction attempts for the same file never re-OCR the same page twice
-- entirely optional at runtime: if `tesseract` or `pdftoppm` aren't on `PATH`, Amelia detects that once and skips OCR silently, falling back to the pre-existing pdftotext-only behavior
-- sources whose PDF extractor used OCR are now tagged in the Knowledge Base inventory as `pdf:pdftotext-layout-paged+ocr(Np)` (or `-raw-paged+ocr(Np)`), so you can see which files benefited
-- requires the new `tesseract-ocr` apt package (see the updated package list below); `pdftoppm` ships with the `poppler-utils` package Amelia already depends on
+- each worker thread keeps one lazily-initialized `TessBaseAPI` instance (language data is loaded once, not once per page), and OCR results are cached per page index within a single extraction pass so a given page is never re-OCR'd twice
+- OCR availability is checked once by attempting to initialize the Tesseract engine; if `eng.traineddata` isn't installed, Amelia detects that once and skips OCR silently, falling back to plain text extraction
+- sources whose PDF extractor used OCR are now tagged in the Knowledge Base inventory as `pdf:qtpdf-paged+ocr(Np)`, so you can see which files benefited
+- requires `qt6-pdf-dev`, `libtesseract-dev`, `libleptonica-dev` to build and the `tesseract-ocr-eng` language-data package at runtime (see the updated package list below); `poppler-utils` and `tesseract-ocr` (the CLI tools) are no longer required at all
 
 - replaces the regex/line-shape heuristics that decided chunk boundaries (`isProceduralLeadLine`, `isStructuredCodeLikeLine`, etc.) with an embedding-similarity-driven merge: atomic blocks are now folded into a chunk as long as they stay semantically on-topic, and a boundary is only cut once the running chunk has reached a reasonable size *and* the next block's embedding has drifted away (cosine similarity) from the chunk built so far
 - this directly targets the recurring "gap" failure mode in technical handbooks, where a numbered procedure step, its command block, and its output got separated because a char-count threshold happened to fall between them even though they were clearly one unit — chunk boundaries now follow meaning instead of guessing from line patterns
@@ -83,8 +97,10 @@ sudo apt install -y \
   qt6-tools-dev-tools \
   qt6-svg-dev \
   qt6-imageformats-plugins \
-  poppler-utils \
-  tesseract-ocr \
+  qt6-pdf-dev \
+  libtesseract-dev \
+  libleptonica-dev \
+  tesseract-ocr-eng \
   curl \
   git
 ```
@@ -94,8 +110,9 @@ Why these matter:
 - `qt6-base-dev` -> Qt Core / Widgets / Network / Concurrent / tray integration
 - `qt6-tools-dev` and `qt6-tools-dev-tools` -> standard Qt6 dev tooling on Ubuntu
 - `qt6-svg-dev` / `qt6-imageformats-plugins` -> SVG logo rendering and runtime image support
-- `poppler-utils` -> provides `pdftotext` and `pdftoppm`, which Amelia uses to ingest PDFs and to rasterize individual pages for OCR
-- `tesseract-ocr` -> OCR engine Amelia falls back to for scanned pages / screenshots inside a PDF that have no embedded text layer (optional at runtime: if it isn't installed, Amelia just skips OCR and behaves as before)
+- `qt6-pdf-dev` -> `QPdfDocument`/`QPdfSelection`, which Amelia links directly to extract PDF text and rasterize pages for OCR (no `pdftotext`/`pdftoppm` subprocess anymore)
+- `libtesseract-dev` / `libleptonica-dev` -> libtesseract's C++ API, which Amelia links directly for in-process OCR (no `tesseract` CLI subprocess anymore)
+- `tesseract-ocr-eng` -> the English `eng.traineddata` language data libtesseract loads at runtime; without it OCR silently stays disabled
 - `curl` -> convenient for testing Ollama and SearXNG endpoints
 
 ## Build
@@ -315,16 +332,20 @@ Amelia falls back to `QApplication::alert()` when native tray popups are not ava
 
 ### PDFs do not index
 
-Make sure `pdftotext` exists:
+PDF text extraction is built into the binary (`Qt6::Pdf`), so there is no external tool to check on `PATH`. If a PDF fails to extract, check the Knowledge Base inventory for its `pdf:load-failed` tag — this means the document is encrypted, corrupt, or otherwise unsupported by `QPdfDocument`.
+
+### Scanned/image-only PDF pages are not OCR'd
+
+OCR requires the `eng.traineddata` language file. Confirm it is installed:
 
 ```bash
-which pdftotext
+dpkg -L tesseract-ocr-eng | grep traineddata
 ```
 
 If not:
 
 ```bash
-sudo apt install poppler-utils
+sudo apt install tesseract-ocr-eng
 ```
 
 ### New defaults did not take effect

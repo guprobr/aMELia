@@ -12,16 +12,20 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QHash>
+#include <QImage>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
-#include <QProcess>
+#include <QPainter>
+#include <QPdfDocument>
+#include <QPdfSelection>
 #include <QRegularExpression>
 #include <QSaveFile>
 #include <QSet>
-#include <QStandardPaths>
-#include <QTemporaryDir>
 #include <utility>
+
+#include <tesseract/baseapi.h>
+#include <tesseract/ocrclass.h>
 
 namespace {
 bool isCancelRequested(const std::atomic_bool *cancelRequested);
@@ -968,89 +972,104 @@ bool isCancelRequested(const std::atomic_bool *cancelRequested)
     return cancelRequested != nullptr && cancelRequested->load(std::memory_order_relaxed);
 }
 
+// One TessBaseAPI per worker thread: Init() loads language data from disk,
+// so it's cached lazily per-thread rather than paid on every page.
+tesseract::TessBaseAPI *threadLocalOcrEngine()
+{
+    thread_local tesseract::TessBaseAPI engine;
+    thread_local bool initialized = false;
+    thread_local bool ready = false;
+    if (!initialized) {
+        initialized = true;
+        ready = engine.Init(nullptr, "eng") == 0;
+        if (ready) {
+            engine.SetPageSegMode(tesseract::PSM_AUTO);
+            // Tesseract writes layout/diacritic diagnostics straight to stderr
+            // by default; redirect that debug stream instead of spamming the
+            // app's console on every OCR'd page.
+#ifdef Q_OS_WIN
+            engine.SetVariable("debug_file", "NUL");
+#else
+            engine.SetVariable("debug_file", "/dev/null");
+#endif
+        }
+    }
+    return ready ? &engine : nullptr;
+}
+
 bool ocrToolsAvailable()
 {
-    static const bool available = !QStandardPaths::findExecutable(QStringLiteral("tesseract")).isEmpty()
-            && !QStandardPaths::findExecutable(QStringLiteral("pdftoppm")).isEmpty();
-    return available;
+    return threadLocalOcrEngine() != nullptr;
 }
 
-// Renders a single PDF page to a grayscale PNG (via pdftoppm) and runs
-// tesseract on it. Used only for pages that pdftotext returns near-empty for
-// (i.e. likely a scanned image or a screenshot with no embedded text layer),
-// so the common case of born-digital PDFs never pays this cost.
-QString ocrPageText(const QString &pdfPath, int pageNumber, std::atomic_bool *cancelRequested)
+bool tessCancelCallback(void *cancelThis, int)
 {
-    QTemporaryDir tempDir;
-    if (!tempDir.isValid()) {
-        return QString();
-    }
-    const QString imagePrefix = tempDir.filePath(QStringLiteral("ocr-page"));
-    const QString imagePath = imagePrefix + QStringLiteral(".png");
-
-    auto runProcess = [&](const QString &program, const QStringList &arguments) -> bool {
-        QProcess process;
-        process.start(program, arguments);
-        if (!process.waitForStarted(1500)) {
-            return false;
-        }
-        while (!process.waitForFinished(150)) {
-            if (isCancelRequested(cancelRequested)) {
-                process.kill();
-                process.waitForFinished(1000);
-                return false;
-            }
-        }
-        if (isCancelRequested(cancelRequested)) {
-            process.kill();
-            process.waitForFinished(1000);
-            return false;
-        }
-        return process.exitStatus() == QProcess::NormalExit && process.exitCode() == 0;
-    };
-
-    const bool rendered = runProcess(QStringLiteral("pdftoppm"),
-                                     {QStringLiteral("-f"), QString::number(pageNumber),
-                                      QStringLiteral("-l"), QString::number(pageNumber),
-                                      QStringLiteral("-r"), QStringLiteral("300"),
-                                      QStringLiteral("-gray"),
-                                      QStringLiteral("-singlefile"),
-                                      QStringLiteral("-png"),
-                                      pdfPath,
-                                      imagePrefix});
-    if (!rendered || !QFile::exists(imagePath)) {
-        return QString();
-    }
-
-    QProcess ocrProcess;
-    ocrProcess.start(QStringLiteral("tesseract"),
-                     {imagePath, QStringLiteral("stdout"),
-                      QStringLiteral("-l"), QStringLiteral("eng"),
-                      QStringLiteral("--psm"), QStringLiteral("3")});
-    if (!ocrProcess.waitForStarted(1500)) {
-        return QString();
-    }
-    while (!ocrProcess.waitForFinished(150)) {
-        if (isCancelRequested(cancelRequested)) {
-            ocrProcess.kill();
-            ocrProcess.waitForFinished(1000);
-            return QString();
-        }
-    }
-    if (ocrProcess.exitStatus() != QProcess::NormalExit || ocrProcess.exitCode() != 0) {
-        return QString();
-    }
-    return QString::fromUtf8(ocrProcess.readAllStandardOutput());
+    return isCancelRequested(static_cast<const std::atomic_bool *>(cancelThis));
 }
 
-// Splits pdftotext's raw (pre-cleanup) output on form-feed page breaks and
+// Renders a single PDF page to a grayscale image via QPdfDocument and runs
+// libtesseract on it in-process. Used only for pages whose embedded text
+// layer comes back near-empty (i.e. likely a scanned image or a screenshot),
+// so the common case of born-digital PDFs never pays this cost.
+QString ocrPageText(QPdfDocument *document, int pageIndex, std::atomic_bool *cancelRequested)
+{
+    tesseract::TessBaseAPI *engine = threadLocalOcrEngine();
+    if (engine == nullptr || isCancelRequested(cancelRequested)) {
+        return QString();
+    }
+
+    const QSizeF pointSize = document->pagePointSize(pageIndex);
+    if (pointSize.width() <= 0 || pointSize.height() <= 0) {
+        return QString();
+    }
+
+    constexpr qreal kRenderDpi = 300.0;
+    const QSize pixelSize(qMax(1, qRound(pointSize.width() * kRenderDpi / 72.0)),
+                          qMax(1, qRound(pointSize.height() * kRenderDpi / 72.0)));
+
+    QImage image = document->render(pageIndex, pixelSize, QPdfDocumentRenderOptions());
+    if (image.isNull() || isCancelRequested(cancelRequested)) {
+        return QString();
+    }
+
+    // QPdfDocument::render() paints onto a transparent canvas (background
+    // alpha 0, RGB 0,0,0), so converting straight to grayscale would read
+    // every pixel — background included — as black. Composite onto opaque
+    // white first so the page renders as normal black-on-white for OCR.
+    QImage opaque(image.size(), QImage::Format_RGB32);
+    opaque.fill(Qt::white);
+    {
+        QPainter compositor(&opaque);
+        compositor.drawImage(0, 0, image);
+    }
+    image = opaque.convertToFormat(QImage::Format_Grayscale8);
+
+    engine->SetImage(image.constBits(), image.width(), image.height(), 1,
+                     static_cast<int>(image.bytesPerLine()));
+
+    tesseract::ETEXT_DESC monitor;
+    monitor.cancel = tessCancelCallback;
+    monitor.cancel_this = cancelRequested;
+
+    if (engine->Recognize(&monitor) != 0) {
+        engine->Clear();
+        return QString();
+    }
+
+    char *rawText = engine->GetUTF8Text();
+    const QString result = rawText != nullptr ? QString::fromUtf8(rawText) : QString();
+    delete[] rawText;
+    engine->Clear();
+    return result;
+}
+
+// Splits the raw (pre-cleanup) per-page text on form-feed page breaks and
 // re-OCRs any page whose extracted word count is suspiciously low — the
 // signature of a scanned page, a photographed diagram, or a CLI screenshot
-// with no embedded text layer, all of which pdftotext silently returns as
-// blank or near-blank. ocrCache is keyed by 1-based PDF page number and
-// shared across the -layout and -raw extraction attempts for the same file
-// so a given page is only ever rendered/OCR'd once.
-QString ocrAugmentLowContentPages(const QString &pdfPath,
+// with no embedded text layer, all of which the PDF text layer silently
+// returns as blank or near-blank. ocrCache is keyed by 0-based PDF page
+// index so a given page is only ever rendered/OCR'd once.
+QString ocrAugmentLowContentPages(QPdfDocument *document,
                                   const QString &rawExtractedText,
                                   std::atomic_bool *cancelRequested,
                                   QHash<int, QString> *ocrCache,
@@ -1080,14 +1099,13 @@ QString ocrAugmentLowContentPages(const QString &pdfPath,
             continue;
         }
 
-        const int pageNumber = i + 1;
         QString ocrText;
-        const auto cachedIt = ocrCache->constFind(pageNumber);
+        const auto cachedIt = ocrCache->constFind(i);
         if (cachedIt != ocrCache->cend()) {
             ocrText = cachedIt.value();
         } else {
-            ocrText = ocrPageText(pdfPath, pageNumber, cancelRequested).trimmed();
-            ocrCache->insert(pageNumber, ocrText);
+            ocrText = ocrPageText(document, i, cancelRequested).trimmed();
+            ocrCache->insert(i, ocrText);
         }
         if (ocrText.isEmpty() || countWordsInText(ocrText) <= wordCount) {
             continue;
@@ -1110,78 +1128,47 @@ bool readTextFile(const QString &path, QString *text, QString *extractor, std::a
     QFileInfo info(path);
     const QString suffix = info.suffix().toLower();
     if (suffix == QStringLiteral("pdf")) {
-        auto runPdfToText = [&](const QStringList &arguments, QString *output) -> bool {
-            QProcess process;
-            process.start(QStringLiteral("pdftotext"), arguments);
-            if (!process.waitForStarted(1500)) {
-                return false;
+        QPdfDocument document;
+        if (document.load(path) != QPdfDocument::Error::None) {
+            if (extractor != nullptr) {
+                *extractor = isCancelRequested(cancelRequested)
+                        ? QStringLiteral("canceled")
+                        : QStringLiteral("pdf:load-failed");
             }
-            while (!process.waitForFinished(150)) {
-                if (isCancelRequested(cancelRequested)) {
-                    process.kill();
-                    process.waitForFinished(1000);
-                    return false;
-                }
-            }
+            return false;
+        }
+
+        const int pageCount = document.pageCount();
+        QStringList pages;
+        pages.reserve(pageCount);
+        for (int page = 0; page < pageCount; ++page) {
             if (isCancelRequested(cancelRequested)) {
-                process.kill();
-                process.waitForFinished(1000);
+                if (extractor != nullptr) {
+                    *extractor = QStringLiteral("canceled");
+                }
                 return false;
             }
-            if (process.exitStatus() != QProcess::NormalExit || process.exitCode() != 0) {
-                return false;
-            }
-            if (output != nullptr) {
-                *output = QString::fromUtf8(process.readAllStandardOutput());
-            }
-            return true;
-        };
+            const QPdfSelection selection = document.getAllText(page);
+            pages << (selection.isValid() ? selection.text() : QString());
+        }
+
+        QString extractedText = pages.join(QChar('\f'));
 
         QHash<int, QString> ocrCache;
-        int layoutOcrPagesApplied = 0;
-        int rawOcrPagesApplied = 0;
+        int ocrPagesApplied = 0;
+        extractedText = ocrAugmentLowContentPages(&document, extractedText, cancelRequested, &ocrCache, &ocrPagesApplied);
 
-        QString extractedText;
-        bool extracted = runPdfToText({QStringLiteral("-enc"), QStringLiteral("UTF-8"), QStringLiteral("-layout"), path, QStringLiteral("-")},
-                                      &extractedText);
-        QString extractorName = QStringLiteral("pdf:pdftotext-layout-paged");
-        if (extracted) {
-            extractedText = ocrAugmentLowContentPages(path, extractedText, cancelRequested, &ocrCache, &layoutOcrPagesApplied);
-
-            const QString normalized = cleanedPdfText(extractedText, cancelRequested);
-            const int wordCount = countWordsInText(normalized);
-            int ocrPagesApplied = layoutOcrPagesApplied;
-            if (wordCount < 80) {
-                QString fallbackText;
-                if (runPdfToText({QStringLiteral("-enc"), QStringLiteral("UTF-8"), QStringLiteral("-raw"), path, QStringLiteral("-")},
-                                 &fallbackText)) {
-                    fallbackText = ocrAugmentLowContentPages(path, fallbackText, cancelRequested, &ocrCache, &rawOcrPagesApplied);
-                    const QString fallbackNormalized = cleanedPdfText(fallbackText, cancelRequested);
-                    if (countWordsInText(fallbackNormalized) > wordCount) {
-                        extractedText = fallbackText;
-                        extractorName = QStringLiteral("pdf:pdftotext-raw-paged");
-                        ocrPagesApplied = rawOcrPagesApplied;
-                    }
-                }
-            }
-            if (ocrPagesApplied > 0) {
-                extractorName += QStringLiteral("+ocr(%1p)").arg(ocrPagesApplied);
-            }
-            if (text != nullptr) {
-                *text = cleanedPdfText(extractedText, cancelRequested);
-            }
-            if (extractor != nullptr) {
-                *extractor = extractorName;
-            }
-            return true;
+        QString extractorName = QStringLiteral("pdf:qtpdf-paged");
+        if (ocrPagesApplied > 0) {
+            extractorName += QStringLiteral("+ocr(%1p)").arg(ocrPagesApplied);
         }
-
+        if (text != nullptr) {
+            *text = cleanedPdfText(extractedText, cancelRequested);
+        }
         if (extractor != nullptr) {
-            *extractor = isCancelRequested(cancelRequested)
-                    ? QStringLiteral("canceled")
-                    : QStringLiteral("pdf:pdftotext-failed");
+            *extractor = extractorName;
         }
-        return false;
+        return true;
     }
 
     if (isCancelRequested(cancelRequested)) {
@@ -1249,8 +1236,8 @@ QString fallbackZeroChunkReason(const QString &extractor, int textCharCount, int
     if (normalizedExtractor == QStringLiteral("read-failed")) {
         return QStringLiteral("Amelia could not read the file contents from disk.");
     }
-    if (normalizedExtractor == QStringLiteral("pdf:pdftotext-failed")) {
-        return QStringLiteral("PDF text extraction failed. The document may be scanned, image-only, encrypted, or unsupported by pdftotext.");
+    if (normalizedExtractor == QStringLiteral("pdf:load-failed")) {
+        return QStringLiteral("PDF text extraction failed. The document may be encrypted, corrupt, or otherwise unsupported.");
     }
     if (normalizedExtractor.startsWith(QStringLiteral("pdf:")) && textCharCount <= 0) {
         return QStringLiteral("PDF extraction produced no usable text after cleanup. The document may be scanned or image-only.");

@@ -3,9 +3,11 @@
 #include "core/appconfig.h"
 
 #include <QAction>
+#ifdef Q_OS_LINUX
 #include <QDBusConnection>
 #include <QDBusInterface>
 #include <QDBusMessage>
+#endif
 #include <QApplication>
 #include <QCoreApplication>
 #include <QFrame>
