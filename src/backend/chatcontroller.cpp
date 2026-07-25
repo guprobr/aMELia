@@ -1901,6 +1901,7 @@ void ChatController::onModelDelta(const QString &text)
             addDiagnostic(QStringLiteral("reasoning"),
                           QStringLiteral("Visible answer started after %1 reasoning chars.").arg(m_reasoningCharsBeforeAnswer));
         }
+        emit assistantAnswerStarted();
     }
     ++m_streamChunkCount;
     m_streamedAnswerSoFar += text;

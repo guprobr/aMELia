@@ -98,6 +98,7 @@ sudo apt install -y \
   qt6-svg-dev \
   qt6-imageformats-plugins \
   qt6-pdf-dev \
+  qt6-multimedia-dev \
   libtesseract-dev \
   libleptonica-dev \
   tesseract-ocr-eng \
@@ -111,6 +112,7 @@ Why these matter:
 - `qt6-tools-dev` and `qt6-tools-dev-tools` -> standard Qt6 dev tooling on Ubuntu
 - `qt6-svg-dev` / `qt6-imageformats-plugins` -> SVG logo rendering and runtime image support
 - `qt6-pdf-dev` -> `QPdfDocument`/`QPdfSelection`, which Amelia links directly to extract PDF text and rasterize pages for OCR (no `pdftotext`/`pdftoppm` subprocess anymore)
+- `qt6-multimedia-dev` -> `QSoundEffect`, used to play the bundled answer-started/answer-completed notification chimes
 - `libtesseract-dev` / `libleptonica-dev` -> libtesseract's C++ API, which Amelia links directly for in-process OCR (no `tesseract` CLI subprocess anymore)
 - `tesseract-ocr-eng` -> the English `eng.traineddata` language data libtesseract loads at runtime; without it OCR silently stays disabled
 - `curl` -> convenient for testing Ollama and SearXNG endpoints
@@ -419,6 +421,7 @@ Main things to check:
 
 ## Recent UI additions
 
+- Amelia now plays a short notification chime when the assistant's visible answer starts streaming, and another when it finishes, via Qt Multimedia (`QSoundEffect`) so it works the same way on Linux, Windows, and macOS. Controlled by the `enableNotificationSounds` config key (or the `AMELIA_ENABLE_NOTIFICATION_SOUNDS` env override), defaulting to on.
 - The **Memory** tab now shows persisted entries in a structured table and supports **Delete selected** for one-at-a-time cleanup.
 - Knowledge Base tab supports live filename/path filtering for indexed assets.
 - Diagnostics includes an optional **Capture reasoning trace** toggle. When enabled, Amelia asks Ollama for backend thinking streams when supported and also records explicit tagged reasoning notes if the model emits them. This remains intentionally separate from any hidden internal chain-of-thought.

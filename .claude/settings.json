@@ -4,10 +4,16 @@
       "Bash(xargs cat)",
       "Bash(cmake .. -DCMAKE_BUILD_TYPE=Debug)",
       "Bash(QT_QPA_PLATFORM=offscreen ./pdftest)",
-      "Bash(rm -f /tmp/claude-1000/-home-guzpido-amelia-qt6/836508ba-0a69-49ea-aea9-ae48409d4f02/scratchpad/*.pdf /tmp/claude-1000/-home-guzpido-amelia-qt6/836508ba-0a69-49ea-aea9-ae48409d4f02/scratchpad/*.png /tmp/claude-1000/-home-guzpido-amelia-qt6/836508ba-0a69-49ea-aea9-ae48409d4f02/scratchpad/pdftest /tmp/claude-1000/-home-guzpido-amelia-qt6/836508ba-0a69-49ea-aea9-ae48409d4f02/scratchpad/pdftest2)"
+      "Bash(rm -f /tmp/claude-1000/-home-guzpido-amelia-qt6/836508ba-0a69-49ea-aea9-ae48409d4f02/scratchpad/*.pdf /tmp/claude-1000/-home-guzpido-amelia-qt6/836508ba-0a69-49ea-aea9-ae48409d4f02/scratchpad/*.png /tmp/claude-1000/-home-guzpido-amelia-qt6/836508ba-0a69-49ea-aea9-ae48409d4f02/scratchpad/pdftest /tmp/claude-1000/-home-guzpido-amelia-qt6/836508ba-0a69-49ea-aea9-ae48409d4f02/scratchpad/pdftest2)",
+      "Bash(mkdir -p /home/guzpido/amelia_qt6/assets/sounds && ls /home/guzpido/amelia_qt6/assets/)",
+      "Bash(python3 /tmp/claude-1000/-home-guzpido-amelia-qt6/4f2787a7-0ef1-4c3f-89fa-61269f0886fe/scratchpad/gen_sounds.py)",
+      "Bash(ffprobe -hide_banner /home/guzpido/amelia_qt6/assets/sounds/answer_start.wav)",
+      "Bash(ffprobe -hide_banner /home/guzpido/amelia_qt6/assets/sounds/answer_complete.wav)",
+      "Bash(file assets/sounds/*.wav)"
     ],
     "additionalDirectories": [
-      "/tmp/claude-1000/-home-guzpido-amelia-qt6/836508ba-0a69-49ea-aea9-ae48409d4f02/scratchpad"
+      "/tmp/claude-1000/-home-guzpido-amelia-qt6/836508ba-0a69-49ea-aea9-ae48409d4f02/scratchpad",
+      "/home/guzpido/amelia_qt6/assets"
     ]
   }
 }

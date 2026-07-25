@@ -20,6 +20,7 @@
   "notifyOnTaskStart": true,
   "notifyOnTaskSuccess": true,
   "notifyOnTaskFailure": true,
+  "enableNotificationSounds": true,
   "preferOutlinePlanning": true,
   "requireGroundingForProjectQuestions": true,
   "includeAssistantHistoryInPrompt": true,

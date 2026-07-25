@@ -58,6 +58,7 @@ public:
     void setPrioritizedKnowledgeAssets(const QStringList &paths);
 
 signals:
+    void assistantAnswerStarted();
     void assistantStreamChunk(const QString &chunk);
     void assistantCompleted(const QString &text);
     void systemNotice(const QString &text);

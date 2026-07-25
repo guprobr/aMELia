@@ -236,6 +236,7 @@ void applyEnvOverrides(AppConfig &config)
     applyBoolEnvOverride("AMELIA_NOTIFY_ON_TASK_START", config.notifyOnTaskStart);
     applyBoolEnvOverride("AMELIA_NOTIFY_ON_TASK_SUCCESS", config.notifyOnTaskSuccess);
     applyBoolEnvOverride("AMELIA_NOTIFY_ON_TASK_FAILURE", config.notifyOnTaskFailure);
+    applyBoolEnvOverride("AMELIA_ENABLE_NOTIFICATION_SOUNDS", config.enableNotificationSounds);
 }
 }
 
@@ -314,6 +315,7 @@ AppConfig AppConfigLoader::load(const QString &path, QString *errorMessage)
     config.notifyOnTaskStart = obj.value(QStringLiteral("notifyOnTaskStart")).toBool(config.notifyOnTaskStart);
     config.notifyOnTaskSuccess = obj.value(QStringLiteral("notifyOnTaskSuccess")).toBool(config.notifyOnTaskSuccess);
     config.notifyOnTaskFailure = obj.value(QStringLiteral("notifyOnTaskFailure")).toBool(config.notifyOnTaskFailure);
+    config.enableNotificationSounds = obj.value(QStringLiteral("enableNotificationSounds")).toBool(config.enableNotificationSounds);
     config.enableSemanticRetrieval = obj.value(QStringLiteral("enableSemanticRetrieval")).toBool(config.enableSemanticRetrieval);
     config.ollamaEmbeddingModel = obj.value(QStringLiteral("ollamaEmbeddingModel")).toString(config.ollamaEmbeddingModel).trimmed();
     config.preferOutlinePlanning = obj.value(QStringLiteral("preferOutlinePlanning")).toBool(config.preferOutlinePlanning);

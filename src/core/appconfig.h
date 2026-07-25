@@ -42,6 +42,7 @@ struct AppConfig {
     bool notifyOnTaskStart = true;
     bool notifyOnTaskSuccess = true;
     bool notifyOnTaskFailure = true;
+    bool enableNotificationSounds = true;
 
     // Semantic retrieval via Ollama embeddings with an automatic local hash fallback.
     bool enableSemanticRetrieval = true;

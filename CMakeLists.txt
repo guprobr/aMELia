@@ -19,7 +19,7 @@ if(UNIX AND NOT APPLE)
     set(AMELIA_HAS_DBUS TRUE)
 endif()
 
-set(AMELIA_QT_COMPONENTS Core Widgets Network Concurrent Pdf)
+set(AMELIA_QT_COMPONENTS Core Widgets Network Concurrent Pdf Multimedia)
 if(AMELIA_HAS_DBUS)
     list(APPEND AMELIA_QT_COMPONENTS DBus)
 endif()
@@ -64,6 +64,8 @@ qt_add_executable(amelia_qt6
     src/ui/mainwindow.cpp
     src/ui/notificationcenter.h
     src/ui/notificationcenter.cpp
+    src/ui/notificationsound.h
+    src/ui/notificationsound.cpp
     src/backend/chatcontroller.h
     src/backend/chatcontroller.cpp
     src/backend/llmclient.h
@@ -104,6 +106,7 @@ target_link_libraries(amelia_qt6
         Qt6::Network
         Qt6::Concurrent
         Qt6::Pdf
+        Qt6::Multimedia
         ${AMELIA_TESSERACT_TARGET}
         ${AMELIA_LEPTONICA_TARGET}
 )

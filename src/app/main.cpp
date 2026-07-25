@@ -4,6 +4,7 @@
 #include "backend/chatcontroller.h"
 #include "ui/mainwindow.h"
 #include "ui/notificationcenter.h"
+#include "ui/notificationsound.h"
 
 #include <QApplication>
 #include <QCoreApplication>
@@ -189,6 +190,7 @@ int main(int argc, char *argv[])
         auto *window = new MainWindow(configPath, ameliaBuiltInDefaultConfigJson());
         auto *notifications = new NotificationCenter(config, &app);
         notifications->setAlertWidget(window);
+        auto *notificationSound = new NotificationSound(config, &app);
         auto *controller = new ChatController(config);
 
         QObject::connect(controller, &ChatController::statusChanged,
@@ -287,6 +289,10 @@ int main(int argc, char *argv[])
                          window, &MainWindow::setAvailableModels);
         QObject::connect(controller, &ChatController::desktopNotificationRequested,
                          notifications, &NotificationCenter::notify);
+        QObject::connect(controller, &ChatController::assistantAnswerStarted,
+                         notificationSound, &NotificationSound::playAnswerStarted);
+        QObject::connect(controller, &ChatController::assistantCompleted,
+                         notificationSound, &NotificationSound::playAnswerCompleted);
 
         window->setExternalSearchEnabledDefault(config.enableExternalSearch);
 
