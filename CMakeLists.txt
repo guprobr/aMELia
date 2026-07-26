@@ -79,6 +79,18 @@ qt_add_executable(amelia_qt6
     src/ui/notificationsound.cpp
     src/backend/chatcontroller.h
     src/backend/chatcontroller.cpp
+    src/backend/contextbudgetcalculator.h
+    src/backend/contextbudgetcalculator.cpp
+    src/backend/promptintentclassifier.h
+    src/backend/promptintentclassifier.cpp
+    src/backend/diagnosticsconsole.h
+    src/backend/diagnosticsconsole.cpp
+    src/backend/prompttextutils.h
+    src/backend/prompttextutils.cpp
+    src/backend/answerrepetitionguard.h
+    src/backend/answerrepetitionguard.cpp
+    src/backend/reasoningstallguard.h
+    src/backend/reasoningstallguard.cpp
     src/backend/llmclient.h
     src/backend/ollamaclient.h
     src/backend/ollamaclient.cpp
@@ -86,10 +98,45 @@ qt_add_executable(amelia_qt6
     src/backend/outlineplanner.cpp
     src/backend/policyengine.h
     src/backend/policyengine.cpp
-    src/backend/toolexecutor.h
-    src/backend/toolexecutor.cpp
     src/rag/embeddingclient.h
     src/rag/embeddingclient.cpp
+    src/rag/textcleanup.h
+    src/rag/textcleanup.cpp
+    src/rag/textmetrics.h
+    src/rag/textmetrics.cpp
+    src/rag/cancellation.h
+    src/rag/docxextractor.h
+    src/rag/docxextractor.cpp
+    src/rag/ocrengine.h
+    src/rag/ocrengine.cpp
+    src/rag/semanticchunker.h
+    src/rag/semanticchunker.cpp
+    src/rag/kbmanifest.h
+    src/rag/kbmanifest.cpp
+    src/rag/jsonutil.h
+    src/rag/jsonutil.cpp
+    src/rag/documentstudybudget.h
+    src/rag/documentstudybudget.cpp
+    src/rag/sourceclassifier.h
+    src/rag/sourceclassifier.cpp
+    src/rag/pdftextcleanup.h
+    src/rag/pdftextcleanup.cpp
+    src/rag/documentextractor.h
+    src/rag/documentextractor.cpp
+    src/rag/kbfileops.h
+    src/rag/kbfileops.cpp
+    src/rag/lexicalscoring.h
+    src/rag/lexicalscoring.cpp
+    src/rag/documentoutline.h
+    src/rag/documentoutline.cpp
+    src/ui/knowledgetreewidget.h
+    src/ui/knowledgetreewidget.cpp
+    src/ui/transcriptcolors.h
+    src/ui/transcriptcolors.cpp
+    src/ui/markdownrenderer.h
+    src/ui/markdownrenderer.cpp
+    src/ui/uitextutils.h
+    src/ui/uitextutils.cpp
     src/rag/qdrantclient.h
     src/rag/qdrantclient.cpp
     src/rag/ragindexer.h

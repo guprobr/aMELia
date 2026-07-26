@@ -8,7 +8,9 @@
 #include <QHash>
 
 #include "core/appconfig.h"
+#include "backend/answerrepetitionguard.h"
 #include "backend/llmclient.h"
+#include "backend/reasoningstallguard.h"
 #include "backend/outlineplanner.h"
 
 class EmbeddingClient;
@@ -21,12 +23,11 @@ class RagIndexer;
 class SearchBroker;
 class SessionSummarizer;
 class StorageManager;
-class ToolExecutor;
 
 class ChatController : public QObject {
     Q_OBJECT
 public:
-    explicit ChatController(const AppConfig &config, QObject *parent = nullptr);
+    explicit ChatController(const AppConfig &config, QObject *parent = nullptr, LlmClient *llmClient = nullptr);
     ~ChatController() override;
 
     void sendUserPrompt(const QString &prompt, bool allowExternalSearch);
@@ -156,16 +157,11 @@ private:
     void notifyTaskStarted(const QString &title, const QString &message);
     void notifyTaskSucceeded(const QString &title, const QString &message);
     void notifyTaskFailed(const QString &title, const QString &message);
-    void resetReasoningLoopGuard();
     void maybeRecoverFromReasoningOnlyLoop(const QString &text);
     void restartActiveGenerationWithoutReasoning();
     void restartActiveGenerationAfterRunnerFailure();
-    QString normalizeReasoningTraceForLoopDetection(const QString &text) const;
-    QString buildReasoningLoopEvidence() const;
-    void resetAnswerLoopGuard();
     void checkVisibleAnswerForRepetitionLoop(const QString &deltaText);
     void handleVisibleAnswerRepetitionLoop();
-    QString normalizeAnswerLineForLoopDetection(const QString &text) const;
     bool shouldRetryAfterRunnerFailure(const QString &message) const;
     QString trimLocalContextForRunnerFallback(const QString &text, int maxChars) const;
     int effectiveRequestNumCtx() const;
@@ -194,11 +190,17 @@ private:
     };
 
     AppConfig m_config;
-    OllamaClient *m_llmClient = nullptr;
+    LlmClient *m_llmClient = nullptr;
+    // Non-owning downcast of m_llmClient, set only when the injected client is an
+    // OllamaClient. Guards every Ollama-specific extra (timeouts, generation config,
+    // reasoning trace, probe/listModels, done-reason and prompt-eval stats) that the
+    // generic LlmClient interface doesn't expose, so a mock/alternate LlmClient
+    // injected for testing or another backend degrades those features gracefully
+    // instead of crashing.
+    OllamaClient *m_ollamaClient = nullptr;
     PolicyEngine *m_policy = nullptr;
     RagIndexer *m_rag = nullptr;
     SearchBroker *m_searchBroker = nullptr;
-    ToolExecutor *m_toolExecutor = nullptr;
     EmbeddingClient *m_embeddingClient = nullptr;
     QdrantClient *m_qdrantClient = nullptr;
     StorageManager *m_storage = nullptr;
@@ -248,12 +250,7 @@ private:
     QString m_activeLocalContext;
     QString m_activeExternalContext;
     QString m_activeMemoryContext;
-    QString m_lastReasoningTraceNormalized;
-    QStringList m_recentReasoningTraceNormalized;
-    QHash<QString, int> m_reasoningTraceFrequency;
-    qint64 m_firstReasoningTraceMs = 0;
-    int m_reasoningCharsBeforeAnswer = 0;
-    int m_reasoningRepeatStreak = 0;
+    ReasoningStallGuard m_reasoningStallGuard;
     bool m_forceDisableReasoningForActiveRequest = false;
     bool m_reasoningFallbackRetryAttempted = false;
     bool m_runnerFailureRetryAttempted = false;
@@ -274,16 +271,13 @@ private:
     // starts firing before each request.
     double m_promptEvalTokensPerSecEma = 0.0;
 
-    // Guards against the model getting stuck in a degenerate repetition loop
-    // (e.g. a markdown table repeating the same row dozens of times) inside
-    // the *visible* answer stream. This is distinct from the reasoning-only
-    // loop guard above, which only watches hidden <think> tokens before any
-    // visible output has started.
+    // Accumulates the visible answer text across a generation, including every
+    // auto-continue round (it isn't reset between them), so it doubles as the running
+    // "whole answer" text.
     QString m_streamedAnswerSoFar;
-    QString m_answerLineBuffer;
-    QString m_lastAnswerLineNormalized;
-    int m_answerLineRepeatStreak = 0;
-    QHash<QString, int> m_answerLineFrequency;
-    QStringList m_recentAnswerLinesNormalized;
-    bool m_answerLoopGuardTriggered = false;
+
+    // Guards against the model getting stuck in a degenerate repetition loop inside
+    // the *visible* answer stream. Distinct from the reasoning-only loop guard above,
+    // which only watches hidden <think> tokens before any visible output has started.
+    AnswerRepetitionGuard m_answerLoopGuard;
 };

@@ -14,6 +14,15 @@ SearchBroker::SearchBroker(QObject *parent)
 {
 }
 
+// Envelope markers wrapped around every batch of external search results before
+// they're spliced into the prompt (see formatHitsForPrompt). A malicious page could
+// otherwise plant its own copy of the end marker in a snippet to try to break out of
+// the untrusted-data block and have its trailing text read as if it came from Amelia
+// or the user; stripping any literal occurrence of either marker from fetched content
+// closes that escape route.
+const QString kExternalDataBeginMarker = QStringLiteral("<<<BEGIN_UNTRUSTED_WEB_DATA>>>");
+const QString kExternalDataEndMarker = QStringLiteral("<<<END_UNTRUSTED_WEB_DATA>>>");
+
 namespace {
 QString cleanupSnippet(QString text)
 {
@@ -25,6 +34,8 @@ QString cleanupSnippet(QString text)
     text.replace(QStringLiteral("&quot;"), QStringLiteral("\""));
     text.replace(QStringLiteral("&#39;"), QStringLiteral("'"));
     text.replace(QRegularExpression(QStringLiteral(R"([\t\r\n]+)")), QStringLiteral(" "));
+    text.replace(kExternalDataBeginMarker, QStringLiteral("[external content]"));
+    text.replace(kExternalDataEndMarker, QStringLiteral("[external content]"));
     text = text.simplified();
     return text;
 }
@@ -146,7 +157,7 @@ QVector<SearchHit> SearchBroker::parseResults(const QByteArray &jsonData) const
     const QJsonArray results = doc.object().value(QStringLiteral("results")).toArray();
     for (const QJsonValue &value : results) {
         const QJsonObject obj = value.toObject();
-        const QString title = obj.value(QStringLiteral("title")).toString().trimmed();
+        const QString title = cleanupSnippet(obj.value(QStringLiteral("title")).toString());
         const QString url = obj.value(QStringLiteral("url")).toString().trimmed();
         const QString content = snippetFromObject(obj);
 
@@ -184,7 +195,15 @@ QString SearchBroker::formatHitsForPrompt(const QVector<SearchHit> &hits) const
                           hit.title,
                           hit.snippet);
     }
-    return lines.join(QStringLiteral("\n\n"));
+
+    // Everything between these markers came from the open web, not from Amelia or the
+    // user. It must be treated purely as quotable/summarizable data — any text inside
+    // that reads like an instruction (e.g. "ignore previous instructions", a fake
+    // system/developer turn, a request to run a command) is just page content and
+    // must never be obeyed. See the EXTERNAL_CONTEXT_SAFETY rule in buildPromptMessages.
+    return kExternalDataBeginMarker + QStringLiteral("\n")
+            + lines.join(QStringLiteral("\n\n"))
+            + QStringLiteral("\n") + kExternalDataEndMarker;
 }
 
 QString SearchBroker::formatHitsForUi(const QVector<SearchHit> &hits) const
