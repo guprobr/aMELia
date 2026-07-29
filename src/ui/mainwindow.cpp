@@ -17,7 +17,6 @@
 #include <QColor>
 #include <QUrl>
 #include <QTextDocument>
-#include <QTextBrowser>
 #include <QDesktopServices>
 #include <QEvent>
 #include <QDateTime>
@@ -53,7 +52,6 @@
 #include <QProgressBar>
 #include <QStatusBar>
 #include <QRegularExpression>
-#include <QScrollBar>
 #include <QSet>
 #include <QSplitter>
 #include <QStackedLayout>
@@ -69,6 +67,40 @@
 #include <QVBoxLayout>
 #include <QWidget>
 #include <QPixmap>
+#include <QWebEnginePage>
+#include <QWebEngineView>
+
+namespace {
+
+// Intercepts link clicks in the transcript WebEngine view: copycode:/copyanswer:
+// links and real URLs never navigate the embedded page itself (mirroring the old
+// QTextBrowser's setOpenLinks(false)/setOpenExternalLinks(false)); they're forwarded
+// to MainWindow::onTranscriptAnchorClicked instead, same as the QTextBrowser::
+// anchorClicked signal used to be. A plain callback (rather than a Q_OBJECT signal)
+// avoids needing this .cpp-local class to be moc'd.
+class TranscriptPage : public QWebEnginePage {
+public:
+    explicit TranscriptPage(std::function<void(const QUrl &)> onLinkActivated, QObject *parent = nullptr)
+        : QWebEnginePage(parent), m_onLinkActivated(std::move(onLinkActivated)) {}
+
+protected:
+    bool acceptNavigationRequest(const QUrl &url, QWebEnginePage::NavigationType type, bool isMainFrame) override
+    {
+        Q_UNUSED(isMainFrame);
+        if (type == QWebEnginePage::NavigationTypeLinkClicked) {
+            if (m_onLinkActivated) {
+                m_onLinkActivated(url);
+            }
+            return false;
+        }
+        return true;
+    }
+
+private:
+    std::function<void(const QUrl &)> m_onLinkActivated;
+};
+
+} // namespace
 
 MainWindow::MainWindow(const QString &configPath,
                        const QString &defaultConfigJson,
@@ -143,24 +175,22 @@ MainWindow::MainWindow(const QString &configPath,
     titleRow->addWidget(logoLabel, 0, Qt::AlignVCenter);
     titleRow->addStretch(1);
 
-    auto *transcriptBrowser = new QTextBrowser(chatPane);
-    transcriptBrowser->setOpenLinks(false);
-    transcriptBrowser->setOpenExternalLinks(false);
-    m_transcript = transcriptBrowser;
-    m_transcript->setReadOnly(true);
-    m_transcript->setPlaceholderText(QStringLiteral("Conversation transcript..."));
-    m_transcript->setStyleSheet(QString());
-    connect(transcriptBrowser, &QTextBrowser::anchorClicked, this, &MainWindow::onTranscriptAnchorClicked);
-    if (QScrollBar *transcriptScrollBar = transcriptBrowser->verticalScrollBar()) {
-        connect(transcriptScrollBar, &QScrollBar::valueChanged, this, [this, transcriptScrollBar](int value) {
-            m_transcriptAutoScroll = value >= transcriptScrollBar->maximum() - 4;
-        });
-        connect(transcriptScrollBar, &QScrollBar::rangeChanged, this, [this, transcriptScrollBar](int, int) {
-            if (m_transcriptAutoScroll) {
-                transcriptScrollBar->setValue(transcriptScrollBar->maximum());
-            }
-        });
-    }
+    auto *transcriptView = new QWebEngineView(chatPane);
+    auto *transcriptPage = new TranscriptPage([this](const QUrl &url) { onTranscriptAnchorClicked(url); }, transcriptView);
+    transcriptView->setPage(transcriptPage);
+    connect(transcriptPage, &QWebEnginePage::loadFinished, this, [this](bool ok) {
+        if (!ok || m_transcript == nullptr || m_transcript->page() == nullptr) {
+            return;
+        }
+        m_transcriptPageReady = true;
+        const QStringList pending = m_pendingTranscriptScripts;
+        m_pendingTranscriptScripts.clear();
+        for (const QString &script : pending) {
+            m_transcript->page()->runJavaScript(script);
+        }
+    });
+    transcriptView->setUrl(QUrl(QStringLiteral("qrc:///katex/transcript_shell.html")));
+    m_transcript = transcriptView;
 
     m_input = new QPlainTextEdit(chatPane);
     m_input->setPlaceholderText(QStringLiteral("Type your prompt here..."));
@@ -749,12 +779,6 @@ void MainWindow::insertTranscriptMessage(const QString &role, const QString &tex
         return;
     }
 
-    QTextCursor cursor = m_transcript->textCursor();
-    cursor.movePosition(QTextCursor::End);
-    if (!m_transcript->document()->isEmpty()) {
-        cursor.insertHtml(QStringLiteral("<div style=\"height:6px\"></div>"));
-    }
-
     const QString renderText = role == QStringLiteral("assistant")
             ? TranscriptFormatter::sanitizeFinalAssistantMarkdown(text)
             : text;
@@ -764,10 +788,33 @@ void MainWindow::insertTranscriptMessage(const QString &role, const QString &tex
         m_transcriptAssistantAnswers.push_back(renderText);
     }
     const QString html = messageToRichHtml(role, renderText, &m_transcriptCodeBlocks, answerIndex, m_transcript->palette());
-    cursor.insertHtml(html);
-    cursor.insertBlock();
-    m_transcript->setTextCursor(cursor);
-    m_transcript->ensureCursorVisible();
+    runTranscriptJs(QStringLiteral("appendMessage"), html);
+}
+
+void MainWindow::runTranscriptJs(const QString &function, const QString &argument)
+{
+    if (m_transcript == nullptr || m_transcript->page() == nullptr) {
+        return;
+    }
+
+    QString script = function + QStringLiteral("(");
+    if (!argument.isNull()) {
+        const QString encoded = QString::fromUtf8(
+                QJsonDocument(QJsonArray{QJsonValue(argument)}).toJson(QJsonDocument::Compact));
+        // encoded is a one-element JSON array, e.g. ["escaped text"]; strip the brackets
+        // to get just the JS string literal.
+        script += encoded.mid(1, encoded.size() - 2);
+    }
+    script += QStringLiteral(")");
+
+    if (!m_transcriptPageReady) {
+        // The shell page (and the JS functions it defines) may not have finished
+        // loading yet -- this fires during startup when a persisted transcript is
+        // replayed before QWebEnginePage::loadFinished. Queue until it does.
+        m_pendingTranscriptScripts.push_back(script);
+        return;
+    }
+    m_transcript->page()->runJavaScript(script);
 }
 
 void MainWindow::appendDiagnosticEntry(const QString &timestamp, const QString &category, const QString &message)
@@ -1080,44 +1127,21 @@ void MainWindow::stopPromptEvalCountdown()
 void MainWindow::appendUserMessage(const QString &text)
 {
     m_streamingAssistant = false;
-    m_streamingAssistantStartPosition = -1;
     appendTranscriptEntry(QStringLiteral("user"), text);
 }
 
 void MainWindow::appendAssistantChunk(const QString &text)
 {
-    QScrollBar *scrollBar = m_transcript != nullptr ? m_transcript->verticalScrollBar() : nullptr;
-    const bool preserveScroll = scrollBar != nullptr && !m_transcriptAutoScroll;
-    const int previousScrollValue = preserveScroll ? scrollBar->value() : 0;
-
-    QTextCursor cursor = m_transcript->textCursor();
-    cursor.movePosition(QTextCursor::End);
-
-    const QPalette palette = m_transcript != nullptr ? m_transcript->palette() : QApplication::palette();
-
-    QTextCharFormat prefixFormat;
-    prefixFormat.setFontWeight(QFont::Bold);
-    prefixFormat.setForeground(transcriptPrefixColor(palette, QStringLiteral("assistant")));
-
-    QTextCharFormat bodyFormat;
-    bodyFormat.setForeground(transcriptBodyColor(palette, QStringLiteral("assistant")));
-
     if (!m_streamingAssistant) {
-        if (!m_transcript->document()->isEmpty()) {
-            cursor.insertBlock();
-        }
-        m_streamingAssistantStartPosition = cursor.position();
-        cursor.insertText(transcriptPrefix(QStringLiteral("assistant")), prefixFormat);
+        const QPalette palette = m_transcript != nullptr ? m_transcript->palette() : QApplication::palette();
+        const QString prefixHtml = QStringLiteral("<span style=\"font-weight:700;color:%1;\">%2</span>")
+                .arg(cssColor(transcriptPrefixColor(palette, QStringLiteral("assistant"))),
+                     transcriptPrefix(QStringLiteral("assistant")).toHtmlEscaped());
+        runTranscriptJs(QStringLiteral("beginStreamingAssistant"), prefixHtml);
         m_streamingAssistant = true;
     }
 
-    cursor.insertText(text, bodyFormat);
-    m_transcript->setTextCursor(cursor);
-    if (preserveScroll && scrollBar != nullptr) {
-        scrollBar->setValue(previousScrollValue);
-    } else {
-        m_transcript->ensureCursorVisible();
-    }
+    runTranscriptJs(QStringLiteral("appendStreamingText"), text);
     updateResponseStreamingProgress(text);
 }
 
@@ -1125,24 +1149,13 @@ void MainWindow::finalizeAssistantMessage(const QString &text)
 {
     const QString cleaned = TranscriptFormatter::sanitizeFinalAssistantMarkdown(text);
     m_lastAssistantMessage = cleaned;
-    QScrollBar *scrollBar = m_transcript != nullptr ? m_transcript->verticalScrollBar() : nullptr;
-    const bool preserveScroll = scrollBar != nullptr && !m_transcriptAutoScroll;
-    const int previousScrollValue = preserveScroll ? scrollBar->value() : 0;
 
-    if (m_streamingAssistant && m_streamingAssistantStartPosition >= 0) {
-        QTextCursor cursor(m_transcript->document());
-        cursor.setPosition(m_streamingAssistantStartPosition);
-        cursor.movePosition(QTextCursor::End, QTextCursor::KeepAnchor);
-        cursor.removeSelectedText();
-        m_transcript->setTextCursor(cursor);
+    if (m_streamingAssistant) {
+        runTranscriptJs(QStringLiteral("endStreaming"));
         insertTranscriptMessage(QStringLiteral("assistant"), cleaned);
-        if (preserveScroll && scrollBar != nullptr) {
-            scrollBar->setValue(previousScrollValue);
-        }
     }
 
     m_streamingAssistant = false;
-    m_streamingAssistantStartPosition = -1;
 
     if (m_responseProgressActive) {
         finishResponseProgress(QStringLiteral("Answer complete"));
@@ -1152,7 +1165,6 @@ void MainWindow::finalizeAssistantMessage(const QString &text)
 void MainWindow::appendSystemMessage(const QString &text)
 {
     m_streamingAssistant = false;
-    m_streamingAssistantStartPosition = -1;
     appendTranscriptEntry(QStringLiteral("system"), text);
 }
 
@@ -1298,10 +1310,8 @@ void MainWindow::setSessionSummary(const QString &text)
 void MainWindow::rebuildTranscriptFromPlainText(const QString &text)
 {
     m_transcriptPlainText = text;
-    m_transcript->clear();
-    m_transcriptAutoScroll = true;
+    runTranscriptJs(QStringLiteral("clearTranscript"));
     m_streamingAssistant = false;
-    m_streamingAssistantStartPosition = -1;
     m_lastAssistantMessage.clear();
     m_transcriptCodeBlocks.clear();
     m_transcriptAssistantAnswers.clear();
@@ -1362,9 +1372,6 @@ void MainWindow::rebuildTranscriptFromPlainText(const QString &text)
         }
     }
     flushMessage();
-    if (QScrollBar *scrollBar = m_transcript->verticalScrollBar()) {
-        scrollBar->setValue(scrollBar->maximum());
-    }
 }
 
 void MainWindow::setTranscript(const QString &text)

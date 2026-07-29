@@ -28,6 +28,7 @@ class QUrl;
 class QWidget;
 class QScrollBar;
 class QEvent;
+class QWebEngineView;
 
 class MainWindow : public QMainWindow {
     Q_OBJECT
@@ -139,6 +140,7 @@ private:
     void rebuildDiagnosticsFromPlainText(const QString &text);
     QString buildPromptLabRecipe() const;
     void insertTranscriptMessage(const QString &role, const QString &text);
+    void runTranscriptJs(const QString &function, const QString &argument = QString());
     void applyKnowledgeBaseFilter();
     void updateKnowledgeBaseFilterStatus();
     QStringList selectedKnowledgeAssetPaths() const;
@@ -168,7 +170,7 @@ private:
     void applyPaletteAwareFormatting();
     void insertDiagnosticEntry(const QString &timestamp, const QString &category, const QString &message);
 
-    QTextEdit *m_transcript = nullptr;
+    QWebEngineView *m_transcript = nullptr;
     QPlainTextEdit *m_input = nullptr;
     QListWidget *m_prioritizedAssetsList = nullptr;
     QLabel *m_prioritizedAssetsStatus = nullptr;
@@ -237,7 +239,6 @@ private:
     QStringList m_busyFrames;
     int m_busyFrameIndex = 0;
     bool m_streamingAssistant = false;
-    int m_streamingAssistantStartPosition = -1;
     QString m_lastAssistantMessage;
     bool m_responseProgressActive = false;
     bool m_responseFirstTokenReceived = false;
@@ -253,7 +254,8 @@ private:
     QString m_knowledgeInventoryRefreshBaseLabel;
     bool m_updatingConversationList = false;
     bool m_updatingModelList = false;
-    bool m_transcriptAutoScroll = true;
+    bool m_transcriptPageReady = false;
+    QStringList m_pendingTranscriptScripts;
     QAction *m_newConversationAction = nullptr;
     QAction *m_aboutAmeliaAction = nullptr;
     QAction *m_configurationAction = nullptr;

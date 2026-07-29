@@ -137,9 +137,11 @@ QString decodeVisibleEscapedLayout(const QString &text)
     bool inSingleQuote = false;
     bool inDoubleQuote = false;
     bool escapingInsideQuote = false;
+    bool inMath = false;
+    QString mathCloser;
 
     for (int i = 0; i < text.size(); ++i) {
-        if (!inInlineCode && i + 2 < text.size() && text.mid(i, 3) == QStringLiteral("```")) {
+        if (!inInlineCode && !inMath && i + 2 < text.size() && text.mid(i, 3) == QStringLiteral("```")) {
             out += QStringLiteral("```");
             i += 2;
             inFence = !inFence;
@@ -147,6 +149,74 @@ QString decodeVisibleEscapedLayout(const QString &text)
             inDoubleQuote = false;
             escapingInsideQuote = false;
             continue;
+        }
+
+        // Math spans ($$...$$, \(...\), \[...\]) are opaque to escape decoding, the
+        // same way fenced/inline code are: otherwise a LaTeX command like \text, \tau,
+        // \to, \nabla, or \rightarrow gets its \t/\n/\r prefix silently swallowed as a
+        // layout escape below, corrupting the formula.
+        if (inMath) {
+            if (text.mid(i, mathCloser.size()) == mathCloser) {
+                out += mathCloser;
+                i += mathCloser.size() - 1;
+                inMath = false;
+                mathCloser.clear();
+                continue;
+            }
+            out += text.at(i);
+            continue;
+        }
+
+        if (!inFence && !inInlineCode) {
+            if (text.mid(i, 2) == QStringLiteral("$$")) {
+                out += QStringLiteral("$$");
+                ++i;
+                inMath = true;
+                mathCloser = QStringLiteral("$$");
+                continue;
+            }
+            if (text.mid(i, 2) == QStringLiteral("\\(")) {
+                out += QStringLiteral("\\(");
+                ++i;
+                inMath = true;
+                mathCloser = QStringLiteral("\\)");
+                continue;
+            }
+            if (text.mid(i, 2) == QStringLiteral("\\[")) {
+                out += QStringLiteral("\\[");
+                ++i;
+                inMath = true;
+                mathCloser = QStringLiteral("\\]");
+                continue;
+            }
+            // Single-dollar inline math: Pandoc's heuristic for telling "$a \neq 0$"
+            // apart from currency like "$20,000 and $30,000" -- the opening $ needs a
+            // non-space character right after it (checked here), the matching closing
+            // $ needs a non-space character right before it and must not be followed
+            // immediately by a digit, and the span can't cross a blank line.
+            if (text.at(i) == QLatin1Char('$') && i + 1 < text.size() && !text.at(i + 1).isSpace()) {
+                int j = i + 1;
+                int closeIndex = -1;
+                while (j < text.size()) {
+                    if (text.at(j) == QLatin1Char('\n') && j + 1 < text.size() && text.at(j + 1) == QLatin1Char('\n')) {
+                        break;
+                    }
+                    if (text.at(j) == QLatin1Char('$') && !text.at(j - 1).isSpace()) {
+                        const bool followedByDigit = (j + 1 < text.size()) && text.at(j + 1).isDigit();
+                        if (!followedByDigit) {
+                            closeIndex = j;
+                        }
+                        break;
+                    }
+                    ++j;
+                }
+                if (closeIndex >= 0) {
+                    out += QLatin1Char('$');
+                    inMath = true;
+                    mathCloser = QStringLiteral("$");
+                    continue;
+                }
+            }
         }
 
         const QChar ch = text.at(i);
@@ -223,8 +293,69 @@ QString decodeEscapedLayoutOutsideQuotes(const QString &text)
     bool inSingleQuote = false;
     bool inDoubleQuote = false;
     bool escapingInsideQuote = false;
+    bool inMath = false;
+    QString mathCloser;
 
     for (int i = 0; i < text.size(); ++i) {
+        if (inMath) {
+            if (text.mid(i, mathCloser.size()) == mathCloser) {
+                out += mathCloser;
+                i += mathCloser.size() - 1;
+                inMath = false;
+                mathCloser.clear();
+                continue;
+            }
+            out += text.at(i);
+            continue;
+        }
+
+        if (!inSingleQuote && !inDoubleQuote) {
+            if (text.mid(i, 2) == QStringLiteral("$$")) {
+                out += QStringLiteral("$$");
+                ++i;
+                inMath = true;
+                mathCloser = QStringLiteral("$$");
+                continue;
+            }
+            if (text.mid(i, 2) == QStringLiteral("\\(")) {
+                out += QStringLiteral("\\(");
+                ++i;
+                inMath = true;
+                mathCloser = QStringLiteral("\\)");
+                continue;
+            }
+            if (text.mid(i, 2) == QStringLiteral("\\[")) {
+                out += QStringLiteral("\\[");
+                ++i;
+                inMath = true;
+                mathCloser = QStringLiteral("\\]");
+                continue;
+            }
+            if (text.at(i) == QLatin1Char('$') && i + 1 < text.size() && !text.at(i + 1).isSpace()) {
+                int j = i + 1;
+                int closeIndex = -1;
+                while (j < text.size()) {
+                    if (text.at(j) == QLatin1Char('\n') && j + 1 < text.size() && text.at(j + 1) == QLatin1Char('\n')) {
+                        break;
+                    }
+                    if (text.at(j) == QLatin1Char('$') && !text.at(j - 1).isSpace()) {
+                        const bool followedByDigit = (j + 1 < text.size()) && text.at(j + 1).isDigit();
+                        if (!followedByDigit) {
+                            closeIndex = j;
+                        }
+                        break;
+                    }
+                    ++j;
+                }
+                if (closeIndex >= 0) {
+                    out += QLatin1Char('$');
+                    inMath = true;
+                    mathCloser = QStringLiteral("$");
+                    continue;
+                }
+            }
+        }
+
         const QChar ch = text.at(i);
 
         if ((inSingleQuote || inDoubleQuote) && escapingInsideQuote) {

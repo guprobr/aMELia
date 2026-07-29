@@ -6,6 +6,133 @@
 #include <QRegularExpression>
 #include <QTextDocument>
 
+namespace {
+
+struct MathSpan {
+    QString tex;
+    bool display = false;
+};
+
+// A private-use-area sentinel: inert to CommonMark's inline parsing (no emphasis/
+// autolink meaning) and confirmed to round-trip unchanged through
+// QTextDocument::setMarkdown()/toHtml(), so it can stand in for a math span while
+// Qt's markdown-to-HTML conversion runs.
+QString mathPlaceholder(int index)
+{
+    return QString(QChar(0xE000)) + QString::number(index) + QString(QChar(0xE001));
+}
+
+// Pulls $$...$$, \[...\], \(...\), and $...$ spans out of markdown text (skipping
+// ones inside inline code) before it goes through QTextDocument::setMarkdown(),
+// which would otherwise treat underscores inside math (e.g. "\sum_{i=1}^{n} x_i")
+// as CommonMark emphasis markers and mangle the LaTeX source.
+QString extractMathSpans(const QString &text, QVector<MathSpan> *mathSpans)
+{
+    QString out;
+    out.reserve(text.size());
+    bool inInlineCode = false;
+
+    for (int i = 0; i < text.size(); ++i) {
+        const QChar ch = text.at(i);
+
+        if (ch == QLatin1Char('`')) {
+            inInlineCode = !inInlineCode;
+            out += ch;
+            continue;
+        }
+
+        if (!inInlineCode) {
+            QString closer;
+            bool display = false;
+            int openLen = 0;
+            if (text.mid(i, 2) == QStringLiteral("$$")) {
+                closer = QStringLiteral("$$");
+                display = true;
+                openLen = 2;
+            } else if (text.mid(i, 2) == QStringLiteral("\\[")) {
+                closer = QStringLiteral("\\]");
+                display = true;
+                openLen = 2;
+            } else if (text.mid(i, 2) == QStringLiteral("\\(")) {
+                closer = QStringLiteral("\\)");
+                display = false;
+                openLen = 2;
+            }
+
+            if (openLen > 0) {
+                const int closeIndex = text.indexOf(closer, i + openLen);
+                if (closeIndex >= 0) {
+                    MathSpan span;
+                    span.tex = text.mid(i + openLen, closeIndex - (i + openLen));
+                    span.display = display;
+                    out += mathPlaceholder(mathSpans->size());
+                    mathSpans->push_back(span);
+                    i = closeIndex + closer.size() - 1;
+                    continue;
+                }
+            } else if (ch == QLatin1Char('$') && i + 1 < text.size() && !text.at(i + 1).isSpace()) {
+                // Single-dollar inline math, using Pandoc's heuristic for telling it
+                // apart from currency: the opening $ needs a non-space character right
+                // after it (checked above); the matching closing $ needs a non-space
+                // character right before it and must not be followed immediately by a
+                // digit, and the span can't cross a blank line. This is what lets
+                // "$a \neq 0$" match while "$20,000 and $30,000" doesn't.
+                int j = i + 1;
+                int closeIndex = -1;
+                while (j < text.size()) {
+                    if (text.at(j) == QLatin1Char('\n') && j + 1 < text.size() && text.at(j + 1) == QLatin1Char('\n')) {
+                        break;
+                    }
+                    if (text.at(j) == QLatin1Char('$') && !text.at(j - 1).isSpace()) {
+                        const bool followedByDigit = (j + 1 < text.size()) && text.at(j + 1).isDigit();
+                        if (!followedByDigit) {
+                            closeIndex = j;
+                        }
+                        break;
+                    }
+                    ++j;
+                }
+                if (closeIndex >= 0) {
+                    MathSpan span;
+                    span.tex = text.mid(i + 1, closeIndex - (i + 1));
+                    span.display = false;
+                    out += mathPlaceholder(mathSpans->size());
+                    mathSpans->push_back(span);
+                    i = closeIndex;
+                    continue;
+                }
+            }
+        }
+
+        out += ch;
+    }
+
+    return out;
+}
+
+// Restores the spans extractMathSpans() pulled out as empty target elements
+// carrying the raw TeX in a data attribute, rather than re-inserting delimited
+// text for a client-side scanner to find: since the C++ side already knows exactly
+// where every math span is, there's no need for (and no ambiguity risk from) a
+// delimiter-scanning pass client-side -- the transcript shell's JS just calls
+// katex.render() directly on each of these once the HTML lands in the DOM.
+QString restoreMathSpans(QString html, const QVector<MathSpan> &mathSpans)
+{
+    for (int i = 0; i < mathSpans.size(); ++i) {
+        QString tex = mathSpans.at(i).tex;
+        tex.replace(QLatin1Char('&'), QStringLiteral("&amp;"));
+        tex.replace(QLatin1Char('"'), QStringLiteral("&quot;"));
+        tex.replace(QLatin1Char('<'), QStringLiteral("&lt;"));
+        tex.replace(QLatin1Char('>'), QStringLiteral("&gt;"));
+        const QString replacement = QStringLiteral("<span class=\"katex-target\" data-display=\"%1\" data-tex=\"%2\"></span>")
+                .arg(mathSpans.at(i).display ? QStringLiteral("true") : QStringLiteral("false"), tex);
+        html.replace(mathPlaceholder(i), replacement);
+    }
+    return html;
+}
+
+} // namespace
+
 QString trimCodeBlockFencePadding(QString code)
 {
     while (code.startsWith(QLatin1Char('\n'))) {
@@ -188,9 +315,12 @@ QString markdownFragmentToHtml(const QString &markdown, const QPalette &palette)
         return QString();
     }
 
+    QVector<MathSpan> mathSpans;
+    const QString withMathExtracted = extractMathSpans(trimmed, &mathSpans);
+
     QTextDocument doc;
     doc.setDocumentMargin(0.0);
-    doc.setMarkdown(escapeHtmlLikeTags(trimmed));
+    doc.setMarkdown(escapeHtmlLikeTags(withMathExtracted));
     QString html = decodeDoubleEscapedHtmlEntities(bodyFragmentFromDocument(doc));
 
     const QColor base = palette.color(QPalette::Base);
@@ -209,7 +339,7 @@ QString markdownFragmentToHtml(const QString &markdown, const QPalette &palette)
     html.replace(QStringLiteral("<th"), QStringLiteral("<th style=\"border:1px solid %1;padding:6px 8px;background:%2;color:%3;text-align:left;\"").arg(cssColor(border), cssColor(tableHeaderBackground), cssColor(textColor)));
     html.replace(QStringLiteral("<td"), QStringLiteral("<td style=\"border:1px solid %1;padding:6px 8px;color:%2;\"").arg(cssColor(border), cssColor(textColor)));
     html.replace(QStringLiteral("<a href="), QStringLiteral("<a style=\"color:%1;\" href=").arg(cssColor(linkColor)));
-    return html;
+    return restoreMathSpans(html, mathSpans);
 }
 
 QString messageToRichHtml(const QString &role,

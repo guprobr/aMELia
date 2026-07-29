@@ -1,0 +1,121 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<link rel="stylesheet" href="qrc:///katex/katex.min.css">
+<script src="qrc:///katex/katex.js"></script>
+<style>
+  html, body {
+    margin: 0;
+    padding: 8px 10px;
+    background: transparent;
+  }
+  #placeholder {
+    color: graytext;
+    font-style: italic;
+  }
+  .katex-target {
+    max-width: 100%;
+    overflow-x: auto;
+  }
+  .katex-display {
+    overflow-x: auto;
+    overflow-y: hidden;
+  }
+</style>
+</head>
+<body>
+<div id="placeholder">Conversation transcript...</div>
+<div id="transcript"></div>
+<script>
+  const transcript = document.getElementById('transcript');
+  const placeholder = document.getElementById('placeholder');
+  let streamingNode = null;
+
+  function renderMathTargets(root) {
+    const targets = root.querySelectorAll('.katex-target');
+    targets.forEach((el) => {
+      const tex = el.dataset.tex || '';
+      const display = el.dataset.display === 'true';
+      try {
+        katex.render(tex, el, {throwOnError: false, displayMode: display});
+      } catch (err) {
+        el.textContent = tex;
+      }
+    });
+  }
+
+  function isPinnedToBottom() {
+    const doc = document.documentElement;
+    return doc.scrollHeight - doc.scrollTop - doc.clientHeight < 24;
+  }
+
+  function scrollToBottom() {
+    window.scrollTo(0, document.documentElement.scrollHeight);
+  }
+
+  function hidePlaceholder() {
+    if (placeholder) {
+      placeholder.style.display = 'none';
+    }
+  }
+
+  function appendMessage(html) {
+    hidePlaceholder();
+    const pinned = isPinnedToBottom();
+    const wrapper = document.createElement('div');
+    wrapper.innerHTML = html;
+    transcript.appendChild(wrapper);
+    renderMathTargets(wrapper);
+    if (pinned) {
+      scrollToBottom();
+    }
+  }
+
+  function beginStreamingAssistant(prefixHtml) {
+    hidePlaceholder();
+    const pinned = isPinnedToBottom();
+    streamingNode = document.createElement('div');
+    streamingNode.style.margin = '8px 0 14px 0';
+    streamingNode.style.whiteSpace = 'pre-wrap';
+    streamingNode.innerHTML = prefixHtml;
+    const textNode = document.createElement('span');
+    textNode.id = 'streaming-text';
+    streamingNode.appendChild(textNode);
+    transcript.appendChild(streamingNode);
+    if (pinned) {
+      scrollToBottom();
+    }
+  }
+
+  function appendStreamingText(chunk) {
+    if (!streamingNode) {
+      return;
+    }
+    const pinned = isPinnedToBottom();
+    const textNode = streamingNode.querySelector('#streaming-text');
+    if (textNode) {
+      textNode.textContent += chunk;
+    }
+    if (pinned) {
+      scrollToBottom();
+    }
+  }
+
+  function endStreaming() {
+    if (streamingNode) {
+      streamingNode.remove();
+      streamingNode = null;
+    }
+  }
+
+  function clearTranscript() {
+    endStreaming();
+    transcript.innerHTML = '';
+    if (placeholder) {
+      placeholder.style.display = '';
+    }
+  }
+</script>
+</body>
+</html>

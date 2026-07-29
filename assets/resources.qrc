@@ -6,4 +6,29 @@
     <file alias="answer_start.wav">sounds/answer_start.wav</file>
     <file alias="answer_complete.wav">sounds/answer_complete.wav</file>
   </qresource>
+  <qresource prefix="/katex">
+    <file alias="katex.js">katex/katex.js</file>
+    <file alias="katex.min.css">katex/katex.min.css</file>
+    <file alias="transcript_shell.html">katex/transcript_shell.html</file>
+    <file alias="fonts/KaTeX_AMS-Regular.woff2">katex/fonts/KaTeX_AMS-Regular.woff2</file>
+    <file alias="fonts/KaTeX_Caligraphic-Bold.woff2">katex/fonts/KaTeX_Caligraphic-Bold.woff2</file>
+    <file alias="fonts/KaTeX_Caligraphic-Regular.woff2">katex/fonts/KaTeX_Caligraphic-Regular.woff2</file>
+    <file alias="fonts/KaTeX_Fraktur-Bold.woff2">katex/fonts/KaTeX_Fraktur-Bold.woff2</file>
+    <file alias="fonts/KaTeX_Fraktur-Regular.woff2">katex/fonts/KaTeX_Fraktur-Regular.woff2</file>
+    <file alias="fonts/KaTeX_Main-BoldItalic.woff2">katex/fonts/KaTeX_Main-BoldItalic.woff2</file>
+    <file alias="fonts/KaTeX_Main-Bold.woff2">katex/fonts/KaTeX_Main-Bold.woff2</file>
+    <file alias="fonts/KaTeX_Main-Italic.woff2">katex/fonts/KaTeX_Main-Italic.woff2</file>
+    <file alias="fonts/KaTeX_Main-Regular.woff2">katex/fonts/KaTeX_Main-Regular.woff2</file>
+    <file alias="fonts/KaTeX_Math-BoldItalic.woff2">katex/fonts/KaTeX_Math-BoldItalic.woff2</file>
+    <file alias="fonts/KaTeX_Math-Italic.woff2">katex/fonts/KaTeX_Math-Italic.woff2</file>
+    <file alias="fonts/KaTeX_SansSerif-Bold.woff2">katex/fonts/KaTeX_SansSerif-Bold.woff2</file>
+    <file alias="fonts/KaTeX_SansSerif-Italic.woff2">katex/fonts/KaTeX_SansSerif-Italic.woff2</file>
+    <file alias="fonts/KaTeX_SansSerif-Regular.woff2">katex/fonts/KaTeX_SansSerif-Regular.woff2</file>
+    <file alias="fonts/KaTeX_Script-Regular.woff2">katex/fonts/KaTeX_Script-Regular.woff2</file>
+    <file alias="fonts/KaTeX_Size1-Regular.woff2">katex/fonts/KaTeX_Size1-Regular.woff2</file>
+    <file alias="fonts/KaTeX_Size2-Regular.woff2">katex/fonts/KaTeX_Size2-Regular.woff2</file>
+    <file alias="fonts/KaTeX_Size3-Regular.woff2">katex/fonts/KaTeX_Size3-Regular.woff2</file>
+    <file alias="fonts/KaTeX_Size4-Regular.woff2">katex/fonts/KaTeX_Size4-Regular.woff2</file>
+    <file alias="fonts/KaTeX_Typewriter-Regular.woff2">katex/fonts/KaTeX_Typewriter-Regular.woff2</file>
+  </qresource>
 </RCC>

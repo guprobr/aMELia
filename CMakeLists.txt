@@ -19,7 +19,7 @@ if(UNIX AND NOT APPLE)
     set(AMELIA_HAS_DBUS TRUE)
 endif()
 
-set(AMELIA_QT_COMPONENTS Core Widgets Network Concurrent Pdf Multimedia)
+set(AMELIA_QT_COMPONENTS Core Widgets Network Concurrent Pdf Multimedia WebEngineWidgets)
 if(AMELIA_HAS_DBUS)
     list(APPEND AMELIA_QT_COMPONENTS DBus)
 endif()
@@ -165,6 +165,7 @@ target_link_libraries(amelia_qt6
         Qt6::Concurrent
         Qt6::Pdf
         Qt6::Multimedia
+        Qt6::WebEngineWidgets
         ${AMELIA_TESSERACT_TARGET}
         ${AMELIA_LEPTONICA_TARGET}
         ${AMELIA_LIBZIP_TARGET}

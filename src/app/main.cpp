@@ -18,6 +18,7 @@
 #include <QStringList>
 #include <QTextStream>
 #include <QTimer>
+#include <QWebEngineUrlScheme>
 
 namespace {
 bool ensureFileWritten(const QString &path, const QByteArray &data, QString *message)
@@ -148,6 +149,15 @@ static QString resolveConfigPath(QString *message)
 
 int main(int argc, char *argv[])
 {
+    // Qt6 WebEngine dropped automatic qrc: support; the transcript view loads its
+    // shell page and KaTeX assets from qrc, so this must run before QApplication
+    // (and thus before QtWebEngine) is constructed.
+    QWebEngineUrlScheme qrcScheme(QByteArrayLiteral("qrc"));
+    qrcScheme.setFlags(QWebEngineUrlScheme::SecureScheme
+                      | QWebEngineUrlScheme::LocalAccessAllowed
+                      | QWebEngineUrlScheme::CorsEnabled);
+    QWebEngineUrlScheme::registerScheme(qrcScheme);
+
     QApplication app(argc, argv);
     QApplication::setWindowIcon(QIcon(QStringLiteral(":/branding/amelia_logo.svg")));
     QApplication::setApplicationName(QStringLiteral("amelia_qt6"));
