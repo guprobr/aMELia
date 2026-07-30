@@ -346,7 +346,8 @@ QString messageToRichHtml(const QString &role,
                           const QString &text,
                           QStringList *codeBlocks,
                           int answerIndex,
-                          const QPalette &palette)
+                          const QPalette &palette,
+                          bool forExport)
 {
     const QString rolePrefix = transcriptPrefix(role).toHtmlEscaped();
     const QColor accent = transcriptPrefixColor(palette, role);
@@ -375,20 +376,21 @@ QString messageToRichHtml(const QString &role,
             const QString languageBadge = segment.language.trimmed().isEmpty()
                     ? QStringLiteral("code")
                     : segment.language.trimmed().toHtmlEscaped();
+            const QString copyCodeLink = forExport
+                    ? QString()
+                    : QStringLiteral("<a href=\"copycode:%1\" style=\"font-size:12px;color:%2;text-decoration:none;background:%3;padding:4px 8px;border-radius:6px;border:1px solid %4;\">Copy code</a>")
+                        .arg(QString::number(codeIndex), cssColor(linkColor), cssColor(codeActionBackground), cssColor(border));
             bodyParts << QStringLiteral(
                 "<div style=\"margin:10px 0 14px 0;\">"
                 "<div style=\"display:flex;justify-content:space-between;align-items:center;margin:0 0 6px 0;\">"
                 "<span style=\"font-size:11px;font-weight:700;color:%1;text-transform:uppercase;letter-spacing:0.08em;\">%2</span>"
-                "<a href=\"copycode:%3\" style=\"font-size:12px;color:%4;text-decoration:none;background:%5;padding:4px 8px;border-radius:6px;border:1px solid %6;\">Copy code</a>"
+                "%3"
                 "</div>"
-                "<pre style=\"margin:0;background:%7;color:%8;padding:12px;border-radius:10px;border:1px solid %9;overflow:auto;white-space:pre;tab-size:4;\"><code>%10</code></pre>"
+                "<pre style=\"margin:0;background:%4;color:%5;padding:12px;border-radius:10px;border:1px solid %6;overflow:auto;white-space:pre;tab-size:4;\"><code>%7</code></pre>"
                 "</div>")
                 .arg(cssColor(accent),
                      languageBadge,
-                     QString::number(codeIndex),
-                     cssColor(linkColor),
-                     cssColor(codeActionBackground),
-                     cssColor(border),
+                     copyCodeLink,
                      cssColor(codeBackground),
                      cssColor(palette.color(QPalette::Text)),
                      cssColor(border),
@@ -405,10 +407,27 @@ QString messageToRichHtml(const QString &role,
         bodyParts << QStringLiteral("<p>%1</p>").arg(normalizedText.toHtmlEscaped().replace(QStringLiteral("\n"), QStringLiteral("<br>")));
     }
 
+    const bool isSelectableAnswer = !forExport
+            && role.compare(QStringLiteral("assistant"), Qt::CaseInsensitive) == 0
+            && answerIndex >= 0;
+
+    QString headerHtml = QStringLiteral("<div style=\"font-weight:700;color:%1;margin:0 0 8px 0;\">%2</div>")
+            .arg(cssColor(accent), rolePrefix);
+    if (isSelectableAnswer) {
+        headerHtml = QStringLiteral(
+            "<div style=\"display:flex;align-items:center;gap:8px;margin:0 0 8px 0;\">"
+            "<input type=\"checkbox\" class=\"answer-select\" onclick=\"location.href=(this.checked?'selectanswer:':'deselectanswer:')+%1\" style=\"cursor:pointer;\">"
+            "<span style=\"font-weight:700;color:%2;\">%3</span>"
+            "</div>")
+            .arg(QString::number(answerIndex), cssColor(accent), rolePrefix);
+    }
+
     QString footerHtml;
-    if (role.compare(QStringLiteral("assistant"), Qt::CaseInsensitive) == 0 && answerIndex >= 0) {
+    if (role.compare(QStringLiteral("assistant"), Qt::CaseInsensitive) == 0 && answerIndex >= 0 && !forExport) {
         footerHtml = QStringLiteral(
             "<div style=\"margin-top:12px;padding-top:8px;border-top:1px solid %1;text-align:right;\">"
+            "<a href=\"convertpdf:%2\" style=\"font-size:12px;color:%3;text-decoration:none;\">Convert to PDF</a>"
+            "<span style=\"margin:0 8px;color:%3;\">&middot;</span>"
             "<a href=\"copyanswer:%2\" style=\"font-size:12px;color:%3;text-decoration:none;\">Copy Answer</a>"
             "</div>")
             .arg(cssColor(footerBorder), QString::number(answerIndex), cssColor(linkColor));
@@ -416,9 +435,9 @@ QString messageToRichHtml(const QString &role,
 
     return QStringLiteral(
         "<div style=\"margin:8px 0 14px 0;padding:10px 12px;border-radius:12px;background:%1;border:1px solid %2;\">"
-        "<div style=\"font-weight:700;color:%3;margin:0 0 8px 0;\">%4</div>"
-        "<div style=\"color:%5;\">%6</div>"
-        "%7"
+        "%3"
+        "<div style=\"color:%4;\">%5</div>"
+        "%6"
         "</div>")
-        .arg(cssColor(cardBackground), cssColor(border), cssColor(accent), rolePrefix, cssColor(bodyColor), bodyParts.join(QStringLiteral("\n")), footerHtml);
+        .arg(cssColor(cardBackground), cssColor(border), headerHtml, cssColor(bodyColor), bodyParts.join(QStringLiteral("\n")), footerHtml);
 }

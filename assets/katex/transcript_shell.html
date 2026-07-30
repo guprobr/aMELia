@@ -116,6 +116,12 @@
       placeholder.style.display = '';
     }
   }
+
+  function clearSelection() {
+    document.querySelectorAll('.answer-select').forEach((cb) => {
+      cb.checked = false;
+    });
+  }
 </script>
 </body>
 </html>

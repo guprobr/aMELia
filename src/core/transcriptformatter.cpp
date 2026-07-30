@@ -427,7 +427,7 @@ QString ensureBlankLineBeforeFence(const QString &text)
 {
     QString normalized = text;
     normalized.replace(QRegularExpression(QStringLiteral("([^\\n])\\n(```[A-Za-z0-9_+#\\-]*\\n)")),
-                       QStringLiteral("\\1\\n\\n\\2"));
+                       QStringLiteral("\\1\n\n\\2"));
     return normalized;
 }
 
@@ -435,7 +435,7 @@ QString ensureBlankLineAfterFence(const QString &text)
 {
     QString normalized = text;
     normalized.replace(QRegularExpression(QStringLiteral("(\\n```\\n)([^\\n])")),
-                       QStringLiteral("\\1\\n\\2"));
+                       QStringLiteral("\\1\n\\2"));
     return normalized;
 }
 

@@ -1,10 +1,77 @@
-# aMELia Qt6 v10.1.1
+# aMELia Qt6 v10.1.2
 
 Amelia is a local-first Qt6/C++ coding and cloud assistant that talks to a local Ollama server, stores its state under `~/.amelia_qt6`, indexes a local knowledge base, and can optionally use sanitized external web search through SearXNG.
 
-Version 10.1.1 is an internal modularization pass (the three largest files dropped 16-44% in size with no behavior change) plus prompt-injection hardening for external search and Portuguese OCR support. Version 10.1.0 adds auto-continue for answers that hit Ollama's context-window limit, a self-calibrating countdown progress bar for the "waiting on the first token" phase, and in-place editing of saved Memory entries. Version 10.0.1 adds native `.docx` ingestion, cross-platform answer-start/answer-finished notification chimes, and fixes a document-study regression where the outline planner's generic templated skeleton (and its hard 4800-char context cap) could hijack "teach me this document" requests instead of the TOC-aware document-study path. Version 10.0.0 removes Amelia's last external-binary dependencies and fixes the cross-platform build: PDF ingestion and OCR now run fully in-process against linked libraries instead of shelling out to `pdftotext`/`pdftoppm`/`tesseract`, and the CMake build no longer hard-requires Linux-only components (QtDBus, pkg-config) to configure. Version 9.19.9 rolled forward the existing bootstrap, indexing, transcript, Prompt Lab, notification, and progress-bar work, and adds a Knowledge Base collection model with preserved folder structure, a tree-view browser, a hard-locked Knowledge Base root and safer workspace-jail boundaries under `~/.amelia_qt6`, stronger transcript code-block handling, first-run service prompts, a full JSON configuration editor, and a context-aware document-study budget policy that now respects Ollama `num_ctx` end-to-end, plus a generic one-shot fallback retry when Ollama reports that the model runner stopped unexpectedly during a large grounded request. Version 9.19.8 keeps the earlier indexing RAM fixes, hard-disables Knowledge Base interaction while a prompt or reindex is in flight, fixes the document-study `num_ctx` reserve bug, keeps numbered procedure leads attached to following command/config lines across semantic block building and PDF page breaks, strengthens section-preview stitching, adds an exact-extraction retrieval mode for exhaustive scraper-style prompts so Amelia can emit ordered raw chunk windows instead of only lossy section summaries, follows the active Qt/system palette far more closely across widgets, labels, transcript cards, diagnostics, and in-app notifications, broadens snippet extraction for large documents and external search results, fixes the palette-helper compile regression in streamed assistant rendering, and repairs stray literal `\n\n` layout artifacts in final markdown output. aMELia is also allegorically considered a MEL: Model Enhancement Lab.
+Version 10.1.2 migrates the transcript view to a `QWebEngineView` so LaTeX math (`$$...$$`, `\(...\)`, `\[...\]`, and Pandoc-style single-`$...$`) renders through a bundled KaTeX instead of showing raw LaTeX source, fixes two bugs found along the way (a transcript-sanitizer escape that corrupted LaTeX commands, and a longstanding fenced-code-block bug that leaked a literal `\n\n` before every closing fence), and adds per-answer and multi-select "Convert to PDF" export. Version 10.1.1 is an internal modularization pass (the three largest files dropped 16-44% in size with no behavior change) plus prompt-injection hardening for external search and Portuguese OCR support. Version 10.1.0 adds auto-continue for answers that hit Ollama's context-window limit, a self-calibrating countdown progress bar for the "waiting on the first token" phase, and in-place editing of saved Memory entries. Version 10.0.1 adds native `.docx` ingestion, cross-platform answer-start/answer-finished notification chimes, and fixes a document-study regression where the outline planner's generic templated skeleton (and its hard 4800-char context cap) could hijack "teach me this document" requests instead of the TOC-aware document-study path. Version 10.0.0 removes Amelia's last external-binary dependencies and fixes the cross-platform build: PDF ingestion and OCR now run fully in-process against linked libraries instead of shelling out to `pdftotext`/`pdftoppm`/`tesseract`, and the CMake build no longer hard-requires Linux-only components (QtDBus, pkg-config) to configure. Version 9.19.9 rolled forward the existing bootstrap, indexing, transcript, Prompt Lab, notification, and progress-bar work, and adds a Knowledge Base collection model with preserved folder structure, a tree-view browser, a hard-locked Knowledge Base root and safer workspace-jail boundaries under `~/.amelia_qt6`, stronger transcript code-block handling, first-run service prompts, a full JSON configuration editor, and a context-aware document-study budget policy that now respects Ollama `num_ctx` end-to-end, plus a generic one-shot fallback retry when Ollama reports that the model runner stopped unexpectedly during a large grounded request. Version 9.19.8 keeps the earlier indexing RAM fixes, hard-disables Knowledge Base interaction while a prompt or reindex is in flight, fixes the document-study `num_ctx` reserve bug, keeps numbered procedure leads attached to following command/config lines across semantic block building and PDF page breaks, strengthens section-preview stitching, adds an exact-extraction retrieval mode for exhaustive scraper-style prompts so Amelia can emit ordered raw chunk windows instead of only lossy section summaries, follows the active Qt/system palette far more closely across widgets, labels, transcript cards, diagnostics, and in-app notifications, broadens snippet extraction for large documents and external search results, fixes the palette-helper compile regression in streamed assistant rendering, and repairs stray literal `\n\n` layout artifacts in final markdown output. aMELia is also allegorically considered a MEL: Model Enhancement Lab.
 
 NOTE: prompt transcripts are first generated in markdown but after it finishes, they should be properly formatted.
+
+## Ubuntu packages
+
+### Required to build Amelia
+
+```bash
+sudo apt update
+sudo apt install -y \
+  build-essential \
+  cmake \
+  qt6-base-dev \
+  qt6-tools-dev \
+  qt6-tools-dev-tools \
+  qt6-svg-dev \
+  qt6-imageformats-plugins \
+  qt6-pdf-dev \
+  qt6-multimedia-dev \
+  qt6-webengine-dev \
+  libtesseract-dev \
+  libleptonica-dev \
+  libzip-dev \
+  tesseract-ocr-eng \
+  tesseract-ocr-por \
+  curl \
+  git
+```
+
+Why these matter:
+
+- `qt6-base-dev` -> Qt Core / Widgets / Network / Concurrent / tray integration
+- `qt6-tools-dev` and `qt6-tools-dev-tools` -> standard Qt6 dev tooling on Ubuntu
+- `qt6-svg-dev` / `qt6-imageformats-plugins` -> SVG logo rendering and runtime image support
+- `qt6-pdf-dev` -> `QPdfDocument`/`QPdfSelection`, which Amelia links directly to extract PDF text and rasterize pages for OCR (no `pdftotext`/`pdftoppm` subprocess anymore)
+- `qt6-multimedia-dev` -> `QSoundEffect`, used to play the bundled answer-started/answer-completed notification chimes
+- `qt6-webengine-dev` -> `QWebEngineView`/`QWebEnginePage`, which render the transcript (including KaTeX-typeset math) and drive PDF export via `printToPdf()`
+- `libtesseract-dev` / `libleptonica-dev` -> libtesseract's C++ API, which Amelia links directly for in-process OCR (no `tesseract` CLI subprocess anymore)
+- `libzip-dev` -> reads `.docx` files (a zip archive of WordprocessingML XML parts) directly in-process; paired with Qt's own `QXmlStreamReader` to parse `word/document.xml`, so no LibreOffice/pandoc/antiword subprocess is needed
+- `tesseract-ocr-eng` -> the English `eng.traineddata` language data libtesseract loads at runtime; without it OCR silently stays disabled
+- `tesseract-ocr-por` -> optional Portuguese `por.traineddata`; Amelia tries `eng+por` first and falls back to `eng`-only if this package isn't installed, so it's not required, only recommended for Portuguese-language documents
+- `curl` -> convenient for testing Ollama and SearXNG endpoints
+
+## Build
+
+```bash
+mkdir -p build
+cd build
+cmake ..
+cmake --build . -j$(nproc)
+cmake --install .
+```
+
+## Desktop install
+
+`cmake --install .` installs:
+
+- desktop entry: `${CMAKE_INSTALL_PREFIX}/share/applications/amelia_qt6.desktop`
+- icon: `${CMAKE_INSTALL_PREFIX}/share/icons/hicolor/scalable/apps/amelia_qt6.svg`
+- example config: `${CMAKE_INSTALL_PREFIX}/share/amelia_qt6/config/config.example.json`
+
+## What changed in v10.1.2
+
+- **LaTeX math rendering in the transcript**: migrated the transcript from `QTextBrowser` to `QWebEngineView`, rendering math with KaTeX (vendored from the Ubuntu `libjs-katex`/`fonts-katex` packages, MIT-licensed) instead of showing `$$...$$`, `\(...\)`, `\[...\]` as raw LaTeX text. Single-dollar `$...$` inline math is also supported, using Pandoc's heuristic to tell real math apart from currency (`$20,000 and $30,000` stays plain text; `$a \neq 0$` renders)
+- fixed a transcript-sanitizer bug where LaTeX commands starting with `\t`/`\n`/`\r` (`\text`, `\theta`, `\to`, `\neq`, `\right`, ...) had that prefix silently eaten as a stray layout-escape before ever reaching the renderer
+- math spans are extracted before Qt's Markdown-to-HTML pass and reinserted as literal KaTeX targets afterward, so CommonMark's emphasis parsing can no longer mistake underscores inside math (e.g. `\sum_{i=1}^{n} x_i`) for `_italic_`
+- fixed a longstanding bug (predating this release, in `ensureBlankLineBeforeFence`/`ensureBlankLineAfterFence`) where every fenced code block in the transcript rendered a literal `\n\n` right before its closing fence, caused by a `QRegularExpression::replace()` replacement string using two literal characters (`\`, `n`) instead of a real newline
+- **export transcript answers to PDF**: a "Convert to PDF" link next to "Copy Answer" on every assistant turn exports that single answer; a selection checkbox on each answer plus a "Convert Selected to PDF" toolbar button combine multiple chosen answers into one PDF, typeset (including math) via the same KaTeX pipeline as the live transcript
+- reorganized the chat toolbar's buttons into two grouped rows so labels stop getting visually truncated as more actions were added
 
 ## What changed in v10.1.1
 
@@ -109,62 +176,6 @@ NOTE: prompt transcripts are first generated in markdown but after it finishes, 
 
 - the new exact-extraction retrieval path is a runtime-only change and works immediately after upgrade
 - the semantic block/page-break fixes improve how new chunks are built, so reindex once after upgrading if you want existing cached documents to benefit from the better chunk boundaries
-
-## Ubuntu packages
-
-### Required to build Amelia
-
-```bash
-sudo apt update
-sudo apt install -y \
-  build-essential \
-  cmake \
-  qt6-base-dev \
-  qt6-tools-dev \
-  qt6-tools-dev-tools \
-  qt6-svg-dev \
-  qt6-imageformats-plugins \
-  qt6-pdf-dev \
-  qt6-multimedia-dev \
-  libtesseract-dev \
-  libleptonica-dev \
-  libzip-dev \
-  tesseract-ocr-eng \
-  tesseract-ocr-por \
-  curl \
-  git
-```
-
-Why these matter:
-
-- `qt6-base-dev` -> Qt Core / Widgets / Network / Concurrent / tray integration
-- `qt6-tools-dev` and `qt6-tools-dev-tools` -> standard Qt6 dev tooling on Ubuntu
-- `qt6-svg-dev` / `qt6-imageformats-plugins` -> SVG logo rendering and runtime image support
-- `qt6-pdf-dev` -> `QPdfDocument`/`QPdfSelection`, which Amelia links directly to extract PDF text and rasterize pages for OCR (no `pdftotext`/`pdftoppm` subprocess anymore)
-- `qt6-multimedia-dev` -> `QSoundEffect`, used to play the bundled answer-started/answer-completed notification chimes
-- `libtesseract-dev` / `libleptonica-dev` -> libtesseract's C++ API, which Amelia links directly for in-process OCR (no `tesseract` CLI subprocess anymore)
-- `libzip-dev` -> reads `.docx` files (a zip archive of WordprocessingML XML parts) directly in-process; paired with Qt's own `QXmlStreamReader` to parse `word/document.xml`, so no LibreOffice/pandoc/antiword subprocess is needed
-- `tesseract-ocr-eng` -> the English `eng.traineddata` language data libtesseract loads at runtime; without it OCR silently stays disabled
-- `tesseract-ocr-por` -> optional Portuguese `por.traineddata`; Amelia tries `eng+por` first and falls back to `eng`-only if this package isn't installed, so it's not required, only recommended for Portuguese-language documents
-- `curl` -> convenient for testing Ollama and SearXNG endpoints
-
-## Build
-
-```bash
-mkdir -p build
-cd build
-cmake ..
-cmake --build . -j$(nproc)
-cmake --install .
-```
-
-## Desktop install
-
-`cmake --install .` installs:
-
-- desktop entry: `${CMAKE_INSTALL_PREFIX}/share/applications/amelia_qt6.desktop`
-- icon: `${CMAKE_INSTALL_PREFIX}/share/icons/hicolor/scalable/apps/amelia_qt6.svg`
-- example config: `${CMAKE_INSTALL_PREFIX}/share/amelia_qt6/config/config.example.json`
 
 ## Starting Ollama
 

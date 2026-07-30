@@ -55,11 +55,15 @@ QString decodeDoubleEscapedHtmlEntities(QString html);
 QString markdownFragmentToHtml(const QString &markdown, const QPalette &palette);
 
 // Renders one full transcript message (role prefix + body, with code segments as
-// copyable blocks and a "Copy Answer" footer for assistant turns) to the HTML the
-// transcript QTextBrowser displays. codeBlocks, if non-null, is appended with each
-// code segment's text so the UI can wire up per-block "Copy code" links by index.
+// copyable blocks and a "Copy Answer"/"Convert to PDF" footer for assistant turns) to
+// the HTML the transcript's WebEngine view displays. codeBlocks, if non-null, is
+// appended with each code segment's text so the UI can wire up per-block "Copy code"
+// links by index. forExport strips every interactive-only element (the selection
+// checkbox, the footer links, the "Copy code" link) for use in PDF export, where none
+// of those controls would do anything.
 QString messageToRichHtml(const QString &role,
                           const QString &text,
                           QStringList *codeBlocks,
                           int answerIndex,
-                          const QPalette &palette);
+                          const QPalette &palette,
+                          bool forExport = false);

@@ -3,8 +3,10 @@
 #include <QElapsedTimer>
 #include <QHash>
 #include <QJsonObject>
+#include <QList>
 #include <QMainWindow>
 #include <QCloseEvent>
+#include <QSet>
 #include <QString>
 #include <QStringList>
 
@@ -112,6 +114,7 @@ private slots:
     void onPromptLabCopyRecipeClicked();
     void onCopyLastAnswerClicked();
     void onCopyCodeBlocksClicked();
+    void onConvertSelectedToPdfClicked();
     void onKnowledgeBaseFilterTextChanged(const QString &text);
     void onKnowledgeBaseSortModeChanged(int index);
     void onRemoveSelectedKnowledgeAssetsClicked();
@@ -141,6 +144,8 @@ private:
     QString buildPromptLabRecipe() const;
     void insertTranscriptMessage(const QString &role, const QString &text);
     void runTranscriptJs(const QString &function, const QString &argument = QString());
+    void exportAnswersToPdf(const QList<int> &answerIndices);
+    void updateConvertSelectedButtonState();
     void applyKnowledgeBaseFilter();
     void updateKnowledgeBaseFilterStatus();
     QStringList selectedKnowledgeAssetPaths() const;
@@ -221,6 +226,7 @@ private:
     QPushButton *m_promptLabCopyRecipeButton = nullptr;
     QPushButton *m_copyLastAnswerButton = nullptr;
     QPushButton *m_copyCodeBlocksButton = nullptr;
+    QPushButton *m_convertSelectedToPdfButton = nullptr;
     QPushButton *m_reasoningTraceToggleButton = nullptr;
     QPushButton *m_verboseDiagnosticsToggleButton = nullptr;
     QLabel *m_reasoningTraceInfoLabel = nullptr;
@@ -267,6 +273,7 @@ private:
     QStringList m_pinnedKnowledgeAssets;
     QStringList m_transcriptCodeBlocks;
     QStringList m_transcriptAssistantAnswers;
+    QSet<int> m_selectedAnswerIndices;
     QString m_transcriptPlainText;
     QString m_diagnosticsPlainText;
     QHash<QString, QString> m_knowledgeDisplayNames;

@@ -45,6 +45,9 @@
 #include <QMenuBar>
 #include <QMimeData>
 #include <QMessageBox>
+#include <QMarginsF>
+#include <QPageLayout>
+#include <QPageSize>
 #include <QPlainTextEdit>
 #include <QPoint>
 #include <QPushButton>
@@ -72,6 +75,24 @@
 
 namespace {
 
+// Builds a JS call with a single JSON-escaped string argument, e.g.
+// buildTranscriptJsCall("appendMessage", html) -> "appendMessage(\"...\")". Shared by
+// MainWindow::runTranscriptJs (the live transcript) and the offscreen PDF-export view,
+// since both need to hand arbitrary HTML/text to the same shell page's JS functions.
+QString buildTranscriptJsCall(const QString &function, const QString &argument)
+{
+    QString script = function + QStringLiteral("(");
+    if (!argument.isNull()) {
+        const QString encoded = QString::fromUtf8(
+                QJsonDocument(QJsonArray{QJsonValue(argument)}).toJson(QJsonDocument::Compact));
+        // encoded is a one-element JSON array, e.g. ["escaped text"]; strip the brackets
+        // to get just the JS string literal.
+        script += encoded.mid(1, encoded.size() - 2);
+    }
+    script += QStringLiteral(")");
+    return script;
+}
+
 // Intercepts link clicks in the transcript WebEngine view: copycode:/copyanswer:
 // links and real URLs never navigate the embedded page itself (mirroring the old
 // QTextBrowser's setOpenLinks(false)/setOpenExternalLinks(false)); they're forwarded
@@ -84,16 +105,23 @@ public:
         : QWebEnginePage(parent), m_onLinkActivated(std::move(onLinkActivated)) {}
 
 protected:
+    // Only the shell page's own qrc:// load is allowed to actually navigate. Every
+    // other URL -- copycode:/copyanswer:/convertpdf:/selectanswer: links, real
+    // http(s) links, whatever -- is forwarded to the callback and blocked, regardless
+    // of NavigationType. This has to be type-agnostic (not just NavigationTypeLinkClicked)
+    // because a checkbox's onclick can only reach C++ via a location.href assignment,
+    // which Chromium reports as a different NavigationType than an actual link click.
     bool acceptNavigationRequest(const QUrl &url, QWebEnginePage::NavigationType type, bool isMainFrame) override
     {
+        Q_UNUSED(type);
         Q_UNUSED(isMainFrame);
-        if (type == QWebEnginePage::NavigationTypeLinkClicked) {
-            if (m_onLinkActivated) {
-                m_onLinkActivated(url);
-            }
-            return false;
+        if (url.scheme() == QStringLiteral("qrc")) {
+            return true;
         }
-        return true;
+        if (m_onLinkActivated) {
+            m_onLinkActivated(url);
+        }
+        return false;
     }
 
 private:
@@ -239,7 +267,8 @@ MainWindow::MainWindow(const QString &configPath,
     toolbarLayout->addWidget(modelLabel);
     toolbarLayout->addWidget(m_modelCombo);
 
-    auto *controlsLayout = new QHBoxLayout();
+    auto *controlsRow1 = new QHBoxLayout();
+    auto *controlsRow2 = new QHBoxLayout();
     m_sendButton = new QPushButton(QStringLiteral("📨 Send"), chatPane);
     m_stopButton = new QPushButton(QStringLiteral("🛑 Stop"), chatPane);
     m_reindexButton = new QPushButton(QStringLiteral("🔄 Reindex docs"), chatPane);
@@ -249,6 +278,8 @@ MainWindow::MainWindow(const QString &configPath,
     m_rememberButton = new QPushButton(QStringLiteral("📝 Manual Memory"), chatPane);
     m_copyLastAnswerButton = new QPushButton(QStringLiteral("📋 Copy answer"), chatPane);
     m_copyCodeBlocksButton = nullptr;
+    m_convertSelectedToPdfButton = new QPushButton(QStringLiteral("📄 Convert Selected to PDF"), chatPane);
+    m_convertSelectedToPdfButton->setEnabled(false);
     m_importFilesButton = new QPushButton(QStringLiteral("📄 Import files"), chatPane);
     m_importFolderButton = new QPushButton(QStringLiteral("📂 Import folder"), chatPane);
     m_statusLabel = new QLabel(QStringLiteral("Ready."), chatPane);
@@ -266,23 +297,31 @@ MainWindow::MainWindow(const QString &configPath,
     m_cancelIndexingButton->hide();
     m_cancelIndexingButton->setEnabled(false);
 
-    controlsLayout->addWidget(m_importFilesButton);
-    controlsLayout->addWidget(m_importFolderButton);
-    controlsLayout->addWidget(m_rememberButton);
-    controlsLayout->addWidget(m_copyLastAnswerButton);
-    controlsLayout->addStretch(1);
-    controlsLayout->addWidget(m_refreshModelsButton);
-    controlsLayout->addWidget(m_reindexButton);
-    controlsLayout->addWidget(m_cancelIndexingButton);
-    controlsLayout->addWidget(m_stopButton);
-    controlsLayout->addWidget(m_sendButton);
+    // Split across two rows -- knowledge-base/session housekeeping on top, answer
+    // export actions + the primary send/stop controls below -- since all nine
+    // buttons crammed into a single row left labels squeezed/truncated once the
+    // PDF export button (a long label) joined the row.
+    controlsRow1->addWidget(m_importFilesButton);
+    controlsRow1->addWidget(m_importFolderButton);
+    controlsRow1->addWidget(m_rememberButton);
+    controlsRow1->addWidget(m_refreshModelsButton);
+    controlsRow1->addWidget(m_reindexButton);
+    controlsRow1->addWidget(m_cancelIndexingButton);
+    controlsRow1->addStretch(1);
+
+    controlsRow2->addWidget(m_copyLastAnswerButton);
+    controlsRow2->addWidget(m_convertSelectedToPdfButton);
+    controlsRow2->addStretch(1);
+    controlsRow2->addWidget(m_stopButton);
+    controlsRow2->addWidget(m_sendButton);
 
     chatLayout->addLayout(titleRow);
     chatLayout->addWidget(m_transcript, 1);
     chatLayout->addLayout(toolbarLayout);
     chatLayout->addWidget(priorityPanel);
     chatLayout->addWidget(m_input);
-    chatLayout->addLayout(controlsLayout);
+    chatLayout->addLayout(controlsRow1);
+    chatLayout->addLayout(controlsRow2);
 
     auto *statusLayout = new QHBoxLayout();
     statusLayout->addWidget(m_statusLabel, 1);
@@ -584,6 +623,7 @@ MainWindow::MainWindow(const QString &configPath,
     setWidgetTip(m_editMemoryButton, QStringLiteral("Edit the text and pinned status of the selected persisted memory entry."));
     setWidgetTip(m_deleteMemoryButton, QStringLiteral("Delete the selected persisted memory entry."));
     setWidgetTip(m_copyLastAnswerButton, QStringLiteral("Copy the most recent full assistant answer to the clipboard."));
+    setWidgetTip(m_convertSelectedToPdfButton, QStringLiteral("Export the assistant answers checked in the transcript into a single PDF file."));
     setWidgetTip(m_importFilesButton, QStringLiteral("Import one or more files into the local Knowledge Base."));
     setWidgetTip(m_importFolderButton, QStringLiteral("Import an entire folder into the local Knowledge Base."));
     setWidgetTip(m_statusLabel, QStringLiteral("Current high-level status for prompt preparation, indexing, and generation."));
@@ -666,6 +706,7 @@ MainWindow::MainWindow(const QString &configPath,
     connect(m_promptLabBrowseFolderButton, &QPushButton::clicked, this, &MainWindow::onPromptLabBrowseFolderClicked);
     connect(m_promptLabCopyRecipeButton, &QPushButton::clicked, this, &MainWindow::onPromptLabCopyRecipeClicked);
     connect(m_copyLastAnswerButton, &QPushButton::clicked, this, &MainWindow::onCopyLastAnswerClicked);
+    connect(m_convertSelectedToPdfButton, &QPushButton::clicked, this, &MainWindow::onConvertSelectedToPdfClicked);
     connect(m_sourceInventoryFilter, &QLineEdit::textChanged, this, &MainWindow::onKnowledgeBaseFilterTextChanged);
     connect(m_sourceInventorySortCombo, qOverload<int>(&QComboBox::currentIndexChanged), this, &MainWindow::onKnowledgeBaseSortModeChanged);
     connect(m_prioritizeSelectedAssetButton, &QPushButton::clicked, this, &MainWindow::onPrioritizeSelectedKnowledgeAssetsClicked);
@@ -797,15 +838,7 @@ void MainWindow::runTranscriptJs(const QString &function, const QString &argumen
         return;
     }
 
-    QString script = function + QStringLiteral("(");
-    if (!argument.isNull()) {
-        const QString encoded = QString::fromUtf8(
-                QJsonDocument(QJsonArray{QJsonValue(argument)}).toJson(QJsonDocument::Compact));
-        // encoded is a one-element JSON array, e.g. ["escaped text"]; strip the brackets
-        // to get just the JS string literal.
-        script += encoded.mid(1, encoded.size() - 2);
-    }
-    script += QStringLiteral(")");
+    const QString script = buildTranscriptJsCall(function, argument);
 
     if (!m_transcriptPageReady) {
         // The shell page (and the JS functions it defines) may not have finished
@@ -1315,6 +1348,8 @@ void MainWindow::rebuildTranscriptFromPlainText(const QString &text)
     m_lastAssistantMessage.clear();
     m_transcriptCodeBlocks.clear();
     m_transcriptAssistantAnswers.clear();
+    m_selectedAnswerIndices.clear();
+    updateConvertSelectedButtonState();
 
     QString currentRole;
     QStringList currentLines;
@@ -2656,6 +2691,32 @@ void MainWindow::onTranscriptAnchorClicked(const QUrl &url)
         return;
     }
 
+    if (url.scheme() == QStringLiteral("convertpdf")) {
+        const int index = extractIndex();
+        if (index < 0 || index >= m_transcriptAssistantAnswers.size()) {
+            return;
+        }
+        exportAnswersToPdf({index});
+        return;
+    }
+
+    if (url.scheme() == QStringLiteral("selectanswer")) {
+        const int index = extractIndex();
+        if (index < 0 || index >= m_transcriptAssistantAnswers.size()) {
+            return;
+        }
+        m_selectedAnswerIndices.insert(index);
+        updateConvertSelectedButtonState();
+        return;
+    }
+
+    if (url.scheme() == QStringLiteral("deselectanswer")) {
+        const int index = extractIndex();
+        m_selectedAnswerIndices.remove(index);
+        updateConvertSelectedButtonState();
+        return;
+    }
+
     if (url.isValid()) {
         QDesktopServices::openUrl(url);
     }
@@ -3107,6 +3168,112 @@ void MainWindow::onCopyCodeBlocksClicked()
     }
     QApplication::clipboard()->setText(codeOnly);
     m_statusLabel->setText(QStringLiteral("Code blocks from the last assistant answer copied to clipboard."));
+}
+
+void MainWindow::updateConvertSelectedButtonState()
+{
+    if (m_convertSelectedToPdfButton == nullptr) {
+        return;
+    }
+    const int count = m_selectedAnswerIndices.size();
+    m_convertSelectedToPdfButton->setEnabled(count > 0);
+    m_convertSelectedToPdfButton->setText(count > 0
+            ? QStringLiteral("📄 Convert Selected to PDF (%1)").arg(count)
+            : QStringLiteral("📄 Convert Selected to PDF"));
+}
+
+void MainWindow::onConvertSelectedToPdfClicked()
+{
+    if (m_selectedAnswerIndices.isEmpty()) {
+        return;
+    }
+
+    QList<int> indices(m_selectedAnswerIndices.constBegin(), m_selectedAnswerIndices.constEnd());
+    std::sort(indices.begin(), indices.end());
+
+    exportAnswersToPdf(indices);
+
+    m_selectedAnswerIndices.clear();
+    updateConvertSelectedButtonState();
+    runTranscriptJs(QStringLiteral("clearSelection"));
+}
+
+void MainWindow::exportAnswersToPdf(const QList<int> &answerIndices)
+{
+    if (answerIndices.isEmpty() || m_transcript == nullptr) {
+        return;
+    }
+
+    const bool isBatch = answerIndices.size() > 1;
+    const QString title = isBatch
+            ? QStringLiteral("Export selected answers to PDF")
+            : QStringLiteral("Export answer to PDF");
+    const QString suggestedName = isBatch ? QStringLiteral("respostas.pdf") : QStringLiteral("resposta.pdf");
+
+    QString filePath = QFileDialog::getSaveFileName(this, title, suggestedName, QStringLiteral("PDF Files (*.pdf)"));
+    if (filePath.isEmpty()) {
+        return;
+    }
+    if (!filePath.endsWith(QStringLiteral(".pdf"), Qt::CaseInsensitive)) {
+        filePath += QStringLiteral(".pdf");
+    }
+
+    QStringList messagesHtml;
+    for (const int index : answerIndices) {
+        if (index < 0 || index >= m_transcriptAssistantAnswers.size()) {
+            continue;
+        }
+        messagesHtml << messageToRichHtml(QStringLiteral("assistant"),
+                                          m_transcriptAssistantAnswers.at(index),
+                                          nullptr,
+                                          index,
+                                          m_transcript->palette(),
+                                          /*forExport=*/true);
+    }
+    if (messagesHtml.isEmpty()) {
+        return;
+    }
+
+    // KaTeX math has to actually be typeset (not just raw LaTeX text) in the exported
+    // PDF, and Qt's markdown->HTML path doesn't run JS, so this reuses the exact same
+    // shell page + appendMessage()/katex.render() pipeline the live transcript uses,
+    // loaded into a throwaway offscreen view, then prints that page to PDF.
+    auto *exportView = new QWebEngineView(this);
+    exportView->resize(900, 1200);
+    exportView->move(-10000, -10000);
+    // Chromium can throttle/suspend rendering for a view that's never shown at all;
+    // showing it (just positioned off-screen) keeps it an active renderer.
+    exportView->show();
+
+    auto *exportPage = new QWebEnginePage(exportView);
+    exportView->setPage(exportPage);
+
+    connect(exportPage, &QWebEnginePage::loadFinished, this, [this, exportPage, exportView, messagesHtml, filePath](bool ok) {
+        if (!ok) {
+            m_statusLabel->setText(QStringLiteral("Failed to prepare PDF export."));
+            exportView->deleteLater();
+            return;
+        }
+        for (const QString &html : messagesHtml) {
+            exportPage->runJavaScript(buildTranscriptJsCall(QStringLiteral("appendMessage"), html));
+        }
+        // Fonts are local qrc resources (no network wait), so this is a generous
+        // settle margin rather than a real synchronization need.
+        QTimer::singleShot(250, this, [exportPage, filePath]() {
+            const QPageLayout layout(QPageSize(QPageSize::A4), QPageLayout::Portrait,
+                                     QMarginsF(15, 15, 15, 15), QPageLayout::Millimeter);
+            exportPage->printToPdf(filePath, layout);
+        });
+    });
+
+    connect(exportPage, &QWebEnginePage::pdfPrintingFinished, this, [this, exportView](const QString &path, bool success) {
+        m_statusLabel->setText(success
+                ? QStringLiteral("PDF saved to %1").arg(path)
+                : QStringLiteral("Failed to save PDF to %1").arg(path));
+        exportView->deleteLater();
+    });
+
+    exportPage->setUrl(QUrl(QStringLiteral("qrc:///katex/transcript_shell.html")));
 }
 
 void MainWindow::showAboutAmelia()
