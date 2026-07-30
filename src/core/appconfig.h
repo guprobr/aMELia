@@ -59,6 +59,12 @@ struct AppConfig {
     bool preferOutlinePlanning = true;
     bool requireGroundingForProjectQuestions = true;
 
+    // When true (the default), the model may supplement thin/missing retrieved
+    // context with its own general knowledge instead of refusing. When false,
+    // restores the strict RAG-only behavior (answer only from supplied context,
+    // fall back to "I don't know based on the provided context." otherwise).
+    bool allowBuiltInKnowledge = true;
+
     // Include assistant turns in the history block sent to the model.
     // Enable this so the model can track what it already said and avoid
     // repeating or contradicting itself.

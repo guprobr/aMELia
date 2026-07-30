@@ -255,6 +255,8 @@ MainWindow::MainWindow(const QString &configPath,
     auto *toolbarLayout = new QHBoxLayout();
     m_externalSearchCheck = new QCheckBox(QStringLiteral("Allow sanitized external search"), chatPane);
     m_externalSearchCheck->setChecked(false);
+    m_builtInKnowledgeCheck = new QCheckBox(QStringLiteral("Allow built-in model knowledge"), chatPane);
+    m_builtInKnowledgeCheck->setChecked(true);
     m_modelCombo = new QComboBox(chatPane);
     m_modelCombo->setEditable(false);
     m_modelCombo->setMinimumWidth(220);
@@ -263,6 +265,7 @@ MainWindow::MainWindow(const QString &configPath,
     m_modelCombo->addItem(QStringLiteral("qwen2.5-coder:7b"));
     auto *modelLabel = new QLabel(QStringLiteral("Model:"), chatPane);
     toolbarLayout->addWidget(m_externalSearchCheck);
+    toolbarLayout->addWidget(m_builtInKnowledgeCheck);
     toolbarLayout->addStretch(1);
     toolbarLayout->addWidget(modelLabel);
     toolbarLayout->addWidget(m_modelCombo);
@@ -614,6 +617,7 @@ MainWindow::MainWindow(const QString &configPath,
     setWidgetTip(m_removePrioritizedAssetButton, QStringLiteral("Remove the selected prioritized assets from the active retrieval list."));
     setWidgetTip(m_clearPrioritizedAssetsButton, QStringLiteral("Clear all one-shot and pinned Knowledge Base priorities."));
     setWidgetTip(m_externalSearchCheck, QStringLiteral("Allow Amelia to use sanitized external web search for the current prompt."));
+    setWidgetTip(m_builtInKnowledgeCheck, QStringLiteral("Let the model supplement thin or missing retrieved context with its own general knowledge instead of refusing. Uncheck for strict RAG-only answers grounded solely in retrieved context."));
     setWidgetTip(m_modelCombo, QStringLiteral("Choose which Ollama model Amelia should use for generation."));
     setWidgetTip(m_sendButton, QStringLiteral("Submit the current prompt to Amelia."));
     setWidgetTip(m_stopButton, QStringLiteral("Stop the current generation, indexing, or long-running task."));
@@ -2745,6 +2749,11 @@ void MainWindow::setExternalSearchEnabledDefault(bool enabled)
     m_externalSearchCheck->setChecked(enabled);
 }
 
+void MainWindow::setBuiltInKnowledgeEnabledDefault(bool enabled)
+{
+    m_builtInKnowledgeCheck->setChecked(enabled);
+}
+
 void MainWindow::onSendClicked()
 {
     const QString prompt = m_input->toPlainText().trimmed();
@@ -2755,7 +2764,7 @@ void MainWindow::onSendClicked()
     appendUserMessage(prompt);
     m_input->clear();
     const bool hadOneShotPriorities = !m_oneShotPrioritizedAssets.isEmpty();
-    emit promptSubmitted(prompt, m_externalSearchCheck->isChecked());
+    emit promptSubmitted(prompt, m_externalSearchCheck->isChecked(), m_builtInKnowledgeCheck->isChecked());
     if (hadOneShotPriorities) {
         m_oneShotPrioritizedAssets.clear();
         rebuildPrioritizedKnowledgeAssetsUi();

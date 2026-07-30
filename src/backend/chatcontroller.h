@@ -30,7 +30,7 @@ public:
     explicit ChatController(const AppConfig &config, QObject *parent = nullptr, LlmClient *llmClient = nullptr);
     ~ChatController() override;
 
-    void sendUserPrompt(const QString &prompt, bool allowExternalSearch);
+    void sendUserPrompt(const QString &prompt, bool allowExternalSearch, bool allowBuiltInKnowledge);
     void stopGeneration();
     void reindexDocs();
     void cancelReindex();
@@ -255,6 +255,7 @@ private:
     bool m_reasoningFallbackRetryAttempted = false;
     bool m_runnerFailureRetryAttempted = false;
     int m_activeRequestNumCtxOverride = 0;
+    bool m_allowBuiltInKnowledgeForActiveRequest = true;
 
     // Auto-continue: when Ollama stops a response with done_reason=="length" (num_ctx
     // filled up mid-answer, not a natural stop), Amelia automatically issues a follow-up

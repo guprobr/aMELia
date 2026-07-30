@@ -63,9 +63,10 @@ public:
     void setSourceInventory(const QString &text);
     void setAvailableModels(const QStringList &models, const QString &currentModel);
     void setExternalSearchEnabledDefault(bool enabled);
+    void setBuiltInKnowledgeEnabledDefault(bool enabled);
 
 signals:
-    void promptSubmitted(const QString &prompt, bool allowExternalSearch);
+    void promptSubmitted(const QString &prompt, bool allowExternalSearch, bool allowBuiltInKnowledge);
     void stopRequested();
     void reindexRequested();
     void cancelIndexingRequested();
@@ -198,6 +199,7 @@ private:
     QListWidget *m_conversationsList = nullptr;
     QPushButton *m_deleteConversationButton = nullptr;
     QCheckBox *m_externalSearchCheck = nullptr;
+    QCheckBox *m_builtInKnowledgeCheck = nullptr;
     QComboBox *m_modelCombo = nullptr;
     QComboBox *m_promptLabPresetCombo = nullptr;
     QComboBox *m_sourceInventorySortCombo = nullptr;

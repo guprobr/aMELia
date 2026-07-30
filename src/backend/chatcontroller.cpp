@@ -531,7 +531,7 @@ void ChatController::notifyTaskFailed(const QString &title, const QString &messa
     emit desktopNotificationRequested(title, message, 3);
 }
 
-void ChatController::sendUserPrompt(const QString &prompt, bool allowExternalSearch)
+void ChatController::sendUserPrompt(const QString &prompt, bool allowExternalSearch, bool allowBuiltInKnowledge)
 {
     if (m_indexing) {
         emit systemNotice(QStringLiteral("Local docs are still indexing. Wait for reindex to finish before sending a prompt."));
@@ -567,6 +567,7 @@ void ChatController::sendUserPrompt(const QString &prompt, bool allowExternalSea
     m_runnerFailureRetryAttempted = false;
     m_activeRequestNumCtxOverride = 0;
     m_continuationRoundCount = 0;
+    m_allowBuiltInKnowledgeForActiveRequest = allowBuiltInKnowledge;
     m_reasoningStallGuard.reset();
     emit busyChanged(true);
     emit statusChanged(QStringLiteral("Analyzing knowledge base and preparing grounded context..."));
@@ -2174,6 +2175,44 @@ QVector<LlmChatMessage> ChatController::buildPromptMessages(const QString &userP
             : (documentStudyPrompt ? qBound(8000, localBudget / 2, 24000) : 14000);
     const TransformPromptSpec transformPrompt = detectTransformPrompt(userPrompt);
 
+    // Two variants of the grounding policy, switched per-request by the "Allow
+    // built-in model knowledge" checkbox (default on). The anti-fabrication
+    // guardrail against inventing project-specific specifics (file names, class
+    // names, commands, config keys, URLs) stays in force either way -- only
+    // whether the model may lean on its own general knowledge for everything
+    // else changes.
+    const QString groundingPolicyText = m_allowBuiltInKnowledgeForActiveRequest
+            ? QStringLiteral(
+                "Prefer the supplied context when it is relevant. If it does not fully "
+                "cover the question, you may use your own general knowledge to answer or "
+                "fill the gaps.\n"
+                "\n"
+                "Do NOT invent file names, class names, commands, API calls, YAML keys, "
+                "configuration values, URLs, or other project-specific details that are not "
+                "present in the supplied context — general knowledge may fill conceptual "
+                "gaps, never fabricate specifics about this project or its files.\n"
+                "If retrieved context conflicts with your general knowledge, prefer the "
+                "retrieved context and say so if it matters.\n"
+                "Only respond exactly: 'I don't know based on the provided context.' if "
+                "neither the supplied context nor your own knowledge lets you answer.\n")
+            : QStringLiteral(
+                "If the supplied context does not contain enough information to answer, "
+                "respond exactly: 'I don't know based on the provided context.'\n"
+                "\n"
+                "Do NOT use built-in model knowledge to fill gaps in the supplied context.\n"
+                "Do NOT invent file names, class names, commands, API calls, YAML keys, "
+                "configuration values, URLs, or project-specific details.\n"
+                "If you are about to write something not supported by the supplied context, "
+                "stop and use the fallback sentence instead.\n");
+
+    const QString builtInKnowledgeRuntimeBullet = m_allowBuiltInKnowledgeForActiveRequest
+            ? QStringLiteral(
+                "- You may supplement missing context with your own general knowledge for "
+                "concepts LOCAL_CONTEXT/EXTERNAL_CONTEXT don't cover, but never invent "
+                "project-specific specifics (file paths, class/function names, commands, "
+                "config keys, URLs) that aren't explicitly present in the supplied context.\n")
+            : QStringLiteral("- Never supplement missing context with built-in model knowledge.\n");
+
     QVector<LlmChatMessage> messages;
     messages.reserve(4);
 
@@ -2204,18 +2243,11 @@ QVector<LlmChatMessage> ChatController::buildPromptMessages(const QString &userP
             "if EXTERNAL_CONTEXT has been provided. Instead, refer to it naturally as "
             "retrieved external context or retrieved web context.\n"
             "\n"
-            "If the supplied context does not contain enough information to answer, respond "
-            "exactly: 'I don't know based on the provided context.'\n"
-            "\n"
-            "Do NOT use built-in model knowledge to fill gaps in the supplied context.\n"
-            "Do NOT invent file names, class names, commands, API calls, YAML keys, "
-            "configuration values, URLs, or project-specific details.\n"
-            "If you are about to write something not supported by the supplied context, "
-            "stop and use the fallback sentence instead.\n"
+            "%1"
             "\n"
             "Prefer short, factual, direct answers. When you cite a fact, name the source "
             "file or section when possible (for example: 'per config.json:' or "
-            "'from retrieved external context:').")
+            "'from retrieved external context:').").arg(groundingPolicyText)
     });
 
     QStringList developerSections;
@@ -2224,7 +2256,7 @@ QVector<LlmChatMessage> ChatController::buildPromptMessages(const QString &userP
         "- Before writing each sentence, silently verify that every factual claim is "
         "supported by LOCAL_CONTEXT or EXTERNAL_CONTEXT.\n"
         "- If a claim is not supported, do not write it. Use the fallback sentence.\n"
-        "- Never supplement missing context with built-in model knowledge.\n"
+        "%1"
         "- Treat project-specific claims about file paths, class names, commands, config "
         "keys, versions, or behaviors as grounded only if they appear explicitly in the "
         "supplied context.\n"
@@ -2257,7 +2289,7 @@ QVector<LlmChatMessage> ChatController::buildPromptMessages(const QString &userP
         "- Preserve indentation in YAML, JSON, shell, and config examples. Never flatten code blocks.\n"
         "- Start the visible answer directly once you have enough evidence. Do not repeat plans or pre-answer scaffolding.\n"
         "- Do not role-play, continue hidden reasoning, or break character.\n"
-        "- End every response with <END>.");
+        "- End every response with <END>.").arg(builtInKnowledgeRuntimeBullet);
 
     if (m_reasoningTraceEnabled) {
         developerSections << QStringLiteral(
@@ -2491,6 +2523,7 @@ QString ChatController::buildBackendSummary() const
              .arg(m_config.ollamaTopK)
              .arg(m_config.ollamaRepeatPenalty, 0, 'f', 2);
     lines << QStringLiteral("Grounding required for project questions: %1").arg(m_config.requireGroundingForProjectQuestions ? QStringLiteral("yes") : QStringLiteral("no"));
+    lines << QStringLiteral("Built-in model knowledge allowed by default: %1").arg(m_config.allowBuiltInKnowledge ? QStringLiteral("yes") : QStringLiteral("no"));
     lines << QStringLiteral("RAG confidence threshold: %1").arg(m_config.ragConfidenceThreshold, 0, 'f', 2);
     lines << QStringLiteral("Assistant history in prompt: %1").arg(m_config.includeAssistantHistoryInPrompt ? QStringLiteral("yes") : QStringLiteral("no"));
     lines << QStringLiteral("Auto memory capture: disabled");

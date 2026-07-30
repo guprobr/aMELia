@@ -309,6 +309,7 @@ int main(int argc, char *argv[])
                          notificationSound, &NotificationSound::playAnswerCompleted);
 
         window->setExternalSearchEnabledDefault(config.enableExternalSearch);
+        window->setBuiltInKnowledgeEnabledDefault(config.allowBuiltInKnowledge);
 
         for (const QString &bootstrapMessage : bootstrapMessages) {
             if (!bootstrapMessage.isEmpty()) {

@@ -47,6 +47,7 @@ R"JSON({
   "enableNotificationSounds": true,
   "preferOutlinePlanning": true,
   "requireGroundingForProjectQuestions": true,
+  "allowBuiltInKnowledge": true,
   "includeAssistantHistoryInPrompt": true,
   "searxngUrl": "%2",
   "maxHistoryTurns": 8,
@@ -321,6 +322,7 @@ AppConfig AppConfigLoader::load(const QString &path, QString *errorMessage)
     config.ollamaEmbeddingModel = obj.value(QStringLiteral("ollamaEmbeddingModel")).toString(config.ollamaEmbeddingModel).trimmed();
     config.preferOutlinePlanning = obj.value(QStringLiteral("preferOutlinePlanning")).toBool(config.preferOutlinePlanning);
     config.requireGroundingForProjectQuestions = obj.value(QStringLiteral("requireGroundingForProjectQuestions")).toBool(config.requireGroundingForProjectQuestions);
+    config.allowBuiltInKnowledge = obj.value(QStringLiteral("allowBuiltInKnowledge")).toBool(config.allowBuiltInKnowledge);
     config.includeAssistantHistoryInPrompt = obj.value(QStringLiteral("includeAssistantHistoryInPrompt")).toBool(config.includeAssistantHistoryInPrompt);
     config.searxngUrl = obj.value(QStringLiteral("searxngUrl")).toString(config.searxngUrl).trimmed();
 

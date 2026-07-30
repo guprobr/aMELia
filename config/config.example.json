@@ -23,6 +23,7 @@
   "enableNotificationSounds": true,
   "preferOutlinePlanning": true,
   "requireGroundingForProjectQuestions": true,
+  "allowBuiltInKnowledge": true,
   "includeAssistantHistoryInPrompt": true,
   "searxngUrl": "http://127.0.0.1:8080/search",
   "maxHistoryTurns": 8,
