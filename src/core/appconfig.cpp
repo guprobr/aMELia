@@ -57,7 +57,7 @@ R"JSON({
   "externalSearchTimeoutMs": 15000,
   "desktopNotificationTimeoutMs": 3000,
   "ollamaProbeTimeoutMs": 10000,
-  "ollamaResponseHeadersTimeoutMs": 1800000,
+  "ollamaResponseHeadersTimeoutMs": 18000000,
   "ollamaFirstTokenTimeoutMs": 600000,
   "ollamaInactivityTimeoutMs": 300000,
   "ollamaTotalTimeoutMs": 0,
